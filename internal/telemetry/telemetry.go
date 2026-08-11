@@ -30,18 +30,36 @@ const (
 // timeFormat mirrors slog's text handler timestamp.
 const timeFormat = "2006-01-02T15:04:05.000Z07:00"
 
-// NewLogger builds the process logger: level Info, or Debug when verbose.
-// stderr gets the colorized text handler; when logFile is set the same lines
-// are appended there via io.MultiWriter. Coloring is disabled whenever a log
-// file is present — a single handler writes to both sinks and ANSI escapes
-// in a file are noise. A log file that cannot be opened is reported on
-// stderr and stderr-only logging continues.
+// NewLogger builds the process logger at Info level, or Debug when verbose.
+// It is a convenience wrapper over New keeping the original API.
 func NewLogger(verbose bool, logFile string) *slog.Logger {
 	level := slog.LevelInfo
 	if verbose {
 		level = slog.LevelDebug
 	}
+	return New(level, logFile)
+}
 
+// ParseLevel parses a LOG_LEVEL-style string into a slog level. The empty
+// string returns ok=false (caller falls back to its default).
+func ParseLevel(s string) (slog.Level, bool) {
+	if s == "" {
+		return 0, false
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(s)); err != nil {
+		return 0, false
+	}
+	return level, true
+}
+
+// New builds the process logger at the given level. stderr gets the
+// colorized text handler; when logFile is set the same lines are appended
+// there via io.MultiWriter. Coloring is disabled whenever a log file is
+// present — a single handler writes to both sinks and ANSI escapes in a file
+// are noise. A log file that cannot be opened is reported on stderr and
+// stderr-only logging continues.
+func New(level slog.Level, logFile string) *slog.Logger {
 	w := io.Writer(os.Stderr)
 	var file *os.File
 	if logFile != "" {

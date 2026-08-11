@@ -39,9 +39,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger := telemetry.NewLogger(*verbose, cfg.LogFile)
-	// The pool logs through slog.Default(); route it through our logger so
-	// verbose mode and the log file cover it too.
+	// Effective log level: LOG_LEVEL config wins, else -v → debug, else info.
+	level, _ := telemetry.ParseLevel(cfg.LogLevel)
+	if cfg.LogLevel == "" {
+		if *verbose {
+			level = slog.LevelDebug
+		} else {
+			level = slog.LevelInfo
+		}
+	}
+	logger := telemetry.New(level, cfg.LogFile)
+	// The pool/upstream/session/runs log through slog.Default(); route it
+	// through our logger so the configured level and log file cover them too.
 	slog.SetDefault(logger)
 
 	// Load the hardcoded fallback immediately so the registry is usable
@@ -95,6 +104,7 @@ func main() {
 		"registry_refresh", cfg.RegistryRefresh.String(),
 		"registry_agents", len(reg.AgentIDs()),
 		"registry_models", reg.ModelCount(),
+		"log_level", level.String(),
 		"verbose", *verbose,
 	)
 	logger.Info("listening", "addr", cfg.ListenAddr)

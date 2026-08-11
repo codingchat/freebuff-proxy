@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -32,6 +33,7 @@ type Config struct {
 	RegistryRefresh    time.Duration
 	DebugDump          bool
 	LogFile            string
+	LogLevel           string // "" (use -v/default) or debug|info|warn|error
 }
 
 // rawConfig mirrors the JSON file / env keys as strings so that parsing and
@@ -50,6 +52,7 @@ type rawConfig struct {
 	RegistryRefresh    string   `json:"REGISTRY_REFRESH"`
 	DebugDump          bool     `json:"DEBUG_DUMP"`
 	LogFile            string   `json:"LOG_FILE"`
+	LogLevel           string   `json:"LOG_LEVEL"`
 }
 
 func defaultRawConfig() rawConfig {
@@ -91,6 +94,7 @@ func Load(configPath string) (Config, error) {
 	overrideString(&raw.RegistryRefresh, "REGISTRY_REFRESH")
 	overrideBool(&raw.DebugDump, "DEBUG_DUMP")
 	overrideString(&raw.LogFile, "LOG_FILE")
+	overrideString(&raw.LogLevel, "LOG_LEVEL")
 
 	parseDuration := func(raw, name string) (time.Duration, error) {
 		d, err := time.ParseDuration(strings.TrimSpace(raw))
@@ -136,6 +140,7 @@ func Load(configPath string) (Config, error) {
 		RegistryRefresh:    registryRefresh,
 		DebugDump:          raw.DebugDump,
 		LogFile:            strings.TrimSpace(raw.LogFile),
+		LogLevel:           strings.TrimSpace(raw.LogLevel),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -161,6 +166,13 @@ func (c Config) Validate() error {
 		return errors.New("SESSION_CALL_TIMEOUT must be greater than zero")
 	case c.RegistryRefresh <= 0:
 		return errors.New("REGISTRY_REFRESH must be greater than zero")
+	}
+
+	if c.LogLevel != "" {
+		var level slog.Level
+		if err := level.UnmarshalText([]byte(c.LogLevel)); err != nil {
+			return fmt.Errorf("LOG_LEVEL %q must be one of: debug, info, warn, error", c.LogLevel)
+		}
 	}
 
 	u, err := url.Parse(c.UpstreamBaseURL)
@@ -246,6 +258,7 @@ func applyDotenv(raw *rawConfig) error {
 	overrideStringFrom(&raw.RegistryRefresh, get, "REGISTRY_REFRESH")
 	overrideBoolFrom(&raw.DebugDump, get, "DEBUG_DUMP")
 	overrideStringFrom(&raw.LogFile, get, "LOG_FILE")
+	overrideStringFrom(&raw.LogLevel, get, "LOG_LEVEL")
 	return nil
 }
 

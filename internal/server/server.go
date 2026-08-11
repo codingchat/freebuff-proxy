@@ -22,6 +22,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -62,14 +63,71 @@ func New(cfg *config.Config, p *pool.Pool, reg *registry.Registry, logger *slog.
 	return &Server{cfg: cfg, pool: p, reg: reg, logger: logger, started: time.Now()}
 }
 
-// Handler returns the route table. Method mismatches and unknown paths get
-// the ServeMux's automatic 405/404.
+// Handler returns the route table wrapped in an access-log middleware. Method
+// mismatches and unknown paths get the ServeMux's automatic 405/404.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChat))
 	mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleModels))
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		mux.ServeHTTP(sw, r)
+		s.logger.Info("access",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", sw.status,
+			"ms", time.Since(start).Milliseconds(),
+			"remote", remoteHost(r),
+		)
+	})
+}
+
+// statusWriter captures the response status for access logging. It forwards
+// Flusher/Hijacker/Pusher so streaming and similar protocols keep working
+// through the access-log wrapper.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, errors.New("hijack not supported")
+}
+
+func (w *statusWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := w.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+// remoteHost returns the client host without the port.
+func remoteHost(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // --- auth ---
@@ -159,6 +217,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			"request body must be a valid JSON object: "+err.Error(), "invalid_request_error", "invalid_json", 0)
 		return
 	}
+	start := time.Now()
+	s.logger.Debug("chat request", "model", model, "stream", stream, "remote", remoteHost(r))
 
 	lease, err := s.pool.Acquire(ctx, model)
 	if err != nil {
@@ -225,16 +285,32 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		"token", lease.Token+1, "model", model, "stream", stream)
 
 	if stream {
-		s.relayStream(ctx, w, up)
+		stats := &relayStats{}
+		s.relayStream(ctx, w, up, stats)
+		s.logger.Info("chat done",
+			"model", model, "stream", true,
+			"ms", time.Since(start).Milliseconds(),
+			"chunks", stats.chunks, "bytes", stats.bytes)
 	} else {
-		s.relayJSON(ctx, w, up)
+		stats := &relayStats{}
+		s.relayJSON(ctx, w, up, stats)
+		s.logger.Info("chat done",
+			"model", model, "stream", false,
+			"ms", time.Since(start).Milliseconds(),
+			"bytes", stats.bytes)
 	}
+}
+
+// relayStats accumulates per-response relay counters for logging.
+type relayStats struct {
+	chunks int
+	bytes  int
 }
 
 // relayStream forwards sanitized upstream SSE lines to the client with
 // per-chunk flushing, a [DONE] terminator, and an error chunk (then DONE)
 // when the upstream stream dies while the client context is still live.
-func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Reader) {
+func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Reader, stats *relayStats) {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -257,10 +333,13 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 		if drop {
 			continue
 		}
-		if _, err := w.Write(convert.EncodeSSE(clean)); err != nil {
+		frame := convert.EncodeSSE(clean)
+		if _, err := w.Write(frame); err != nil {
 			s.logger.Debug("stream write failed", "err", err)
 			return
 		}
+		stats.chunks++
+		stats.bytes += len(frame)
 		flusher.Flush()
 	}
 	if err := scanner.Err(); err != nil {
@@ -280,7 +359,7 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 // writes one chat.completion JSON response. On any decode or stream error
 // nothing is written and a 502 is returned (the client asked for a single
 // response; a partial one would be worse than none).
-func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Reader) {
+func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Reader, stats *relayStats) {
 	acc := convert.NewAccumulator()
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
@@ -293,6 +372,7 @@ func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Read
 				"failed to decode upstream stream: "+err.Error(), "upstream_error", "upstream_unavailable", 0)
 			return
 		}
+		stats.chunks++
 	}
 	if err := scanner.Err(); err != nil {
 		if ctx.Err() == nil {
@@ -301,9 +381,11 @@ func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Read
 		}
 		return
 	}
+	out := acc.Finish()
+	stats.bytes = len(out)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write(acc.Finish())
+	w.Write(out)
 }
 
 // --- models / healthz ---
@@ -359,8 +441,9 @@ func (s *Server) writeJSONError(w http.ResponseWriter, status int, message, typ,
 	})
 }
 
-// writeError maps any error from the pool/upstream to the PRD §6 matrix.
-// Canceled client contexts are logged and dropped (no response written).
+// writeError maps any error from the pool/upstream to the PRD §6 matrix and
+// logs it once. Canceled client contexts are logged at debug and dropped (no
+// response written).
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, context.Canceled) {
 		s.logger.Debug("request canceled by client", "err", err)
@@ -371,46 +454,42 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 
+	status := http.StatusBadGateway
+	code := "upstream_unavailable"
+	message := err.Error()
+	var retryAfter time.Duration
+
 	var wr *session.WaitingRoomError
-	if errors.As(err, &wr) {
-		s.writeJSONError(w, http.StatusServiceUnavailable,
-			wr.Error(), "server_error", "waiting_room_queued", wr.RetryAfter)
-		return
-	}
 	var uwr *upstream.WaitingRoomError
-	if errors.As(err, &uwr) {
-		s.writeJSONError(w, http.StatusServiceUnavailable,
-			uwr.Error(), "server_error", "waiting_room_queued", uwr.RetryAfter)
-		return
-	}
 	var ue *upstream.UpstreamError
-	if errors.As(err, &ue) {
-		status := ue.Status
+	switch {
+	case errors.As(err, &wr):
+		status, code = http.StatusServiceUnavailable, "waiting_room_queued"
+		message, retryAfter = wr.Error(), wr.RetryAfter
+	case errors.As(err, &uwr):
+		status, code = http.StatusServiceUnavailable, "waiting_room_queued"
+		message, retryAfter = uwr.Error(), uwr.RetryAfter
+	case errors.As(err, &ue):
+		status = ue.Status
 		if status != http.StatusPaymentRequired && status != http.StatusConflict && status != http.StatusTooManyRequests {
 			status = http.StatusBadGateway
 		}
-		msg := ue.Body
-		if msg == "" {
-			msg = "upstream error"
+		message = ue.Body
+		if message == "" {
+			message = "upstream error"
 		}
-		s.writeJSONError(w, status, msg, "upstream_error", "", ue.RetryAfter)
-		return
+		code, retryAfter = "", ue.RetryAfter
+	case errors.Is(err, registry.ErrModelNotFound):
+		status, code = http.StatusBadRequest, "model_not_found"
+		message = err.Error() + "; available: " + strings.Join(s.reg.Models(), ", ")
+	case errors.Is(err, upstream.ErrAuthRejected):
+		status, code = http.StatusBadGateway, "upstream_auth_rejected"
+		message = err.Error()
+	case errors.Is(err, upstream.ErrWaitingRoom):
+		status, code = http.StatusServiceUnavailable, "waiting_room_queued"
+		message = err.Error()
 	}
 
-	switch {
-	case errors.Is(err, registry.ErrModelNotFound):
-		s.writeJSONError(w, http.StatusBadRequest,
-			err.Error()+"; available: "+strings.Join(s.reg.Models(), ", "),
-			"invalid_request_error", "model_not_found", 0)
-	case errors.Is(err, upstream.ErrAuthRejected):
-		s.writeJSONError(w, http.StatusBadGateway,
-			err.Error(), "upstream_error", "upstream_auth_rejected", 0)
-	case errors.Is(err, upstream.ErrWaitingRoom):
-		s.writeJSONError(w, http.StatusServiceUnavailable,
-			err.Error(), "server_error", "waiting_room_queued", 0)
-	default:
-		// Combined pool exhaustion and any other unclassified failure.
-		s.writeJSONError(w, http.StatusBadGateway,
-			err.Error(), "upstream_error", "upstream_unavailable", 0)
-	}
+	s.logger.Warn("request failed", "status", status, "code", code, "err", err)
+	s.writeJSONError(w, status, message, "upstream_error", code, retryAfter)
 }
