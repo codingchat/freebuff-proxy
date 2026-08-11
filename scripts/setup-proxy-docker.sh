@@ -81,13 +81,14 @@ else
   done
 fi
 
-# --- 5. detect the Docker gateway (host IP as seen from inside containers) --
+# --- 5. detect the Docker gateways (host IPs as seen from inside containers)
+BRIDGE_GW="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || echo 172.17.0.1)"
 GATEWAY=""
 for net in $(docker network ls --format '{{.Name}}' | grep -i freebuff | head -3); do
   GATEWAY="$(docker network inspect "$net" --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
   [ -n "$GATEWAY" ] && break
 done
-[ -z "$GATEWAY" ] && GATEWAY="172.17.0.1" && warn "Could not auto-detect gateway; using $GATEWAY — verify with: docker network inspect <net>"
+[ -z "$GATEWAY" ] && GATEWAY="$BRIDGE_GW"
 
 # --- 6. print the 9router configuration -------------------------------------
 cat <<EOF
@@ -109,10 +110,12 @@ cat <<EOF
   A) 9router runs as a plain process on this host:
         http://127.0.0.1:3457/v1
 
-  B) 9router runs in a Docker container on this host (e.g. the
-     AgentRouter image) — the host is reached via the Docker bridge
-     gateway, DETECTED ON THIS MACHINE:
-        http://${GATEWAY}:3457/v1
+  B) 9router runs in a Docker container on this host — the host is reached
+     via the gateway of the network the ROUTER container is on. Detected:
+        • router on the default bridge network:  http://${BRIDGE_GW}:3457/v1
+        • router on any compose network:         http://${GATEWAY}:3457/v1
+     (published ports are reachable via ANY host-interface IP, so both work
+     from any container; use the router's own network gateway.)
 
   Verify before creating the node:
         curl http://${GATEWAY}:3457/v1/models
