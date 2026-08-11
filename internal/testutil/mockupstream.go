@@ -101,7 +101,10 @@ func (m *MockUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m.RateLimit {
-		writeJSON(w, 429, `{"model":"deepseek/deepseek-v4-flash","entitlementBreakdown":{"base":6,"referral":0,"streak":0},"limit":6,"period":"pacific_day","resetTimeZone":"America/Los_Angeles","resetAt":"2026-08-12T07:00:00.000Z","windowHours":24,"recentCount":6.6,"status":"rate_limited","accessTier":"limited","retryAfterMs":48549499}`)
+		// writeRaw (not writeJSON): the body must reach the client verbatim
+		// so parseRateLimit can unmarshal the quota fields — writeJSON would
+		// re-encode it as a quoted JSON string.
+		writeRaw(w, 429, `{"model":"deepseek/deepseek-v4-flash","entitlementBreakdown":{"base":6,"referral":0,"streak":0},"limit":6,"period":"pacific_day","resetTimeZone":"America/Los_Angeles","resetAt":"2026-08-12T07:00:00.000Z","windowHours":24,"recentCount":6.6,"status":"rate_limited","accessTier":"limited","retryAfterMs":48549499}`)
 		return
 	}
 	switch {
