@@ -190,23 +190,34 @@ func (c *Client) ChatCompletions(ctx context.Context, opts ChatOptions, body []b
 	if err != nil {
 		return nil, err
 	}
+	// The streamed response body must stay readable after this call returns,
+	// so the request timeout is applied here (not inside do) and released
+	// only when the body is closed.
+	var cancel context.CancelFunc
+	if _, hasDeadline := req.Context().Deadline(); !hasDeadline && c.requestTimeout > 0 {
+		reqCtx, cancelFn := context.WithTimeout(req.Context(), c.requestTimeout)
+		cancel = cancelFn
+		req = req.WithContext(reqCtx)
+	}
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("x-freebuff-model", opts.Model)
 	if opts.SessionInstanceID != "" {
 		req.Header.Set("x-freebuff-instance-id", opts.SessionInstanceID)
 	}
 
-	resp, err := c.do(req, c.requestTimeout)
+	resp, _, err := c.do(req, 0)
 	if err != nil {
+		releaseCancel(cancel)
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		bodyText := drainBody(resp.Body)
+		releaseCancel(cancel)
 		c.dump("chat", req, resp.StatusCode, bodyText)
 		return nil, classifyError(resp.StatusCode, bodyText, resp.Header)
 	}
-	return resp.Body, nil
+	return &cancelBody{ReadCloser: resp.Body, cancel: cancel}, nil
 }
 
 // CreateSession POSTs /api/v1/freebuff/session with an empty object.
@@ -237,10 +248,11 @@ func (c *Client) EndSession(ctx context.Context, instanceID string) error {
 	}
 	req.Header.Set("x-freebuff-instance-id", instanceID)
 
-	resp, err := c.do(req, c.sessionCallTimeout)
+	resp, cancel, err := c.do(req, c.sessionCallTimeout)
 	if err != nil {
 		return err
 	}
+	defer releaseCancel(cancel)
 	defer resp.Body.Close()
 	drainBody(resp.Body)
 	if resp.StatusCode == 404 {
@@ -263,10 +275,11 @@ func (c *Client) StartRun(ctx context.Context, agentID string) (string, error) {
 		return "", err
 	}
 
-	resp, err := c.do(req, c.sessionCallTimeout)
+	resp, cancel, err := c.do(req, c.sessionCallTimeout)
 	if err != nil {
 		return "", err
 	}
+	defer releaseCancel(cancel)
 	defer resp.Body.Close()
 	body := drainBody(resp.Body)
 	if resp.StatusCode >= 400 {
@@ -300,10 +313,11 @@ func (c *Client) FinishRun(ctx context.Context, runID string, totalSteps int) er
 		return err
 	}
 
-	resp, err := c.do(req, c.sessionCallTimeout)
+	resp, cancel, err := c.do(req, c.sessionCallTimeout)
 	if err != nil {
 		return err
 	}
+	defer releaseCancel(cancel)
 	defer resp.Body.Close()
 	body := drainBody(resp.Body)
 	if resp.StatusCode >= 400 {
@@ -317,10 +331,11 @@ func (c *Client) FinishRun(ctx context.Context, runID string, totalSteps int) er
 // sessionCall performs a session control call: parse the JSON body into a
 // SessionState; errors are classified through the standard matrix.
 func (c *Client) sessionCall(req *http.Request) (*SessionState, error) {
-	resp, err := c.do(req, c.sessionCallTimeout)
+	resp, cancel, err := c.do(req, c.sessionCallTimeout)
 	if err != nil {
 		return nil, err
 	}
+	defer releaseCancel(cancel)
 	defer resp.Body.Close()
 	body := drainBody(resp.Body)
 	if resp.StatusCode == 404 {
@@ -375,26 +390,51 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body []byt
 }
 
 // do executes req, enforcing the given timeout unless ctx already carries an
-// earlier deadline. Failures are wrapped so errors.Is works both ways.
-func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, error) {
+// earlier deadline. The returned cancel must be released once the caller is
+// done with the response BODY: canceling the request context aborts in-flight
+// body reads, so it must outlive body streaming. cancel is nil when no
+// timeout was applied. Failures are wrapped so errors.Is works both ways.
+func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, context.CancelFunc, error) {
 	ctx := req.Context()
+	var cancel context.CancelFunc
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline && timeout > 0 {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
 		req = req.WithContext(ctx)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		if errors.Is(ctx.Err(), context.Canceled) {
-			return nil, context.Canceled
+			return nil, nil, context.Canceled
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, fmt.Errorf("%w: %s %s", context.DeadlineExceeded, req.Method, req.URL.Path)
+			return nil, nil, fmt.Errorf("%w: %s %s", context.DeadlineExceeded, req.Method, req.URL.Path)
 		}
-		return nil, fmt.Errorf("upstream: %s %s: %w", req.Method, req.URL.Path, err)
+		return nil, nil, fmt.Errorf("upstream: %s %s: %w", req.Method, req.URL.Path, err)
 	}
-	return resp, nil
+	return resp, cancel, nil
+}
+
+// releaseCancel cancels a do() timeout context unless it is nil.
+func releaseCancel(cancel context.CancelFunc) {
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// cancelBody closes the underlying body and then releases the request
+// context, so a streamed response body lives exactly as long as its reader.
+type cancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelBody) Close() error {
+	err := b.ReadCloser.Close()
+	releaseCancel(b.cancel)
+	return err
 }
 
 // injectEnvelope merges the CLI fingerprint into the request body without

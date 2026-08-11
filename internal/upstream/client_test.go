@@ -36,6 +36,55 @@ func testConfig(baseURL string, mut func(*config.Config)) *config.Config {
 	return cfg
 }
 
+// TestChatCompletionsStreamBodySurvives streams three chunks with real
+// delays and asserts the whole body reads back. Regression: do() used to
+// defer-cancel the request context when the response headers arrived, which
+// aborted every streamed body read (observed live: "upstream stream error:
+// context canceled" right after a successful upstream 200).
+func TestChatCompletionsStreamBodySurvives(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	chunks := []string{
+		`{"id":"c0","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"0"},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"1"},"finish_reason":null}]}`,
+		`{"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"2"},"finish_reason":null}]}`,
+	}
+	mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		for _, chunk := range chunks {
+			io.WriteString(w, testutil.SSEEvent(chunk))
+			flusher.Flush()
+			time.Sleep(150 * time.Millisecond)
+		}
+		io.WriteString(w, "data: [DONE]\n\n")
+	}
+
+	client, err := New("tok-a", testConfig(mock.URL(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	rc, err := client.ChatCompletions(context.Background(), ChatOptions{Model: "m", RunID: "r"}, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("stream read failed (request context canceled too early?): %v", err)
+	}
+	text := string(data)
+	for i, want := range []string{`"content":"0"`, `"content":"1"`, `"content":"2"`, "[DONE]"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("stream missing %q (chunk %d): %s", want, i, text)
+		}
+	}
+}
+
 func TestChatCompletionsEnvelope(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
