@@ -36,8 +36,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Attach SLSA build provenance to every produced artifact.
+      # (No predicate inputs = the action auto-generates SLSA v1 build provenance.)
       - name: Attest artifacts
         uses: actions/attest@v4
         with:
           subject-path: dist/*
-          predicate: build
