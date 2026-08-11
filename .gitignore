@@ -44,3 +44,7 @@ node_modules/
 # ── agent handoff docs (local only, not repo content) ──
 HANDOFF.md
 *.handoff.md
+
+# ── dev docs (local only, not repo content); guides/ is public ──
+docs/*
+!docs/guides/
