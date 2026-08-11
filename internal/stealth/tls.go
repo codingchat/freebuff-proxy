@@ -60,6 +60,24 @@ func Dialer(profile *Profile, baseDial func(ctx context.Context, network, addr s
 			}
 		}
 
+		// Materialize the preset's extensions first, then pin ALPN to
+		// HTTP/1.1. The browser presets advertise "h2,http/1.1" and upstream
+		// would negotiate h2 — but Go's http.Transport cannot use HTTP/2
+		// over a *utls.UConn (its h2 path type-asserts the connection to
+		// *tls.Conn), so it falls back to HTTP/1.x and chokes on the
+		// server's h2 SETTINGS frame ("malformed HTTP response").
+		//
+		// BuildHandshakeState() must run BEFORE the mutation: the first
+		// build applies the preset spec (clobbering uconn.Extensions), and
+		// every later build re-applies the (mutated) extension list.
+		// JA3 hashes extension types, not ALPN values, so the fingerprint is
+		// unaffected.
+		if err := uConn.BuildHandshakeState(); err != nil {
+			rawConn.Close()
+			return nil, fmt.Errorf("stealth: build handshake state failed: %w", err)
+		}
+		setALPN(uConn, []string{"http/1.1"})
+
 		if err := uConn.HandshakeContext(ctx); err != nil {
 			rawConn.Close()
 			return nil, fmt.Errorf("stealth: tls handshake failed: %w", err)
@@ -67,4 +85,19 @@ func Dialer(profile *Profile, baseDial func(ctx context.Context, network, addr s
 
 		return uConn, nil
 	}
+}
+
+// setALPN replaces (or appends) the ALPN extension on a utls UConn before
+// the handshake. utls UConn exposes its extension list for mutation; the
+// preset/custom-spec ALPN entry is replaced in place so no other extension
+// ordering is disturbed.
+func setALPN(uConn *utls.UConn, protocols []string) {
+	ext := &utls.ALPNExtension{AlpnProtocols: protocols}
+	for i, e := range uConn.Extensions {
+		if _, ok := e.(*utls.ALPNExtension); ok {
+			uConn.Extensions[i] = ext
+			return
+		}
+	}
+	uConn.Extensions = append(uConn.Extensions, ext)
 }

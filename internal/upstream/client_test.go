@@ -1,6 +1,9 @@
 package upstream
 
 import (
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/andybalholm/brotli"
 
 	"freebuff-proxy/internal/config"
 	"freebuff-proxy/internal/testutil"
@@ -557,6 +562,76 @@ func TestClassifyRateLimit(t *testing.T) {
 	}
 	if rle2.RetryAfter != 300*time.Second {
 		t.Errorf("RetryAfter = %s, want 300s (header fallback)", rle2.RetryAfter)
+	}
+}
+
+func TestWrapDecompress(t *testing.T) {
+	const want = `{"status":"active","instanceId":"inst-abc-123"}`
+	cases := []struct {
+		name       string
+		encoding   string
+		compress   func([]byte) []byte
+		wantErrSub string
+	}{
+		{"identity passthrough", "", nil, ""},
+		{"gzip", "gzip", func(b []byte) []byte {
+			var buf bytes.Buffer
+			zw := gzip.NewWriter(&buf)
+			zw.Write(b)
+			zw.Close()
+			return buf.Bytes()
+		}, ""},
+		{"deflate", "deflate", func(b []byte) []byte {
+			var buf bytes.Buffer
+			zw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
+			zw.Write(b)
+			zw.Close()
+			return buf.Bytes()
+		}, ""},
+		{"brotli", "br", func(b []byte) []byte {
+			var buf bytes.Buffer
+			zw := brotli.NewWriter(&buf)
+			zw.Write(b)
+			zw.Close()
+			return buf.Bytes()
+		}, ""},
+		{"unsupported encoding", "zstd", nil, "unsupported Content-Encoding"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(want)
+			if tc.compress != nil {
+				body = tc.compress([]byte(want))
+			}
+			resp := &http.Response{
+				Header: http.Header{},
+				Body:   io.NopCloser(bytes.NewReader(body)),
+			}
+			if tc.encoding != "" {
+				resp.Header.Set("Content-Encoding", tc.encoding)
+			}
+			err := wrapDecompress(resp)
+			if tc.wantErrSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+					t.Fatalf("wrapDecompress err = %v, want %q", err, tc.wantErrSub)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("wrapDecompress: %v", err)
+			}
+			got, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			resp.Body.Close()
+			if string(got) != want {
+				t.Errorf("body = %q, want %q", got, want)
+			}
+			if resp.Header.Get("Content-Encoding") != "" {
+				t.Error("Content-Encoding header not stripped")
+			}
+		})
 	}
 }
 

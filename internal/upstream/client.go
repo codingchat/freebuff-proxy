@@ -8,6 +8,8 @@ package upstream
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -26,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"golang.org/x/net/proxy"
 
 	"freebuff-proxy/internal/config"
@@ -503,10 +506,59 @@ func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, c
 		}
 		return nil, nil, fmt.Errorf("upstream: %s %s: %w", req.Method, req.URL.Path, err)
 	}
+	if err := wrapDecompress(resp); err != nil {
+		resp.Body.Close()
+		if cancel != nil {
+			cancel()
+		}
+		return nil, nil, fmt.Errorf("upstream: %s %s: %w", req.Method, req.URL.Path, err)
+	}
 	slog.Debug("upstream ok", "method", req.Method, "path", req.URL.Path,
 		"status", resp.StatusCode, "ms", time.Since(start).Milliseconds())
 	return resp, cancel, nil
 }
+
+// wrapDecompress replaces resp.Body with a transparent decompressing reader
+// when the upstream compresses the response. This is REQUIRED with the
+// stealth profile: the browser Accept-Encoding ("gzip, deflate, br") makes
+// Go's transport skip its automatic gzip handling (that only kicks in when
+// Go itself set the header), so compressed bodies would arrive as garbage.
+// The plain transport sends no Accept-Encoding and is unaffected (Go
+// decompresses its own gzip transparently and strips the header).
+func wrapDecompress(resp *http.Response) error {
+	enc := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+	if enc == "" || enc == "identity" {
+		return nil
+	}
+	underlying := resp.Body
+	switch enc {
+	case "gzip":
+		zr, err := gzip.NewReader(underlying)
+		if err != nil {
+			return fmt.Errorf("gzip: %w", err)
+		}
+		resp.Body = &decompressCloser{Reader: zr, underlying: underlying}
+	case "deflate":
+		zr := flate.NewReader(underlying)
+		resp.Body = &decompressCloser{Reader: zr, underlying: underlying}
+	case "br":
+		resp.Body = &decompressCloser{Reader: brotli.NewReader(underlying), underlying: underlying}
+	default:
+		return fmt.Errorf("unsupported Content-Encoding %q", enc)
+	}
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("Content-Length")
+	return nil
+}
+
+// decompressCloser bridges a decompressing reader back to the underlying
+// response body so Close always reaches the socket.
+type decompressCloser struct {
+	io.Reader
+	underlying io.ReadCloser
+}
+
+func (d *decompressCloser) Close() error { return d.underlying.Close() }
 
 // releaseCancel cancels a do() timeout context unless it is nil.
 func releaseCancel(cancel context.CancelFunc) {
