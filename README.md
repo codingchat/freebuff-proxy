@@ -130,14 +130,18 @@ All keys are read from the environment and override the JSON config file passed 
 
 ## 9router integration
 
-Add freebuff-proxy as a provider in 9router's configuration; adjust `models` to entries from `/v1/models`:
+Add freebuff-proxy as an **OpenAI-compatible custom provider** in 9router — the full step-by-step guide (install 9router, dashboard form fields, model catalog, verification, troubleshooting) is in **[docs/guides/9router-integration.md](docs/guides/9router-integration.md)**.
+
+Quick reference:
 
 ```json
 { "freebuff": { "base_url": "http://localhost:3457/v1", "api_key": "user_...", "models": ["deepseek/deepseek-v4-flash"] } }
 ```
 
-- `api_key` can be any configured `API_KEYS` value; when no `API_KEYS` are set the proxy accepts any key, so any placeholder works.
-- The model list is served live by `/v1/models` (parsed from upstream TS sources, refreshed every 6h).
+- Dashboard → **Providers → Add OpenAI Compatible** → `base_url http://localhost:3457/v1`
+- `api_key`: any value when the proxy has no `API_KEYS` set; otherwise one of your `API_KEYS`
+- Models: the live list from `/v1/models` (12 models, refreshed every 6h from upstream sources)
+- Model combo ids become `freebuff/<model-id>` (e.g. `freebuff/deepseek-v4-flash`)
 
 ## Testing against the mock upstream
 
