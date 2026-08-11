@@ -482,7 +482,7 @@ func classifyError(status int, body string, hdr http.Header) error {
 	case status == http.StatusServiceUnavailable:
 		return &WaitingRoomError{RetryAfter: retryAfter, Detail: truncate(body, 200)}
 	case containsAny(lower, "freebuff_update_required", "waiting_room_required", "waiting_room_queued",
-		"session_superseded", "session_expired"):
+		"session_superseded", "session_expired", "session_model_mismatch"):
 		return fmt.Errorf("%w: %s%s", ErrSessionInvalid, truncate(body, 200), retryDetail(retryAfter))
 	case status == http.StatusBadRequest && containsAny(lower, "runid not found", "runid not running"):
 		return fmt.Errorf("%w: %s", ErrRunInvalid, truncate(body, 200))

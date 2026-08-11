@@ -4,7 +4,7 @@
 
 freebuff-proxy is an OpenAI-compatible proxy bridge that turns FreeBuff (Codebuff's free coding agent) into a standard API. FreeBuff's backend fingerprints official-CLI traffic and rejects direct calls with `403 free_mode_cli_required`, so the proxy replicates the CLI request envelope, manages the free-session and agent-run lifecycle upstream, and pools multiple tokens — exposing plain `/v1/chat/completions`, `/v1/models`, and `/healthz` endpoints that 9router, opencode, claude-code, or any OpenAI client can wire to as an ordinary provider.
 
-Docs: [PRD](docs/product/prd.md) · [Reference analysis](docs/research/freebuff-reference-analysis.md) · [Delivery tasks](docs/delivery/tasks.md) · [Kaspersky false-positive notes](docs/security/av-kaspersky-false-positive.md)
+Docs: [PRD](docs/product/prd.md) · [Reference analysis](docs/research/freebuff-reference-analysis.md) · [FreeBuff limitations & quota research](docs/research/freebuff-limitations.md) · [Delivery tasks](docs/delivery/tasks.md) · [Kaspersky false-positive notes](docs/security/av-kaspersky-false-positive.md)
 
 ## How it works
 
