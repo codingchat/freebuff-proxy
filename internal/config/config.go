@@ -30,6 +30,7 @@ type Config struct {
 	HTTPProxy          string
 	SOCKS5Proxy        string
 	CostMode           string // "" (omit) or "free"; A/B pending, PRD §8
+	TLSFingerprint     string // "" (plain Go transport) | chrome120 | safari17 | firefox120 | random
 	RegistryRefresh    time.Duration
 	DebugDump          bool
 	LogFile            string
@@ -49,6 +50,7 @@ type rawConfig struct {
 	HTTPProxy          string   `json:"HTTP_PROXY"`
 	SOCKS5Proxy        string   `json:"SOCKS5_PROXY"`
 	CostMode           string   `json:"COST_MODE"`
+	TLSFingerprint     string   `json:"TLS_FINGERPRINT"`
 	RegistryRefresh    string   `json:"REGISTRY_REFRESH"`
 	DebugDump          bool     `json:"DEBUG_DUMP"`
 	LogFile            string   `json:"LOG_FILE"`
@@ -91,6 +93,7 @@ func Load(configPath string) (Config, error) {
 	overrideString(&raw.HTTPProxy, "HTTP_PROXY")
 	overrideString(&raw.SOCKS5Proxy, "SOCKS5_PROXY")
 	overrideString(&raw.CostMode, "COST_MODE")
+	overrideString(&raw.TLSFingerprint, "TLS_FINGERPRINT")
 	overrideString(&raw.RegistryRefresh, "REGISTRY_REFRESH")
 	overrideBool(&raw.DebugDump, "DEBUG_DUMP")
 	overrideString(&raw.LogFile, "LOG_FILE")
@@ -137,6 +140,7 @@ func Load(configPath string) (Config, error) {
 		HTTPProxy:          strings.TrimSpace(raw.HTTPProxy),
 		SOCKS5Proxy:        strings.TrimSpace(raw.SOCKS5Proxy),
 		CostMode:           strings.TrimSpace(raw.CostMode),
+		TLSFingerprint:     strings.TrimSpace(raw.TLSFingerprint),
 		RegistryRefresh:    registryRefresh,
 		DebugDump:          raw.DebugDump,
 		LogFile:            strings.TrimSpace(raw.LogFile),
@@ -166,6 +170,15 @@ func (c Config) Validate() error {
 		return errors.New("SESSION_CALL_TIMEOUT must be greater than zero")
 	case c.RegistryRefresh <= 0:
 		return errors.New("REGISTRY_REFRESH must be greater than zero")
+	}
+
+	if c.TLSFingerprint != "" {
+		switch c.TLSFingerprint {
+		case "chrome120", "safari17", "firefox120", "random":
+			// valid
+		default:
+			return fmt.Errorf("TLS_FINGERPRINT %q must be one of: chrome120, safari17, firefox120, random", c.TLSFingerprint)
+		}
 	}
 
 	if c.LogLevel != "" {
@@ -255,6 +268,7 @@ func applyDotenv(raw *rawConfig) error {
 	overrideStringFrom(&raw.HTTPProxy, get, "HTTP_PROXY")
 	overrideStringFrom(&raw.SOCKS5Proxy, get, "SOCKS5_PROXY")
 	overrideStringFrom(&raw.CostMode, get, "COST_MODE")
+	overrideStringFrom(&raw.TLSFingerprint, get, "TLS_FINGERPRINT")
 	overrideStringFrom(&raw.RegistryRefresh, get, "REGISTRY_REFRESH")
 	overrideBoolFrom(&raw.DebugDump, get, "DEBUG_DUMP")
 	overrideStringFrom(&raw.LogFile, get, "LOG_FILE")

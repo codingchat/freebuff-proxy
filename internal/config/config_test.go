@@ -14,7 +14,7 @@ import (
 var envKeys = []string{
 	"LISTEN_ADDR", "UPSTREAM_BASE_URL", "AUTH_TOKENS", "ROTATION_INTERVAL",
 	"REQUEST_TIMEOUT", "SESSION_CALL_TIMEOUT", "API_KEYS", "HTTP_PROXY",
-	"SOCKS5_PROXY", "COST_MODE", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE", "LOG_LEVEL",
+	"SOCKS5_PROXY", "COST_MODE", "TLS_FINGERPRINT", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE", "LOG_LEVEL",
 }
 
 func clearEnv(t *testing.T) {
@@ -453,6 +453,34 @@ func TestLogLevel(t *testing.T) {
 		t.Fatalf("Load (.env): %v", err)
 	} else if cfg.LogLevel != "warn" {
 		t.Errorf("LogLevel = %q, want warn (from .env)", cfg.LogLevel)
+	}
+}
+
+func TestTLSFingerprint(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AUTH_TOKENS", "tok")
+
+	// default: empty when unset
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load (default): %v", err)
+	} else if cfg.TLSFingerprint != "" {
+		t.Errorf("TLSFingerprint = %q, want empty by default", cfg.TLSFingerprint)
+	}
+
+	// valid values load OK
+	for _, v := range []string{"chrome120", "safari17", "firefox120", "random"} {
+		t.Setenv("TLS_FINGERPRINT", v)
+		if cfg, err := Load(""); err != nil {
+			t.Fatalf("Load (TLSFingerprint=%s): %v", v, err)
+		} else if cfg.TLSFingerprint != v {
+			t.Errorf("TLSFingerprint = %q, want %s", cfg.TLSFingerprint, v)
+		}
+	}
+
+	// invalid value fails validation
+	t.Setenv("TLS_FINGERPRINT", "bogus")
+	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "TLS_FINGERPRINT") {
+		t.Fatalf("Load (invalid TLSFingerprint): err = %v, want error mentioning TLS_FINGERPRINT", err)
 	}
 }
 

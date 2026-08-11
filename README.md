@@ -140,6 +140,7 @@ All keys are read from the environment and override the JSON config file passed 
 | `DEBUG_DUMP` | `false` | Dump raw upstream request/response traffic into `./dump` for debugging. |
 | `LOG_FILE` | _(empty — stderr only)_ | Optional log file path (in addition to stderr). Empty = stderr only. |
 | `LOG_LEVEL` | _(empty — info)_ | Log verbosity: `debug`, `info`, `warn`, `error`. Empty = `info` (or `debug` with `-v`); `LOG_LEVEL` wins over `-v`. |
+| `TLS_FINGERPRINT` | _(empty — plain Go TLS)_ | Outbound JA3 TLS fingerprint impersonation: `chrome120`, `safari17`, `firefox120`, or `random`. Makes upstream connections look like a real browser at the TLS layer (matching browser headers included). Optional hardening — not needed today. |
 
 ## 9router integration
 

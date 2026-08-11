@@ -29,6 +29,7 @@ import (
 	"golang.org/x/net/proxy"
 
 	"freebuff-proxy/internal/config"
+	"freebuff-proxy/internal/stealth"
 )
 
 // Typed error sentinels. Callers use errors.Is against these; the concrete
@@ -169,6 +170,7 @@ type Client struct {
 	sessionCallTimeout time.Duration
 	costMode           string
 	debugDump          bool
+	stealthProfile     *stealth.Profile // nil when fingerprint unset
 }
 
 // userAgents mirrors the official CLI / SDK user agents; one is picked at
@@ -193,6 +195,7 @@ func New(token string, cfg *config.Config) (*Client, error) {
 	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var baseDial func(ctx context.Context, network, addr string) (net.Conn, error)
 	if cfg.SOCKS5Proxy != "" {
 		socksAddr, err := parseProxyAddr(cfg.SOCKS5Proxy)
 		if err != nil {
@@ -205,12 +208,27 @@ func New(token string, cfg *config.Config) (*Client, error) {
 		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)
 		}
+		baseDial = transport.DialContext
 	} else if cfg.HTTPProxy != "" {
 		proxyURL, err := url.Parse(cfg.HTTPProxy)
 		if err != nil {
 			return nil, fmt.Errorf("upstream: HTTP_PROXY: %w", err)
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+
+	var stealthProf *stealth.Profile
+	if cfg.TLSFingerprint != "" {
+		profile, ok := stealth.Lookup(cfg.TLSFingerprint)
+		if !ok {
+			return nil, fmt.Errorf("upstream: unknown TLS_FINGERPRINT %q", cfg.TLSFingerprint)
+		}
+		// baseDial is nil when no SOCKS5 proxy is set; Dialer uses its
+		// internal default net.Dialer in that case.
+		// NOTE: for HTTP_PROXY (CONNECT tunnel), Go uses Proxy + DialTLSContext
+		// transparently; the stealth dialer replaces the TLS layer.
+		transport.DialTLSContext = stealth.Dialer(profile, baseDial, false)
+		stealthProf = profile
 	}
 
 	return &Client{
@@ -220,6 +238,7 @@ func New(token string, cfg *config.Config) (*Client, error) {
 		sessionCallTimeout: cfg.SessionCallTimeout,
 		costMode:           cfg.CostMode,
 		debugDump:          cfg.DebugDump,
+		stealthProfile:     stealthProf,
 		http: &http.Client{
 			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -448,7 +467,11 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body []byt
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", randomUA())
+	if c.stealthProfile != nil {
+		stealth.SanitizeAndApply(req.Header, c.stealthProfile)
+	} else {
+		req.Header.Set("User-Agent", randomUA())
+	}
 	return req, nil
 }
 
