@@ -40,3 +40,7 @@ Desktop.ini
 node_modules/
 *.tmp
 *.bak
+
+# ── agent handoff docs (local only, not repo content) ──
+HANDOFF.md
+*.handoff.md
