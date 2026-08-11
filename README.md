@@ -97,13 +97,18 @@ Requires Go 1.26+ (see `go.mod`) or a prebuilt release binary.
 
 ## Quick start (Docker)
 
-1. Create `.env` from `.env.example` and set `AUTH_TOKENS` (required).
+1. Create `.env` from `.env.example` and set `AUTH_TOKENS` (required) — or run
+   `scripts/get-freebuff-token.ps1/.sh` to obtain one automatically.
 2. Build and start:
 
    ```
    docker compose up --build
    ```
 
+   **Linux one-shot installer:** `scripts/setup-proxy-docker.sh` clones the repo (if needed),
+   grabs the token, builds/starts the container, waits for the healthcheck, and then prints
+   the exact 9router form values — including the correct Base URL for the case where 9router
+   itself runs in Docker (it auto-detects the Docker bridge gateway, e.g. `172.18.0.1`).
 3. Confirm the healthcheck passes, then smoke test as in the binary quick start:
 
    ```
