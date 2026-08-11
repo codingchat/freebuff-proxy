@@ -64,10 +64,17 @@ func defaultRawConfig() rawConfig {
 }
 
 // Load resolves configuration from the optional JSON file at configPath
-// ("" skips the file) plus environment overrides, then validates it.
+// ("" skips the file), the optional ./.env file (when present), and
+// environment overrides, then validates it. Precedence, lowest to highest:
+// built-in defaults < JSON file (-config) < ./.env < real environment
+// (.env is an environment file, so it follows the README rule that the
+// environment overrides the JSON config).
 func Load(configPath string) (Config, error) {
 	raw, err := loadRaw(configPath)
 	if err != nil {
+		return Config{}, err
+	}
+	if err := applyDotenv(&raw); err != nil {
 		return Config{}, err
 	}
 
@@ -216,14 +223,80 @@ func loadRaw(configPath string) (rawConfig, error) {
 	return cfg, nil
 }
 
+// applyDotenv overlays KEY=VALUE pairs from the ./.env file (when present)
+// onto raw, so a local .env works like the JSON config file. A missing file
+// is fine; any other read error fails the load. Real environment variables
+// are applied afterwards and therefore always win.
+func applyDotenv(raw *rawConfig) error {
+	vals, err := readDotenv(".env")
+	if err != nil || vals == nil {
+		return err
+	}
+	get := func(name string) string { return vals[name] }
+	overrideStringFrom(&raw.ListenAddr, get, "LISTEN_ADDR")
+	overrideStringFrom(&raw.UpstreamBaseURL, get, "UPSTREAM_BASE_URL")
+	overrideCSVFrom(&raw.AuthTokens, get, "AUTH_TOKENS")
+	overrideStringFrom(&raw.RotationInterval, get, "ROTATION_INTERVAL")
+	overrideStringFrom(&raw.RequestTimeout, get, "REQUEST_TIMEOUT")
+	overrideStringFrom(&raw.SessionCallTimeout, get, "SESSION_CALL_TIMEOUT")
+	overrideCSVFrom(&raw.APIKeys, get, "API_KEYS")
+	overrideStringFrom(&raw.HTTPProxy, get, "HTTP_PROXY")
+	overrideStringFrom(&raw.SOCKS5Proxy, get, "SOCKS5_PROXY")
+	overrideStringFrom(&raw.CostMode, get, "COST_MODE")
+	overrideStringFrom(&raw.RegistryRefresh, get, "REGISTRY_REFRESH")
+	overrideBoolFrom(&raw.DebugDump, get, "DEBUG_DUMP")
+	overrideStringFrom(&raw.LogFile, get, "LOG_FILE")
+	return nil
+}
+
+// readDotenv parses a dotenv file: KEY=VALUE lines, blank lines and #
+// comments skipped, surrounding whitespace and matching quotes trimmed.
+// Returns nil, nil when the file does not exist.
+func readDotenv(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	out := make(map[string]string)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		value = strings.Trim(value, `"'`)
+		out[key] = value
+	}
+	return out, nil
+}
+
 func overrideString(target *string, envName string) {
-	if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+	overrideStringFrom(target, os.Getenv, envName)
+}
+
+func overrideStringFrom(target *string, get func(string) string, envName string) {
+	if value := strings.TrimSpace(get(envName)); value != "" {
 		*target = value
 	}
 }
 
 func overrideCSV(target *[]string, envName string) {
-	if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+	overrideCSVFrom(target, os.Getenv, envName)
+}
+
+func overrideCSVFrom(target *[]string, get func(string) string, envName string) {
+	if value := strings.TrimSpace(get(envName)); value != "" {
 		*target = splitList(value)
 	}
 }
@@ -231,7 +304,11 @@ func overrideCSV(target *[]string, envName string) {
 // overrideBool sets target from DEBUG_DUMP-style env vars; unset or
 // unrecognized values leave the file/default value untouched.
 func overrideBool(target *bool, envName string) {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(envName))) {
+	overrideBoolFrom(target, os.Getenv, envName)
+}
+
+func overrideBoolFrom(target *bool, get func(string) string, envName string) {
+	switch strings.ToLower(strings.TrimSpace(get(envName))) {
 	case "1", "true", "yes", "on":
 		*target = true
 	case "0", "false", "no", "off":

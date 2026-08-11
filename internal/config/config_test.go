@@ -19,6 +19,9 @@ var envKeys = []string{
 
 func clearEnv(t *testing.T) {
 	t.Helper()
+	// Isolate from any real ./.env in the working directory (the repo ships
+	// a gitignored .env with real tokens) — Load() reads it by default.
+	t.Chdir(t.TempDir())
 	for _, k := range envKeys {
 		t.Setenv(k, "")
 	}
@@ -300,6 +303,93 @@ func TestValidate(t *testing.T) {
 				t.Error("Validate succeeded, want error")
 			}
 		})
+	}
+}
+
+func TestDotenv(t *testing.T) {
+	clearEnv(t) // chdirs to a fresh temp dir; .env is written relative to it
+
+	content := strings.Join([]string{
+		"# comment",
+		"",
+		"AUTH_TOKENS=from-dotenv",
+		`LISTEN_ADDR=":9999"`,
+		"COST_MODE=free",
+		"DEBUG_DUMP=true",
+	}, "\n")
+	if err := os.WriteFile(".env", []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.AuthTokens; len(got) != 1 || got[0] != "from-dotenv" {
+		t.Errorf("AuthTokens = %v, want [from-dotenv] (from .env)", got)
+	}
+	if cfg.ListenAddr != ":9999" {
+		t.Errorf("ListenAddr = %q, want :9999 (quoted value from .env)", cfg.ListenAddr)
+	}
+	if cfg.CostMode != "free" {
+		t.Errorf("CostMode = %q, want free", cfg.CostMode)
+	}
+	if !cfg.DebugDump {
+		t.Error("DebugDump = false, want true")
+	}
+}
+
+func TestDotenvEnvWins(t *testing.T) {
+	clearEnv(t)
+
+	if err := os.WriteFile(".env", []byte("AUTH_TOKENS=from-dotenv\nLISTEN_ADDR=:1111\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AUTH_TOKENS", "from-env")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.AuthTokens; len(got) != 1 || got[0] != "from-env" {
+		t.Errorf("AuthTokens = %v, want [from-env] (env beats .env)", got)
+	}
+	if cfg.ListenAddr != ":1111" {
+		t.Errorf("ListenAddr = %q, want :1111 (from .env, env does not set it)", cfg.ListenAddr)
+	}
+}
+
+func TestDotenvJSONWins(t *testing.T) {
+	clearEnv(t)
+
+	if err := os.WriteFile(".env", []byte("AUTH_TOKENS=from-dotenv\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("cfg.json", []byte(`{"AUTH_TOKENS":["from-json"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// .env is an environment file: it wins over the JSON config, matching
+	// the README rule "environment overrides the JSON config file".
+	cfg, err := Load("cfg.json")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.AuthTokens; len(got) != 1 || got[0] != "from-dotenv" {
+		t.Errorf("AuthTokens = %v, want [from-dotenv] (.env beats JSON)", got)
+	}
+}
+
+func TestDotenvMissingIsFine(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AUTH_TOKENS", "tok-1")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.AuthTokens; len(got) != 1 || got[0] != "tok-1" {
+		t.Errorf("AuthTokens = %v, want [tok-1]", got)
 	}
 }
 
