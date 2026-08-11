@@ -607,3 +607,22 @@ func TestMethodNotAllowed(t *testing.T) {
 		t.Errorf("unknown path status = %d, want 404", resp.StatusCode)
 	}
 }
+
+func TestChatBanSurfaced(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.Ban = true
+	ts, _ := newTestServer(t, nil, mock)
+
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", resp.StatusCode, data)
+	}
+	if !strings.Contains(string(data), `"code":"account_banned"`) {
+		t.Errorf("body missing account_banned code: %s", data)
+	}
+	ra := resp.Header.Get("Retry-After")
+	if ra == "" {
+		t.Error("missing Retry-After header")
+	}
+}

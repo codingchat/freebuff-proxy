@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -278,5 +279,38 @@ func TestCtxCancelPropagates(t *testing.T) {
 	defer cancel()
 	if _, err := mgr.EnsureSession(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("want deadline exceeded, got %v", err)
+	}
+}
+
+func TestBannedSessionReturnsError(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.SessionMode = "banned"
+	mgr := newTestManager(t, mock)
+
+	_, err := mgr.EnsureSession(context.Background())
+	if err == nil {
+		t.Fatal("want error for banned session")
+	}
+	if !strings.Contains(err.Error(), "banned") {
+		t.Errorf("error = %q, want banned message", err)
+	}
+}
+
+func TestModelLockedRecreates(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.SessionSequence = []string{"model_locked", "active"}
+	mgr := newTestManager(t, mock)
+
+	instance, err := mgr.EnsureSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance != "inst-abc-123" {
+		t.Errorf("instance = %q", instance)
+	}
+	if mock.SessionCreates != 2 {
+		t.Errorf("creates = %d, want 2 (model_locked → recreate)", mock.SessionCreates)
 	}
 }

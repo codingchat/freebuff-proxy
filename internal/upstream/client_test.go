@@ -548,3 +548,45 @@ func TestClassifyRateLimit(t *testing.T) {
 		t.Errorf("RetryAfter = %s, want 300s (header fallback)", rle2.RetryAfter)
 	}
 }
+
+func TestClassifyBan(t *testing.T) {
+	resumesAt := "2026-07-21T09:18:07+00:00"
+	body := `{"status":"banned","resumes_at":"` + resumesAt + `"}`
+	err := classifyError(403, body, http.Header{})
+	if !errors.Is(err, ErrBanned) {
+		t.Fatalf("errors.Is(ErrBanned) = false, got %v", err)
+	}
+	var be *BanError
+	if !errors.As(err, &be) {
+		t.Fatalf("want *BanError, got %v", err)
+	}
+	wantTime, _ := time.Parse(time.RFC3339, resumesAt)
+	if !be.ResumesAt.Equal(wantTime) {
+		t.Errorf("ResumesAt = %v, want %v", be.ResumesAt, wantTime)
+	}
+
+	// 403 banned without resumes_at.
+	bodyNoTime := `{"status":"banned"}`
+	err2 := classifyError(403, bodyNoTime, http.Header{})
+	if !errors.Is(err2, ErrBanned) {
+		t.Fatalf("errors.Is(ErrBanned) = false for no-resumes_at, got %v", err2)
+	}
+	var be2 *BanError
+	if !errors.As(err2, &be2) {
+		t.Fatalf("want *BanError, got %v", err2)
+	}
+	if !be2.ResumesAt.IsZero() {
+		t.Errorf("ResumesAt = %v, want zero for missing resumes_at", be2.ResumesAt)
+	}
+
+	// 403 WITHOUT "status":"banned" must NOT be ErrBanned.
+	bodyOther := `{"error":"forbidden"}`
+	err3 := classifyError(403, bodyOther, http.Header{})
+	if errors.Is(err3, ErrBanned) {
+		t.Fatalf("403 without banned status must not be ErrBanned, got %v", err3)
+	}
+	var ue *UpstreamError
+	if !errors.As(err3, &ue) {
+		t.Fatalf("want UpstreamError, got %v", err3)
+	}
+}

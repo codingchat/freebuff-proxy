@@ -69,6 +69,10 @@ type RunManager struct {
 	// keep returning 429 + Retry-After instead of a generic 502 while the
 	// cooldown window is active.
 	rateLimit *upstream.RateLimitError
+	// banUntil is set when the account is banned; Acquire rejects with the
+	// remembered ban error until the unban time.
+	banUntil time.Time
+	ban      *upstream.BanError
 	// totalRequests is the cumulative count of Acquire leases handed out.
 	// It is kept separate from the per-run counters because rotated runs
 	// that get FINISHed leave the active+draining sets and would otherwise
@@ -237,6 +241,7 @@ func (m *RunManager) Cooldown(d time.Duration) {
 	m.mu.Lock()
 	m.cooldownUntil = time.Now().Add(d)
 	m.rateLimit = nil
+	m.ban = nil
 	m.mu.Unlock()
 }
 
@@ -257,6 +262,7 @@ func (m *RunManager) CooldownRateLimit(rle *upstream.RateLimitError) {
 	m.mu.Lock()
 	m.cooldownUntil = time.Now().Add(rle.RetryAfter)
 	m.rateLimit = rle
+	m.ban = nil
 	m.mu.Unlock()
 }
 
@@ -267,6 +273,34 @@ func (m *RunManager) RateLimitError() *upstream.RateLimitError {
 	defer m.mu.Unlock()
 	if time.Now().Before(m.cooldownUntil) && m.rateLimit != nil {
 		return m.rateLimit
+	}
+	return nil
+}
+
+// CooldownBan applies a ban cooldown and remembers the error so Acquires
+// keep surfacing 403 banned + resumes-at until the unban time.
+func (m *RunManager) CooldownBan(be *upstream.BanError) {
+	if be == nil {
+		return
+	}
+	m.mu.Lock()
+	m.ban = be
+	if be.ResumesAt.After(time.Now()) {
+		m.banUntil = be.ResumesAt
+	} else {
+		m.banUntil = time.Now().Add(24 * time.Hour) // no timestamp: safe default
+	}
+	m.rateLimit = nil // a ban supersedes any rate-limit cooldown
+	m.mu.Unlock()
+}
+
+// BanError returns the remembered ban error while the ban window is
+// active, nil otherwise.
+func (m *RunManager) BanError() *upstream.BanError {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if time.Now().Before(m.banUntil) && m.ban != nil {
+		return m.ban
 	}
 	return nil
 }

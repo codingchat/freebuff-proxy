@@ -261,6 +261,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			release()
 			s.writeError(w, r, err)
 			return
+		case errors.Is(err, upstream.ErrBanned):
+			var be *upstream.BanError
+			if errors.As(err, &be) {
+				s.pool.CooldownTokenBan(lease.Token, be)
+			}
+			release()
+			s.writeError(w, r, err)
+			return
 		case errors.Is(err, upstream.ErrRateLimited):
 			var rle *upstream.RateLimitError
 			if errors.As(err, &rle) {
@@ -471,7 +479,14 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	var uwr *upstream.WaitingRoomError
 	var ue *upstream.UpstreamError
 	var rle *upstream.RateLimitError
+	var be *upstream.BanError
 	switch {
+	case errors.As(err, &be):
+		status, code = http.StatusForbidden, "account_banned"
+		message, retryAfter = be.Error(), time.Until(be.ResumesAt)
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
 	case errors.As(err, &rle):
 		status, code = http.StatusTooManyRequests, "rate_limited"
 		message, retryAfter = rle.Error(), rle.RetryAfter

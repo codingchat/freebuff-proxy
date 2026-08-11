@@ -56,12 +56,15 @@ type Manager struct {
 }
 
 type cachedState struct {
-	status     string
-	instanceID string
-	expiresAt  time.Time
-	position   int
-	queueDepth int
-	pollAt     time.Time
+	status             string
+	instanceID         string
+	expiresAt          time.Time
+	position           int
+	queueDepth         int
+	pollAt             time.Time
+	accessTier         string
+	countryCode        string
+	countryBlockReason string
 }
 
 // NewManager builds a session manager for the given upstream client.
@@ -202,9 +205,12 @@ func (m *Manager) refresh(ctx context.Context) error {
 		case "active":
 			m.mu.Lock()
 			m.state = &cachedState{
-				status:     "active",
-				instanceID: st.InstanceID,
-				expiresAt:  st.ExpiresAt,
+				status:             "active",
+				instanceID:         st.InstanceID,
+				expiresAt:          st.ExpiresAt,
+				accessTier:         st.AccessTier,
+				countryCode:        st.CountryCode,
+				countryBlockReason: st.CountryBlockReason,
 			}
 			m.mu.Unlock()
 			slog.Debug("session created", "status", "active", "instance_id", st.InstanceID,
@@ -249,6 +255,18 @@ func (m *Manager) refresh(ctx context.Context) error {
 			m.state = nil
 			m.mu.Unlock()
 			slog.Debug("session recreated", "reason", status, "instance_id", st.InstanceID)
+		case "banned":
+			return fmt.Errorf("session: account banned upstream")
+		case "country_blocked":
+			return fmt.Errorf("session: country blocked upstream")
+		case "rate_limited":
+			return fmt.Errorf("session: rate limited upstream")
+		case "model_locked":
+			// Session is bound to a different model; recreate for ours.
+			m.mu.Lock()
+			m.state = nil
+			m.mu.Unlock()
+			slog.Debug("session recreated", "reason", "model_locked")
 		default:
 			return fmt.Errorf("session: unknown upstream status %q", status)
 		}
@@ -259,10 +277,13 @@ func (m *Manager) refresh(ctx context.Context) error {
 // SessionSnapshot is a lock-free best-effort view of the cached session
 // state, for healthz-style reporting (pool.TokenSnapshot).
 type SessionSnapshot struct {
-	Status        string
-	InstanceID    string
-	QueuePosition int
-	QueueDepth    int
+	Status             string
+	InstanceID         string
+	QueuePosition      int
+	QueueDepth         int
+	TierAccess         string
+	TierCountry        string
+	CountryBlockReason string
 }
 
 // Snapshot returns a best-effort view of the cached session state. All
@@ -275,10 +296,13 @@ func (m *Manager) Snapshot() SessionSnapshot {
 		return SessionSnapshot{}
 	}
 	return SessionSnapshot{
-		Status:        m.state.status,
-		InstanceID:    m.state.instanceID,
-		QueuePosition: m.state.position,
-		QueueDepth:    m.state.queueDepth,
+		Status:             m.state.status,
+		InstanceID:         m.state.instanceID,
+		QueuePosition:      m.state.position,
+		QueueDepth:         m.state.queueDepth,
+		TierAccess:         m.state.accessTier,
+		TierCountry:        m.state.countryCode,
+		CountryBlockReason: m.state.countryBlockReason,
 	}
 }
 

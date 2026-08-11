@@ -448,6 +448,37 @@ func TestAcquireRateLimitBestWindow(t *testing.T) {
 	}
 }
 
+func TestAcquireBanCooldowns(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.Ban = true
+	p := newTestPool(t, mock)
+
+	_, err := p.Acquire(context.Background(), modelA)
+	var be *upstream.BanError
+	if !errors.As(err, &be) {
+		t.Fatalf("want *upstream.BanError, got %v", err)
+	}
+	if !errors.Is(err, upstream.ErrBanned) {
+		t.Errorf("errors.Is(ErrBanned) = false")
+	}
+
+	// The token cooled down for the ban window, so subsequent acquires skip
+	// it AND still surface the remembered 403 banned.
+	snap := p.Snapshot()[0]
+	if snap.CooldownUntil.Before(time.Now().Add(59 * time.Minute)) {
+		t.Errorf("cooldown until = %v, want ~now+1h", snap.CooldownUntil)
+	}
+	_, err = p.Acquire(context.Background(), modelA)
+	var be2 *upstream.BanError
+	if !errors.As(err, &be2) {
+		t.Fatalf("second acquire: want *upstream.BanError, got %v", err)
+	}
+	if !errors.Is(err, upstream.ErrBanned) {
+		t.Errorf("second acquire errors.Is(ErrBanned) = false")
+	}
+}
+
 func TestPoolChat(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()

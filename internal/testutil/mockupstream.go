@@ -61,6 +61,10 @@ type MockUpstream struct {
 	// body (daily session quota, Pacific-day reset contract).
 	RateLimit bool
 
+	// Ban makes every route return a 403 {"status":"banned"} with a
+	// resumes_at timestamp ~1h in the future.
+	Ban bool
+
 	RecordedChatHeaders []http.Header
 	RecordedChatBodies  []string
 	SessionCreates      int
@@ -105,6 +109,11 @@ func (m *MockUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		// so parseRateLimit can unmarshal the quota fields — writeJSON would
 		// re-encode it as a quoted JSON string.
 		writeRaw(w, 429, `{"model":"deepseek/deepseek-v4-flash","entitlementBreakdown":{"base":6,"referral":0,"streak":0},"limit":6,"period":"pacific_day","resetTimeZone":"America/Los_Angeles","resetAt":"2026-08-12T07:00:00.000Z","windowHours":24,"recentCount":6.6,"status":"rate_limited","accessTier":"limited","retryAfterMs":48549499}`)
+		return
+	}
+	if m.Ban {
+		resumesAt := time.Now().Add(time.Hour).UTC().Format(rfc3339Millis)
+		writeRaw(w, 403, `{"status":"banned","resumes_at":"`+resumesAt+`"}`)
 		return
 	}
 	switch {
@@ -196,6 +205,10 @@ func (m *MockUpstream) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"status": "superseded"})
 	case "none":
 		writeJSON(w, 200, map[string]any{"status": "none"})
+	case "banned":
+		writeJSON(w, 200, map[string]any{"status": "banned"})
+	case "model_locked":
+		writeJSON(w, 200, map[string]any{"status": "model_locked"})
 	default:
 		writeJSON(w, 500, map[string]any{"error": "unknown mock session mode " + mode})
 	}

@@ -46,6 +46,9 @@ var (
 	// ErrRateLimited: upstream quota exhausted (429 rate_limited). The token
 	// should cool down for RateLimitError.RetryAfter.
 	ErrRateLimited = errors.New("upstream rate limited")
+	// ErrBanned: the account is temporarily banned upstream (403 {"status":"banned"}).
+	// Cool the token down until BanError.ResumesAt.
+	ErrBanned = errors.New("upstream account banned")
 )
 
 // WaitRoom carries queue details for ErrWaitingRoom.
@@ -115,15 +118,38 @@ func (e *RateLimitError) Error() string {
 
 func (e *RateLimitError) Unwrap() error { return ErrRateLimited }
 
+// BanError is a temporary account ban (403 {"status":"banned"}). ResumesAt
+// is the upstream-provided unban time. Unwrap makes errors.Is(err, ErrBanned) work.
+type BanError struct {
+	ResumesAt time.Time
+	Body      string
+}
+
+func (e *BanError) Error() string {
+	msg := "upstream account banned"
+	if !e.ResumesAt.IsZero() {
+		msg += fmt.Sprintf(" (resumes at %s)", e.ResumesAt.Format(time.RFC3339))
+	}
+	if e.Body != "" {
+		msg += ": " + e.Body
+	}
+	return msg
+}
+
+func (e *BanError) Unwrap() error { return ErrBanned }
+
 // SessionState is the parsed result of a free-session create/poll.
 type SessionState struct {
-	Status          string
-	InstanceID      string
-	ExpiresAt       time.Time
-	Position        int
-	QueueDepth      int
-	EstimatedWaitMs int
-	PollAt          time.Time
+	Status             string
+	InstanceID         string
+	ExpiresAt          time.Time
+	Position           int
+	QueueDepth         int
+	EstimatedWaitMs    int
+	PollAt             time.Time
+	AccessTier         string // "full" | "limited" (empty when absent)
+	CountryCode        string
+	CountryBlockReason string
 }
 
 // ChatOptions carries the envelope values for a chat completion request.
@@ -378,23 +404,29 @@ func (c *Client) sessionCall(req *http.Request) (*SessionState, error) {
 	c.dump("session", req, resp.StatusCode, body)
 
 	var raw struct {
-		Status          string `json:"status"`
-		InstanceID      string `json:"instanceId"`
-		ExpiresAt       any    `json:"expiresAt"`
-		Position        int    `json:"position"`
-		QueueDepth      int    `json:"queueDepth"`
-		EstimatedWaitMs int    `json:"estimatedWaitMs"`
-		PollAt          any    `json:"pollAt"`
+		Status             string `json:"status"`
+		InstanceID         string `json:"instanceId"`
+		ExpiresAt          any    `json:"expiresAt"`
+		Position           int    `json:"position"`
+		QueueDepth         int    `json:"queueDepth"`
+		EstimatedWaitMs    int    `json:"estimatedWaitMs"`
+		PollAt             any    `json:"pollAt"`
+		AccessTier         string `json:"accessTier"`
+		CountryCode        string `json:"countryCode"`
+		CountryBlockReason string `json:"countryBlockReason"`
 	}
 	if err := json.Unmarshal([]byte(body), &raw); err != nil {
 		return nil, fmt.Errorf("upstream: parse session response %q: %w", truncate(body, 200), err)
 	}
 	state := &SessionState{
-		Status:          raw.Status,
-		InstanceID:      raw.InstanceID,
-		Position:        raw.Position,
-		QueueDepth:      raw.QueueDepth,
-		EstimatedWaitMs: raw.EstimatedWaitMs,
+		Status:             raw.Status,
+		InstanceID:         raw.InstanceID,
+		Position:           raw.Position,
+		QueueDepth:         raw.QueueDepth,
+		EstimatedWaitMs:    raw.EstimatedWaitMs,
+		AccessTier:         raw.AccessTier,
+		CountryCode:        raw.CountryCode,
+		CountryBlockReason: raw.CountryBlockReason,
 	}
 	if state.ExpiresAt, err = parseFlexTime(raw.ExpiresAt); err != nil {
 		state.ExpiresAt = time.Time{}
@@ -513,6 +545,8 @@ func classifyError(status int, body string, hdr http.Header) error {
 	retryAfter := parseRetryAfter(hdr)
 
 	switch {
+	case status == http.StatusForbidden && strings.Contains(lower, `"status":"banned"`):
+		return parseBan(body)
 	case status == http.StatusUnauthorized:
 		return fmt.Errorf("%w: %d %s", ErrAuthRejected, status, truncate(body, 200))
 	case status == http.StatusServiceUnavailable:
@@ -551,6 +585,20 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 		rle.Limit, rle.RecentCount = parsed.Limit, parsed.RecentCount
 	}
 	return rle
+}
+
+// parseBan builds a BanError from a 403 banned body, extracting the
+// resumes_at timestamp best-effort.
+func parseBan(body string) error {
+	be := &BanError{Body: truncate(body, 200)}
+	var parsed struct {
+		ResumesAt time.Time `json:"resumes_at"`
+		Status    string    `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err == nil && !parsed.ResumesAt.IsZero() {
+		be.ResumesAt = parsed.ResumesAt
+	}
+	return be
 }
 
 func detail(body string) string {

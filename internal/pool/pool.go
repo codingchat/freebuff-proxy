@@ -49,6 +49,8 @@ type Lease struct {
 	AgentID           string
 	Run               *runs.Run
 	SessionInstanceID string // "" when the session is disabled
+	TierAccess        string // upstream accessTier, "" when unknown
+	TierCountry       string // upstream countryCode, "" when unknown
 }
 
 // TokenSnapshot is one token's healthz view.
@@ -127,6 +129,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	var errs []string
 	var waiting []*session.WaitingRoomError
 	var rateLimited []*upstream.RateLimitError
+	var banned []*upstream.BanError
 
 	for offset := 0; offset < len(p.toks); offset++ {
 		if err := ctx.Err(); err != nil {
@@ -142,6 +145,9 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			if rle := tok.runs.RateLimitError(); rle != nil {
 				rateLimited = append(rateLimited, rle)
 			}
+			if be := tok.runs.BanError(); be != nil {
+				banned = append(banned, be)
+			}
 			continue
 		}
 
@@ -154,6 +160,10 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			if rle := asRateLimit(err); rle != nil {
 				tok.runs.CooldownRateLimit(rle)
 				rateLimited = append(rateLimited, rle)
+			}
+			if be := asBan(err); be != nil {
+				tok.runs.CooldownBan(be)
+				banned = append(banned, be)
 			}
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 			continue
@@ -173,12 +183,19 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 				tok.runs.CooldownRateLimit(rle)
 				rateLimited = append(rateLimited, rle)
 			}
+			if be := asBan(err); be != nil {
+				tok.runs.CooldownBan(be)
+				banned = append(banned, be)
+			}
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
 
-		p.logger.Debug("pool: lease acquired", "token", idx+1, "model", model, "agent", agentID, "instance_id", instanceID)
-		return &Lease{Token: idx, AgentID: agentID, Run: run, SessionInstanceID: instanceID}, nil
+		ss := tok.session.Snapshot()
+		p.logger.Debug("pool: lease acquired", "token", idx+1, "model", model, "agent", agentID, "instance_id", instanceID,
+			"tier", ss.TierAccess, "country", ss.TierCountry)
+		return &Lease{Token: idx, AgentID: agentID, Run: run, SessionInstanceID: instanceID,
+			TierAccess: ss.TierAccess, TierCountry: ss.TierCountry}, nil
 	}
 
 	if len(waiting) == len(p.toks) && len(waiting) > 0 {
@@ -188,6 +205,9 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	}
 	if len(rateLimited) == len(p.toks) && len(rateLimited) > 0 {
 		return nil, bestRateLimit(rateLimited)
+	}
+	if len(banned) == len(p.toks) && len(banned) > 0 {
+		return nil, banned[0]
 	}
 	return nil, fmt.Errorf("unable to acquire run from any token: %s", strings.Join(errs, "; "))
 }
@@ -238,6 +258,15 @@ func (p *Pool) CooldownTokenRateLimit(token int, rle *upstream.RateLimitError) {
 		return
 	}
 	p.toks[token].runs.CooldownRateLimit(rle)
+}
+
+// CooldownTokenBan applies a ban cooldown to token (remembered so
+// Acquire surfaces 403 banned + resumes-at during the window).
+func (p *Pool) CooldownTokenBan(token int, be *upstream.BanError) {
+	if token < 0 || token >= len(p.toks) || be == nil {
+		return
+	}
+	p.toks[token].runs.CooldownBan(be)
 }
 
 // Chat sends a chat-completion request through the leased token's upstream
@@ -385,6 +414,15 @@ func asRateLimit(err error) *upstream.RateLimitError {
 	var rle *upstream.RateLimitError
 	if errors.As(err, &rle) {
 		return rle
+	}
+	return nil
+}
+
+// asBan extracts a BanError from err (nil when absent).
+func asBan(err error) *upstream.BanError {
+	var be *upstream.BanError
+	if errors.As(err, &be) {
+		return be
 	}
 	return nil
 }
