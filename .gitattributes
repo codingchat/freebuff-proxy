@@ -1,0 +1,2 @@
+# Shell scripts must stay LF in the repo (Windows autocrlf would break them)
+*.sh text eol=lf

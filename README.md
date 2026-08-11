@@ -16,9 +16,14 @@ Docs: [PRD](docs/product/prd.md) · [Reference analysis](docs/research/freebuff-
 
 ## Getting a token
 
-The proxy needs one or more FreeBuff **auth tokens** (`user_...` or UUID format) to talk to the upstream. There are two ways to obtain one (documented by the community proxies this project is based on):
+The proxy needs one or more FreeBuff **auth tokens** (`user_...` or UUID format) to talk to the upstream. There are two ways to obtain one (documented by the community proxies this project is based on), plus a script that automates the CLI path:
 
-**Method 1 — Web (recommended, no install):** visit **[https://freebuff.llm.pm](https://freebuff.llm.pm)**, log in with your FreeBuff/Codebuff account, and the auth token is displayed directly on the page. Copy it. (Alternative: log in on the FreeBuff site, open DevTools → Application → Local Storage, and copy the auth token from there.)
+- **Script (recommended):** `scripts/get-freebuff-token.ps1` (PowerShell) or
+  `scripts/get-freebuff-token.sh` (bash) — installs the official CLI, walks you through the
+  login, extracts the token from the credentials file, and writes `AUTH_TOKENS` into `.env`
+  (or `-ToClipboard` / `-Print`).
+
+**Method 1 — Web (no install):** visit **[https://freebuff.llm.pm](https://freebuff.llm.pm)**, log in with your FreeBuff/Codebuff account, and the auth token is displayed directly on the page. Copy it. (Alternative: log in on the FreeBuff site, open DevTools → Application → Local Storage, and copy the auth token from there.)
 
 **Method 2 — Official CLI:** install and log in once — the CLI saves the token to a local credentials file:
 
