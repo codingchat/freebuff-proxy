@@ -158,8 +158,8 @@ func TestDialerTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go ts.Serve(ln)
-	defer ts.Close()
+	go func() { _ = ts.Serve(ln) }()
+	defer func() { _ = ts.Close() }()
 
 	addr := ln.Addr().String()
 
@@ -173,7 +173,7 @@ func TestDialerTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TLS dial failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}

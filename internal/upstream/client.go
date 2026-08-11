@@ -290,7 +290,7 @@ func (c *Client) ChatCompletions(ctx context.Context, opts ChatOptions, body []b
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		bodyText := drainBody(resp.Body)
 		releaseCancel(cancel)
 		c.dump("chat", req, resp.StatusCode, bodyText)
@@ -332,7 +332,7 @@ func (c *Client) EndSession(ctx context.Context, instanceID string) error {
 		return err
 	}
 	defer releaseCancel(cancel)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	drainBody(resp.Body)
 	if resp.StatusCode == 404 {
 		return nil // nothing to end
@@ -359,7 +359,7 @@ func (c *Client) StartRun(ctx context.Context, agentID string) (string, error) {
 		return "", err
 	}
 	defer releaseCancel(cancel)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := drainBody(resp.Body)
 	if resp.StatusCode >= 400 {
 		return "", classifyError(resp.StatusCode, body, resp.Header)
@@ -397,7 +397,7 @@ func (c *Client) FinishRun(ctx context.Context, runID string, totalSteps int) er
 		return err
 	}
 	defer releaseCancel(cancel)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := drainBody(resp.Body)
 	if resp.StatusCode >= 400 {
 		return classifyError(resp.StatusCode, body, resp.Header)
@@ -415,7 +415,7 @@ func (c *Client) sessionCall(req *http.Request) (*SessionState, error) {
 		return nil, err
 	}
 	defer releaseCancel(cancel)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := drainBody(resp.Body)
 	if resp.StatusCode == 404 {
 		return &SessionState{Status: "disabled"}, nil
@@ -507,7 +507,7 @@ func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, c
 		return nil, nil, fmt.Errorf("upstream: %s %s: %w", req.Method, req.URL.Path, err)
 	}
 	if err := wrapDecompress(resp); err != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if cancel != nil {
 			cancel()
 		}
@@ -676,13 +676,6 @@ func parseBan(body string) error {
 	return be
 }
 
-func detail(body string) string {
-	if b := truncate(body, 200); b != "" {
-		return ": " + b
-	}
-	return ""
-}
-
 func retryDetail(retryAfter time.Duration) string {
 	if retryAfter > 0 {
 		return fmt.Sprintf(" (Retry-After %s)", retryAfter)
@@ -813,19 +806,19 @@ func (c *Client) dump(kind string, req *http.Request, status int, body string) {
 	}
 	name := fmt.Sprintf("%s-%d-%s.dump", kind, time.Now().UnixNano(), sanitizeName(req.URL.Path))
 	path := filepath.Join("dump", name)
-	os.MkdirAll("dump", 0o755)
+	_ = os.MkdirAll("dump", 0o755)
 	var buf bytes.Buffer
-	buf.WriteString(fmt.Sprintf("%s %s\n", req.Method, req.URL.String()))
+	fmt.Fprintf(&buf, "%s %s\n", req.Method, req.URL.String())
 	for k, vs := range req.Header {
 		for _, v := range vs {
 			if strings.EqualFold(k, "Authorization") {
 				v = "[redacted]"
 			}
-			buf.WriteString(fmt.Sprintf("%s: %s\n", k, v))
+			fmt.Fprintf(&buf, "%s: %s\n", k, v)
 		}
 	}
-	buf.WriteString(fmt.Sprintf("\n[status %d]\n%s\n", status, truncate(body, 20000)))
-	os.WriteFile(path, buf.Bytes(), 0o600)
+	fmt.Fprintf(&buf, "\n[status %d]\n%s\n", status, truncate(body, 20000))
+	_ = os.WriteFile(path, buf.Bytes(), 0o600)
 }
 
 func sanitizeName(p string) string {

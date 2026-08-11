@@ -87,7 +87,7 @@ func doJSON(t *testing.T, method, url string, body []byte, hdr map[string]string
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -344,12 +344,12 @@ func TestRunInvalidRecovers(t *testing.T) {
 		if calls.Add(1) == 1 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			io.WriteString(w, `{"error":{"message":"runId not found"}}`)
+			_, _ = io.WriteString(w, `{"error":{"message":"runId not found"}}`)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, testutil.SSEEvent(chunk("chatcmpl-r1", 1, `"choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":null}]`)))
+		_, _ = io.WriteString(w, testutil.SSEEvent(chunk("chatcmpl-r1", 1, `"choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":null}]`)))
 	}
 	ts, _ := newTestServer(t, nil, mock)
 
@@ -396,7 +396,7 @@ func TestClientAbortPropagates(t *testing.T) {
 	go func() {
 		resp, err := http.DefaultClient.Do(req)
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		errCh <- err
 	}()

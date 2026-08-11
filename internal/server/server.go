@@ -295,7 +295,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		opts.RunID = lease.Run.RunID
 		opts.SessionInstanceID = lease.SessionInstanceID
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 
 	s.logger.Debug("chat upstream ok",
 		"token", lease.Token+1, "model", model, "stream", stream)
@@ -361,13 +361,13 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 	if err := scanner.Err(); err != nil {
 		if ctx.Err() == nil {
 			s.logger.Warn("upstream stream error", "err", err)
-			w.Write(convert.ErrorChunk("upstream_stream_error", ""))
-			w.Write(convert.DONE)
+			_, _ = w.Write(convert.ErrorChunk("upstream_stream_error", ""))
+			_, _ = w.Write(convert.DONE)
 			flusher.Flush()
 		}
 		return
 	}
-	w.Write(convert.DONE)
+	_, _ = w.Write(convert.DONE)
 	flusher.Flush()
 }
 
@@ -401,7 +401,7 @@ func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Read
 	stats.bytes = len(out)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write(out)
+	_, _ = w.Write(out)
 }
 
 // --- models / healthz ---

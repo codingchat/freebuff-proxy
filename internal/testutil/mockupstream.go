@@ -132,7 +132,7 @@ func (m *MockUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		m.SessionEnds++
 		m.mu.Unlock()
 		w.WriteHeader(200)
-		io.WriteString(w, `{"status":"ended"}`)
+		_, _ = io.WriteString(w, `{"status":"ended"}`)
 	case r.URL.Path == "/api/v1/agent-runs" && r.Method == http.MethodPost:
 		m.handleAgentRuns(w, r)
 	case r.URL.Path == "/api/v1/chat/completions" && r.Method == http.MethodPost:
@@ -223,7 +223,7 @@ func (m *MockUpstream) handleAgentRuns(w http.ResponseWriter, r *http.Request) {
 		Status  string `json:"status"`
 		Steps   int    `json:"totalSteps"`
 	}
-	json.Unmarshal(body, &payload)
+	_ = json.Unmarshal(body, &payload)
 
 	switch payload.Action {
 	case "START":
@@ -298,7 +298,7 @@ func (m *MockUpstream) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(200)
 	if m.ChatBody != "" {
-		io.WriteString(w, m.ChatBody)
+		_, _ = io.WriteString(w, m.ChatBody)
 	}
 }
 
@@ -307,14 +307,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
-	enc.Encode(v)
+	_ = enc.Encode(v)
 }
 
 // writeRaw writes a pre-formatted JSON body verbatim (no re-encoding).
 func writeRaw(w http.ResponseWriter, status int, raw string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	io.WriteString(w, raw)
+	_, _ = io.WriteString(w, raw)
 }
 
 // BodyContains reports whether any recorded chat body contains substr.

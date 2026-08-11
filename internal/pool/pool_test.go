@@ -498,7 +498,7 @@ func TestPoolChat(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := io.ReadAll(rc)
-	rc.Close()
+	_ = rc.Close()
 	if err != nil {
 		t.Fatal(err)
 	}

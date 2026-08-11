@@ -41,7 +41,7 @@ func Dialer(profile *Profile, baseDial func(ctx context.Context, network, addr s
 
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil {
-			rawConn.Close()
+			_ = rawConn.Close()
 			return nil, fmt.Errorf("stealth: invalid address %q: %w", addr, err)
 		}
 
@@ -55,7 +55,7 @@ func Dialer(profile *Profile, baseDial func(ctx context.Context, network, addr s
 
 		if profile.CustomSpec != nil {
 			if err := uConn.ApplyPreset(profile.CustomSpec); err != nil {
-				rawConn.Close()
+				_ = rawConn.Close()
 				return nil, fmt.Errorf("stealth: apply custom spec failed: %w", err)
 			}
 		}
@@ -73,13 +73,13 @@ func Dialer(profile *Profile, baseDial func(ctx context.Context, network, addr s
 		// JA3 hashes extension types, not ALPN values, so the fingerprint is
 		// unaffected.
 		if err := uConn.BuildHandshakeState(); err != nil {
-			rawConn.Close()
+			_ = rawConn.Close()
 			return nil, fmt.Errorf("stealth: build handshake state failed: %w", err)
 		}
 		setALPN(uConn, []string{"http/1.1"})
 
 		if err := uConn.HandshakeContext(ctx); err != nil {
-			rawConn.Close()
+			_ = rawConn.Close()
 			return nil, fmt.Errorf("stealth: tls handshake failed: %w", err)
 		}
 

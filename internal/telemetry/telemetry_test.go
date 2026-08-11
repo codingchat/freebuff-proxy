@@ -22,7 +22,7 @@ func closeLogFile(t *testing.T, logger *slog.Logger) {
 	th.mu.Lock()
 	defer th.mu.Unlock()
 	if th.file != nil {
-		th.file.Close()
+		_ = th.file.Close()
 		th.file = nil
 	}
 }
@@ -39,7 +39,7 @@ func captureStderr(t *testing.T, fn func()) string {
 	os.Stderr = w
 	defer func() { os.Stderr = old }()
 	fn()
-	w.Close()
+	_ = w.Close()
 	data, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatalf("read pipe: %v", err)
@@ -165,8 +165,8 @@ func TestRedactHeadersNonCanonicalKey(t *testing.T) {
 }
 
 func TestDumpRequest(t *testing.T) {
-	os.RemoveAll("dump")
-	t.Cleanup(func() { os.RemoveAll("dump") })
+	_ = os.RemoveAll("dump")
+	t.Cleanup(func() { _ = os.RemoveAll("dump") })
 
 	req, err := http.NewRequest(http.MethodPost, "http://example.com/v1/chat/completions", nil)
 	if err != nil {
@@ -227,8 +227,8 @@ func TestDumpRequest(t *testing.T) {
 }
 
 func TestDumpRequestDisabled(t *testing.T) {
-	os.RemoveAll("dump")
-	t.Cleanup(func() { os.RemoveAll("dump") })
+	_ = os.RemoveAll("dump")
+	t.Cleanup(func() { _ = os.RemoveAll("dump") })
 
 	req, err := http.NewRequest(http.MethodGet, "http://example.com/v1/models", nil)
 	if err != nil {

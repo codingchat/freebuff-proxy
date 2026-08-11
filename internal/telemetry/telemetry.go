@@ -183,13 +183,13 @@ func DumpRequest(kind string, req *http.Request, status int, body string, enable
 	_ = os.MkdirAll("dump", 0o755)
 
 	var buf bytes.Buffer
-	buf.WriteString(fmt.Sprintf("%s %s\n", req.Method, req.URL.String()))
+	fmt.Fprintf(&buf, "%s %s\n", req.Method, req.URL.String())
 	for k, vs := range RedactHeaders(req.Header) {
 		for _, v := range vs {
-			buf.WriteString(fmt.Sprintf("%s: %s\n", k, v))
+			fmt.Fprintf(&buf, "%s: %s\n", k, v)
 		}
 	}
-	buf.WriteString(fmt.Sprintf("\n[status %d]\n%s\n", status, truncate(body, dumpBodyLimit)))
+	fmt.Fprintf(&buf, "\n[status %d]\n%s\n", status, truncate(body, dumpBodyLimit))
 	_ = os.WriteFile(path, buf.Bytes(), 0o600)
 }
 

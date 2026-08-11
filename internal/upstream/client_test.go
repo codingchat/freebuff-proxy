@@ -59,11 +59,11 @@ func TestChatCompletionsStreamBodySurvives(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
 		for _, chunk := range chunks {
-			io.WriteString(w, testutil.SSEEvent(chunk))
+			_, _ = io.WriteString(w, testutil.SSEEvent(chunk))
 			flusher.Flush()
 			time.Sleep(150 * time.Millisecond)
 		}
-		io.WriteString(w, "data: [DONE]\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}
 
 	client, err := New("tok-a", testConfig(mock.URL(), nil))
@@ -76,7 +76,7 @@ func TestChatCompletionsStreamBodySurvives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	data, err := io.ReadAll(rc)
 	if err != nil {
@@ -109,7 +109,7 @@ func TestChatCompletionsEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rc.Close()
+	_ = rc.Close()
 
 	headers, bodies := mock.RecordedChatHeaders, mock.RecordedChatBodies
 	if len(headers) != 1 || len(bodies) != 1 {
@@ -183,9 +183,9 @@ func TestEnvelopeCostModeAndStopPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rc.Close()
+	_ = rc.Close()
 	var sent map[string]any
-	json.Unmarshal([]byte(mock.RecordedChatBodies[0]), &sent)
+	_ = json.Unmarshal([]byte(mock.RecordedChatBodies[0]), &sent)
 	md := sent["codebuff_metadata"].(map[string]any)
 	if md["cost_mode"] != "free" {
 		t.Errorf("cost_mode = %v, want free", md["cost_mode"])
@@ -200,8 +200,8 @@ func TestEnvelopeCostModeAndStopPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rc.Close()
-	json.Unmarshal([]byte(mock.RecordedChatBodies[1]), &sent)
+	_ = rc.Close()
+	_ = json.Unmarshal([]byte(mock.RecordedChatBodies[1]), &sent)
 	md = sent["codebuff_metadata"].(map[string]any)
 	if _, present := md["cost_mode"]; present {
 		t.Errorf("cost_mode present despite empty config: %v", md)
@@ -213,8 +213,8 @@ func TestEnvelopeCostModeAndStopPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rc.Close()
-	json.Unmarshal([]byte(mock.RecordedChatBodies[2]), &sent)
+	_ = rc.Close()
+	_ = json.Unmarshal([]byte(mock.RecordedChatBodies[2]), &sent)
 	stop := sent["stop"].([]any)
 	if len(stop) != 1 || stop[0] != "my-stop" {
 		t.Errorf("client stop overwritten: %v", stop)
@@ -235,7 +235,7 @@ func TestUARotation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rc.Close()
+		_ = rc.Close()
 		seen[mock.RecordedChatHeaders[i].Get("User-Agent")] = true
 	}
 	if len(seen) < 2 {
@@ -318,7 +318,7 @@ func TestWaitingRoomRetryAfterHeader(t *testing.T) {
 	mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "7")
 		w.WriteHeader(503)
-		io.WriteString(w, `{"error":"waiting_room_queued"}`)
+		_, _ = io.WriteString(w, `{"error":"waiting_room_queued"}`)
 	}
 
 	client, _ := New("tok", testConfig(mock.URL(), nil))
@@ -501,7 +501,7 @@ func TestAbortPropagation(t *testing.T) {
 	go func() {
 		rc, err := client.ChatCompletions(ctx, ChatOptions{Model: "m", RunID: "r"}, []byte(`{"model":"m"}`))
 		if err == nil {
-			rc.Close()
+			_ = rc.Close()
 		}
 		done <- err
 	}()
@@ -577,22 +577,22 @@ func TestWrapDecompress(t *testing.T) {
 		{"gzip", "gzip", func(b []byte) []byte {
 			var buf bytes.Buffer
 			zw := gzip.NewWriter(&buf)
-			zw.Write(b)
-			zw.Close()
+			_, _ = zw.Write(b)
+			_ = zw.Close()
 			return buf.Bytes()
 		}, ""},
 		{"deflate", "deflate", func(b []byte) []byte {
 			var buf bytes.Buffer
 			zw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
-			zw.Write(b)
-			zw.Close()
+			_, _ = zw.Write(b)
+			_ = zw.Close()
 			return buf.Bytes()
 		}, ""},
 		{"brotli", "br", func(b []byte) []byte {
 			var buf bytes.Buffer
 			zw := brotli.NewWriter(&buf)
-			zw.Write(b)
-			zw.Close()
+			_, _ = zw.Write(b)
+			_ = zw.Close()
 			return buf.Bytes()
 		}, ""},
 		{"unsupported encoding", "zstd", nil, "unsupported Content-Encoding"},
@@ -624,7 +624,7 @@ func TestWrapDecompress(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if string(got) != want {
 				t.Errorf("body = %q, want %q", got, want)
 			}
