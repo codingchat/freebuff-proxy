@@ -57,6 +57,10 @@ type MockUpstream struct {
 
 	AuthReject bool // 401 on every route
 
+	// RateLimit makes every route return a 429 rate_limited quota-exhaustion
+	// body (daily session quota, Pacific-day reset contract).
+	RateLimit bool
+
 	RecordedChatHeaders []http.Header
 	RecordedChatBodies  []string
 	SessionCreates      int
@@ -94,6 +98,10 @@ func SSEEvent(data string) string { return "data: " + data + "\n\n" }
 func (m *MockUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	if m.AuthReject {
 		writeJSON(w, 401, `{"error":{"message":"unauthorized","type":"authentication_error"}}`)
+		return
+	}
+	if m.RateLimit {
+		writeJSON(w, 429, `{"model":"deepseek/deepseek-v4-flash","entitlementBreakdown":{"base":6,"referral":0,"streak":0},"limit":6,"period":"pacific_day","resetTimeZone":"America/Los_Angeles","resetAt":"2026-08-12T07:00:00.000Z","windowHours":24,"recentCount":6.6,"status":"rate_limited","accessTier":"limited","retryAfterMs":48549499}`)
 		return
 	}
 	switch {

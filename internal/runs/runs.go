@@ -64,6 +64,11 @@ type RunManager struct {
 	runs          map[string]*Run // agentID → current run
 	draining      []*Run          // rotated runs awaiting FINISH
 	cooldownUntil time.Time
+	// rateLimit is the last 429 rate-limit error applied to this token's
+	// cooldown. It is surfaced by RateLimitError() so exhausted tokens
+	// keep returning 429 + Retry-After instead of a generic 502 while the
+	// cooldown window is active.
+	rateLimit *upstream.RateLimitError
 	// totalRequests is the cumulative count of Acquire leases handed out.
 	// It is kept separate from the per-run counters because rotated runs
 	// that get FINISHed leave the active+draining sets and would otherwise
@@ -231,6 +236,7 @@ func (m *RunManager) Cooldown(d time.Duration) {
 	}
 	m.mu.Lock()
 	m.cooldownUntil = time.Now().Add(d)
+	m.rateLimit = nil
 	m.mu.Unlock()
 }
 
@@ -239,6 +245,30 @@ func (m *RunManager) CooldownUntil() time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.cooldownUntil
+}
+
+// CooldownRateLimit applies a rate-limit cooldown and remembers the error
+// so subsequent Acquires surface 429 + Retry-After instead of a generic
+// 502. Errors with RetryAfter <= 0 are ignored.
+func (m *RunManager) CooldownRateLimit(rle *upstream.RateLimitError) {
+	if rle == nil || rle.RetryAfter <= 0 {
+		return
+	}
+	m.mu.Lock()
+	m.cooldownUntil = time.Now().Add(rle.RetryAfter)
+	m.rateLimit = rle
+	m.mu.Unlock()
+}
+
+// RateLimitError returns the remembered rate-limit error while its
+// cooldown is still active, nil otherwise.
+func (m *RunManager) RateLimitError() *upstream.RateLimitError {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if time.Now().Before(m.cooldownUntil) && m.rateLimit != nil {
+		return m.rateLimit
+	}
+	return nil
 }
 
 // Snapshot returns a best-effort view of the manager state.

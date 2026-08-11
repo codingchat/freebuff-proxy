@@ -126,6 +126,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	start := int(p.rr.Add(1)-1) % len(p.toks)
 	var errs []string
 	var waiting []*session.WaitingRoomError
+	var rateLimited []*upstream.RateLimitError
 
 	for offset := 0; offset < len(p.toks); offset++ {
 		if err := ctx.Err(); err != nil {
@@ -138,6 +139,9 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		if until := tok.runs.CooldownUntil(); time.Now().Before(until) {
 			errs = append(errs, fmt.Sprintf("%s: cooling down until %s", name, until.Format(time.RFC3339)))
 			p.logger.Debug("pool: token skipped (cooldown)", "token", idx+1, "until", until.Format(time.RFC3339))
+			if rle := tok.runs.RateLimitError(); rle != nil {
+				rateLimited = append(rateLimited, rle)
+			}
 			continue
 		}
 
@@ -146,6 +150,10 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			if errors.Is(err, upstream.ErrAuthRejected) {
 				tok.runs.Cooldown(runs.DefaultCooldown)
 				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
+			}
+			if rle := asRateLimit(err); rle != nil {
+				tok.runs.CooldownRateLimit(rle)
+				rateLimited = append(rateLimited, rle)
 			}
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 			continue
@@ -161,6 +169,10 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			if errors.As(err, &wr) {
 				waiting = append(waiting, wr)
 			}
+			if rle := asRateLimit(err); rle != nil {
+				tok.runs.CooldownRateLimit(rle)
+				rateLimited = append(rateLimited, rle)
+			}
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
@@ -173,6 +185,9 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		wr := bestWaitingRoom(waiting)
 		p.logger.Debug("pool: waiting room surfaced", "position", wr.Position, "queue_depth", wr.QueueDepth, "retry_after", wr.RetryAfter.String())
 		return nil, wr
+	}
+	if len(rateLimited) == len(p.toks) && len(rateLimited) > 0 {
+		return nil, bestRateLimit(rateLimited)
 	}
 	return nil, fmt.Errorf("unable to acquire run from any token: %s", strings.Join(errs, "; "))
 }
@@ -213,6 +228,16 @@ func (p *Pool) CooldownToken(token int, d time.Duration) {
 		return
 	}
 	p.toks[token].runs.Cooldown(d)
+}
+
+// CooldownTokenRateLimit applies a rate-limit cooldown to token
+// (remembered so Acquire surfaces 429 + Retry-After during the window).
+// Out-of-range tokens are ignored.
+func (p *Pool) CooldownTokenRateLimit(token int, rle *upstream.RateLimitError) {
+	if token < 0 || token >= len(p.toks) || rle == nil {
+		return
+	}
+	p.toks[token].runs.CooldownRateLimit(rle)
 }
 
 // Chat sends a chat-completion request through the leased token's upstream
@@ -311,8 +336,13 @@ func (p *Pool) maintainLoop(ctx context.Context) {
 			for i, tok := range p.toks {
 				mCtx, cancel := context.WithTimeout(ctx, p.cfg.RequestTimeout)
 				tok.runs.Maintain(mCtx)
-				if _, err := tok.session.EnsureSession(mCtx); err != nil {
-					p.logger.Debug("pool: maintain session not ready", "token", i+1, "err", err)
+				// Advance queued sessions only (GET poll — zero quota cost). Session
+				// creation stays lazy on first request: a scheduled POST here would
+				// burn one of the ~6 daily admissions every hour of uptime.
+				if snap := tok.session.Snapshot(); snap.Status == "queued" {
+					if _, err := tok.session.EnsureSession(mCtx); err != nil {
+						p.logger.Debug("pool: maintain session not ready", "token", i+1, "err", err)
+					}
 				}
 				cancel()
 			}
@@ -348,4 +378,25 @@ func betterWait(a, b *session.WaitingRoomError) bool {
 		return a.Position < b.Position
 	}
 	return a.QueueDepth < b.QueueDepth
+}
+
+// asRateLimit extracts a RateLimitError from err (nil when absent).
+func asRateLimit(err error) *upstream.RateLimitError {
+	var rle *upstream.RateLimitError
+	if errors.As(err, &rle) {
+		return rle
+	}
+	return nil
+}
+
+// bestRateLimit picks the rate-limit error with the longest retry
+// window (the token that unblocks last bounds the wait).
+func bestRateLimit(entries []*upstream.RateLimitError) *upstream.RateLimitError {
+	best := entries[0]
+	for _, e := range entries[1:] {
+		if e.RetryAfter > best.RetryAfter {
+			best = e
+		}
+	}
+	return best
 }

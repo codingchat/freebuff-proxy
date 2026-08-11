@@ -389,6 +389,65 @@ func TestCooldownToken(t *testing.T) {
 	p.CooldownToken(-1, time.Hour)
 }
 
+func TestAcquireRateLimitCooldowns(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.RateLimit = true
+	p := newTestPool(t, mock)
+
+	_, err := p.Acquire(context.Background(), modelA)
+	var rle *upstream.RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("want *upstream.RateLimitError, got %v", err)
+	}
+	if rle.RetryAfter != 48549499*time.Millisecond {
+		t.Errorf("RetryAfter = %s, want 48549499ms", rle.RetryAfter)
+	}
+	if rle.Limit != 6 || rle.RecentCount != 6.6 {
+		t.Errorf("quota = %v/%v, want 6/6.6", rle.RecentCount, rle.Limit)
+	}
+
+	// The token cooled down for the upstream retry window, so subsequent
+	// acquires skip it AND still surface the remembered 429 (not a generic
+	// combined error) — the client keeps getting Retry-After.
+	snap := p.Snapshot()[0]
+	if snap.CooldownUntil.Before(time.Now().Add(13 * time.Hour)) {
+		t.Errorf("cooldown until = %v, want ~now+13.5h", snap.CooldownUntil)
+	}
+	_, err = p.Acquire(context.Background(), modelA)
+	var rle2 *upstream.RateLimitError
+	if !errors.As(err, &rle2) {
+		t.Fatalf("second acquire: want *upstream.RateLimitError, got %v", err)
+	}
+	if rle2.RetryAfter != 48549499*time.Millisecond {
+		t.Errorf("second acquire RetryAfter = %s, want 48549499ms (remembered)", rle2.RetryAfter)
+	}
+}
+
+func TestAcquireRateLimitBestWindow(t *testing.T) {
+	// Both tokens rate-limited with different windows: the pool surfaces the
+	// longest one (the token that unblocks last bounds the wait).
+	mock0 := testutil.NewMock()
+	defer mock0.Close()
+	mock0.RateLimit = true
+	mock1 := testutil.NewMock()
+	defer mock1.Close()
+	mock1.RateLimit = true
+	p := newTestPool(t, mock0, mock1)
+
+	_, err := p.Acquire(context.Background(), modelA)
+	var rle *upstream.RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("want *upstream.RateLimitError, got %v", err)
+	}
+	if rle.RetryAfter != 48549499*time.Millisecond {
+		t.Errorf("RetryAfter = %s, want 48549499ms (best window)", rle.RetryAfter)
+	}
+	if err.Error() == "" || !strings.Contains(err.Error(), "upstream rate limited") {
+		t.Errorf("error = %q, want rate-limit message", err)
+	}
+}
+
 func TestPoolChat(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()

@@ -297,6 +297,44 @@ func TestChat401Cooldown(t *testing.T) {
 	}
 }
 
+func TestChatRateLimitSurfaced(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.RateLimit = true
+	ts, p := newTestServer(t, nil, mock)
+
+	// First request: upstream 429 rate_limited → 429 + Retry-After (the
+	// gateway must back off for the exact window, not hammer a 502).
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: %s", resp.StatusCode, data)
+	}
+	if ra := resp.Header.Get("Retry-After"); ra != "48550" {
+		t.Errorf("Retry-After = %q, want 48550 (ceil of 48549499ms)", ra)
+	}
+	if !strings.Contains(string(data), `"code":"rate_limited"`) {
+		t.Errorf("body missing rate_limited code: %s", data)
+	}
+	if !strings.Contains(string(data), "reset at 2026-08-12T07:00:00") {
+		t.Errorf("body missing resetAt: %s", data)
+	}
+
+	// The token cooled down for the window; a second request surfaces the
+	// remembered 429 + Retry-After, never a 502.
+	resp2, data2 := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
+	if resp2.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second request status = %d, want 429: %s", resp2.StatusCode, data2)
+	}
+	if ra := resp2.Header.Get("Retry-After"); ra != "48550" {
+		t.Errorf("second Retry-After = %q, want 48550", ra)
+	}
+
+	snap := p.Snapshot()[0]
+	if snap.CooldownUntil.Before(time.Now().Add(13 * time.Hour)) {
+		t.Errorf("cooldown until = %v, want ~now+13.5h", snap.CooldownUntil)
+	}
+}
+
 func TestRunInvalidRecovers(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()

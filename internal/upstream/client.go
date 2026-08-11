@@ -43,6 +43,9 @@ var (
 	ErrAuthRejected = errors.New("upstream auth rejected")
 	// ErrWaitingRoom: upstream queue. Surface as 503 + Retry-After.
 	ErrWaitingRoom = errors.New("upstream waiting room")
+	// ErrRateLimited: upstream quota exhausted (429 rate_limited). The token
+	// should cool down for RateLimitError.RetryAfter.
+	ErrRateLimited = errors.New("upstream rate limited")
 )
 
 // WaitRoom carries queue details for ErrWaitingRoom.
@@ -84,6 +87,33 @@ type UpstreamError struct {
 func (e *UpstreamError) Error() string {
 	return fmt.Sprintf("upstream %d: %s", e.Status, e.Body)
 }
+
+// RateLimitError is a 429 rate_limited response (daily session quota, GLM
+// 20h window, ...). RetryAfter comes from the body's retryAfterMs (or the
+// Retry-After header when the body is opaque). Unwrap makes
+// errors.Is(err, ErrRateLimited) work.
+type RateLimitError struct {
+	RetryAfter  time.Duration
+	Limit       float64
+	RecentCount float64
+	ResetAt     time.Time
+	Body        string // truncated upstream body
+}
+
+func (e *RateLimitError) Error() string {
+	msg := "upstream rate limited"
+	if !e.ResetAt.IsZero() {
+		msg += fmt.Sprintf(" (reset at %s)", e.ResetAt.Format(time.RFC3339))
+	} else if e.RetryAfter > 0 {
+		msg += fmt.Sprintf(" (retry after %s)", e.RetryAfter)
+	}
+	if e.Body != "" {
+		msg += ": " + e.Body
+	}
+	return msg
+}
+
+func (e *RateLimitError) Unwrap() error { return ErrRateLimited }
 
 // SessionState is the parsed result of a free-session create/poll.
 type SessionState struct {
@@ -492,9 +522,35 @@ func classifyError(status int, body string, hdr http.Header) error {
 		return fmt.Errorf("%w: %s%s", ErrSessionInvalid, truncate(body, 200), retryDetail(retryAfter))
 	case status == http.StatusBadRequest && containsAny(lower, "runid not found", "runid not running"):
 		return fmt.Errorf("%w: %s", ErrRunInvalid, truncate(body, 200))
+	case status == http.StatusTooManyRequests:
+		return parseRateLimit(body, parseRetryAfter(hdr))
 	default:
 		return &UpstreamError{Status: status, Body: truncate(body, 500), RetryAfter: retryAfter}
 	}
+}
+
+// parseRateLimit builds a RateLimitError from a 429 body, extracting
+// retryAfterMs/resetAt/limit/recentCount best-effort. Falls back to the
+// Retry-After header duration when the body has no JSON quota fields.
+func parseRateLimit(body string, headerRetryAfter time.Duration) error {
+	rle := &RateLimitError{Body: truncate(body, 200), RetryAfter: headerRetryAfter}
+	var parsed struct {
+		RetryAfterMs int64     `json:"retryAfterMs"`
+		Limit        float64   `json:"limit"`
+		RecentCount  float64   `json:"recentCount"`
+		ResetAt      time.Time `json:"resetAt"`
+		Status       string    `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err == nil {
+		if parsed.RetryAfterMs > 0 {
+			rle.RetryAfter = time.Duration(parsed.RetryAfterMs) * time.Millisecond
+		}
+		if !parsed.ResetAt.IsZero() {
+			rle.ResetAt = parsed.ResetAt
+		}
+		rle.Limit, rle.RecentCount = parsed.Limit, parsed.RecentCount
+	}
+	return rle
 }
 
 func detail(body string) string {

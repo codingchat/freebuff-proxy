@@ -173,6 +173,7 @@ CI runs `go vet` and `go test -race ./...` on Linux (the race detector needs a C
 | `403 free_mode_cli_required` | The CLI envelope did not satisfy the anti-bot gate. Check `COST_MODE` (omit vs `"free"` — A/B pending, see PRD §8) and the `client_id` format (13-char base36). |
 | `402 Out of credits` / `403 country_blocked` | Geo-gating: blocked-country / VPN / datacenter IPs are rejected upstream. Use `HTTP_PROXY` or `SOCKS5_PROXY` with a clean residential egress. |
 | `503` with `waiting_room_queued` | Normal: the free session is queued in the waiting room. The `Retry-After` header tells the client when to retry; 9router and opencode retry automatically. |
+| `429` with `rate_limited` in the body | The token's daily session quota is exhausted (6/day on the limited tier, resets at Pacific midnight). The proxy now returns `429 + Retry-After` with the upstream `resetAt` so clients back off instead of hammering. Add another `AUTH_TOKENS` or wait for the reset. |
 | `502 upstream_unavailable` | Every token failed or is in cooldown. Check token validity — a 401 puts a token in a 30-minute cooldown. |
 | Logs too quiet or too noisy | Set `LOG_LEVEL=debug` (or run with `-v`) for full visibility: access log, upstream calls, session/run lifecycle. `LOG_LEVEL=warn` silences chat noise. |
 | Need raw upstream traffic dumps | Set `DEBUG_DUMP=true` — requests/responses land in `./dump/` (sensitive headers redacted). |

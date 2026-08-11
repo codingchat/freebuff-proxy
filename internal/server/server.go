@@ -261,6 +261,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			release()
 			s.writeError(w, r, err)
 			return
+		case errors.Is(err, upstream.ErrRateLimited):
+			var rle *upstream.RateLimitError
+			if errors.As(err, &rle) {
+				s.pool.CooldownTokenRateLimit(lease.Token, rle)
+			}
+			release()
+			s.writeError(w, r, err)
+			return
 		default:
 			release()
 			s.writeError(w, r, err)
@@ -462,7 +470,11 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	var wr *session.WaitingRoomError
 	var uwr *upstream.WaitingRoomError
 	var ue *upstream.UpstreamError
+	var rle *upstream.RateLimitError
 	switch {
+	case errors.As(err, &rle):
+		status, code = http.StatusTooManyRequests, "rate_limited"
+		message, retryAfter = rle.Error(), rle.RetryAfter
 	case errors.As(err, &wr):
 		status, code = http.StatusServiceUnavailable, "waiting_room_queued"
 		message, retryAfter = wr.Error(), wr.RetryAfter

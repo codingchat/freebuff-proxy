@@ -510,3 +510,41 @@ func TestAbortPropagation(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestClassifyRateLimit(t *testing.T) {
+	body := `{"model":"deepseek/deepseek-v4-flash","entitlementBreakdown":{"base":6},"limit":6,"period":"pacific_day","resetTimeZone":"America/Los_Angeles","resetAt":"2026-08-12T07:00:00.000Z","windowHours":24,"recentCount":6.6,"status":"rate_limited","accessTier":"limited","retryAfterMs":48549499}`
+	err := classifyError(429, body, http.Header{})
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("errors.Is(ErrRateLimited) = false, got %v", err)
+	}
+	var rle *RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("want *RateLimitError, got %v", err)
+	}
+	if rle.RetryAfter != 48549499*time.Millisecond {
+		t.Errorf("RetryAfter = %s, want 48549499ms", rle.RetryAfter)
+	}
+	if rle.Limit != 6 {
+		t.Errorf("Limit = %v, want 6", rle.Limit)
+	}
+	if rle.RecentCount != 6.6 {
+		t.Errorf("RecentCount = %v, want 6.6", rle.RecentCount)
+	}
+	wantReset, _ := time.Parse(time.RFC3339Nano, "2026-08-12T07:00:00.000Z")
+	if !rle.ResetAt.Equal(wantReset) {
+		t.Errorf("ResetAt = %v, want %v", rle.ResetAt, wantReset)
+	}
+
+	// Header fallback when body has no JSON quota fields.
+	err2 := classifyError(429, "opaque body", http.Header{"Retry-After": {"300"}})
+	if !errors.Is(err2, ErrRateLimited) {
+		t.Fatalf("header fallback: errors.Is(ErrRateLimited) = false, got %v", err2)
+	}
+	var rle2 *RateLimitError
+	if !errors.As(err2, &rle2) {
+		t.Fatalf("header fallback: want *RateLimitError, got %v", err2)
+	}
+	if rle2.RetryAfter != 300*time.Second {
+		t.Errorf("RetryAfter = %s, want 300s (header fallback)", rle2.RetryAfter)
+	}
+}
