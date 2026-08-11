@@ -4,6 +4,8 @@
 
 freebuff-proxy is an OpenAI-compatible proxy bridge that turns FreeBuff (Codebuff's free coding agent) into a standard API. FreeBuff's backend fingerprints official-CLI traffic and rejects direct calls with `403 free_mode_cli_required`, so the proxy replicates the CLI request envelope, manages the free-session and agent-run lifecycle upstream, and pools multiple tokens — exposing plain `/v1/chat/completions`, `/v1/models`, and `/healthz` endpoints that 9router, opencode, claude-code, or any OpenAI client can wire to as an ordinary provider.
 
+**TL;DR:** copy `.env.example` to `.env`, set `AUTH_TOKENS` to your FreeBuff token, run `./freebuff-proxy` (or `docker compose up --build`), then point any OpenAI-compatible client at `http://localhost:3457/v1`. Full 9router wiring: [docs/guides/9router-integration.md](docs/guides/9router-integration.md).
+
 Docs: [PRD](docs/product/prd.md) · [Reference analysis](docs/research/freebuff-reference-analysis.md) · [FreeBuff limitations & quota research](docs/research/freebuff-limitations.md) · [Delivery tasks](docs/delivery/tasks.md) · [Kaspersky false-positive notes](docs/security/av-kaspersky-false-positive.md)
 
 ## How it works
@@ -137,6 +139,7 @@ All keys are read from the environment and override the JSON config file passed 
 | `COST_MODE` | _(empty — omit)_ | `cost_mode` sent upstream with chat requests: "" (omit — proxy-freebuff's 2026-08 behavior) or "free". Empirical A/B pending, see PRD §8. |
 | `DEBUG_DUMP` | `false` | Dump raw upstream request/response traffic into `./dump` for debugging. |
 | `LOG_FILE` | _(empty — stderr only)_ | Optional log file path (in addition to stderr). Empty = stderr only. |
+| `LOG_LEVEL` | _(empty — info)_ | Log verbosity: `debug`, `info`, `warn`, `error`. Empty = `info` (or `debug` with `-v`); `LOG_LEVEL` wins over `-v`. |
 
 ## 9router integration
 
@@ -171,6 +174,9 @@ CI runs `go vet` and `go test -race ./...` on Linux (the race detector needs a C
 | `402 Out of credits` / `403 country_blocked` | Geo-gating: blocked-country / VPN / datacenter IPs are rejected upstream. Use `HTTP_PROXY` or `SOCKS5_PROXY` with a clean residential egress. |
 | `503` with `waiting_room_queued` | Normal: the free session is queued in the waiting room. The `Retry-After` header tells the client when to retry; 9router and opencode retry automatically. |
 | `502 upstream_unavailable` | Every token failed or is in cooldown. Check token validity — a 401 puts a token in a 30-minute cooldown. |
+| Logs too quiet or too noisy | Set `LOG_LEVEL=debug` (or run with `-v`) for full visibility: access log, upstream calls, session/run lifecycle. `LOG_LEVEL=warn` silences chat noise. |
+| Need raw upstream traffic dumps | Set `DEBUG_DUMP=true` — requests/responses land in `./dump/` (sensitive headers redacted). |
+| Logs scroll away in terminals / containers | Set `LOG_FILE=/path/to/proxy.log` — the same lines are appended to the file (colors disabled there). |
 | Antivirus (e.g. Kaspersky) flags test binaries or the `.exe` | False positive; Go binaries trip AV heuristics. See [docs/security/av-kaspersky-false-positive.md](docs/security/av-kaspersky-false-positive.md). |
 
 ## Terms of use

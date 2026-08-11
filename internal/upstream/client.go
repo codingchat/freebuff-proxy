@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	mathrand "math/rand"
 	"net"
@@ -396,6 +397,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body []byt
 // timeout was applied. Failures are wrapped so errors.Is works both ways.
 func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, context.CancelFunc, error) {
 	ctx := req.Context()
+	start := time.Now()
 	var cancel context.CancelFunc
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline && timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -403,6 +405,8 @@ func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, c
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		slog.Debug("upstream error", "method", req.Method, "path", req.URL.Path,
+			"ms", time.Since(start).Milliseconds(), "err", err)
 		if cancel != nil {
 			cancel()
 		}
@@ -414,6 +418,8 @@ func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, c
 		}
 		return nil, nil, fmt.Errorf("upstream: %s %s: %w", req.Method, req.URL.Path, err)
 	}
+	slog.Debug("upstream ok", "method", req.Method, "path", req.URL.Path,
+		"status", resp.StatusCode, "ms", time.Since(start).Milliseconds())
 	return resp, cancel, nil
 }
 

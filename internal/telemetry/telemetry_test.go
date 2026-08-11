@@ -244,3 +244,18 @@ func TestDumpRequestDisabled(t *testing.T) {
 		t.Errorf("dump written while disabled: %v", entries)
 	}
 }
+
+func TestParseLevel(t *testing.T) {
+	if _, ok := ParseLevel(""); ok {
+		t.Error(`ParseLevel("") ok=true, want false`)
+	}
+	if lv, ok := ParseLevel("debug"); !ok || lv != slog.LevelDebug {
+		t.Errorf("ParseLevel(debug) = %v, ok=%v; want %v, true", lv, ok, slog.LevelDebug)
+	}
+	if lv, ok := ParseLevel("INFO"); !ok || lv != slog.LevelInfo {
+		t.Errorf("ParseLevel(INFO) = %v, ok=%v; want %v, true", lv, ok, slog.LevelInfo)
+	}
+	if _, ok := ParseLevel("bogus"); ok {
+		t.Error("ParseLevel(bogus) ok=true, want false")
+	}
+}

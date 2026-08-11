@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -89,6 +90,7 @@ func (m *Manager) EnsureSession(ctx context.Context) (string, error) {
 				if time.Now().Before(s.expiresAt.Add(-expiryMargin)) {
 					instance := s.instanceID
 					m.mu.Unlock()
+					slog.Debug("session reused", "instance_id", instance, "expires_at", s.expiresAt.Format(time.RFC3339))
 					return instance, nil
 				}
 				// Freshness exceeded — fall through to refresh.
@@ -205,11 +207,14 @@ func (m *Manager) refresh(ctx context.Context) error {
 				expiresAt:  st.ExpiresAt,
 			}
 			m.mu.Unlock()
+			slog.Debug("session created", "status", "active", "instance_id", st.InstanceID,
+				"expires_at", st.ExpiresAt.Format(time.RFC3339))
 			return nil
 		case "disabled":
 			m.mu.Lock()
 			m.state = &cachedState{status: "disabled"}
 			m.mu.Unlock()
+			slog.Debug("session created", "status", "disabled", "instance_id", "")
 			return nil
 		case "queued":
 			pollAt := st.PollAt
@@ -232,6 +237,8 @@ func (m *Manager) refresh(ctx context.Context) error {
 				pollAt:     pollAt,
 			}
 			m.mu.Unlock()
+			slog.Debug("session queued", "instance_id", st.InstanceID,
+				"position", st.Position, "queue_depth", st.QueueDepth, "poll_at", pollAt.Format(time.RFC3339))
 			// Surface the queue to the caller: EnsureSession re-evaluates the
 			// cached state and returns WaitingRoomError until pollAt passes.
 			// Polling resumes on the next call, mirroring the references.
@@ -241,6 +248,7 @@ func (m *Manager) refresh(ctx context.Context) error {
 			m.mu.Lock()
 			m.state = nil
 			m.mu.Unlock()
+			slog.Debug("session recreated", "reason", status, "instance_id", st.InstanceID)
 		default:
 			return fmt.Errorf("session: unknown upstream status %q", status)
 		}
@@ -278,8 +286,13 @@ func (m *Manager) Snapshot() SessionSnapshot {
 // it. Used when a chat request reports a session-level error.
 func (m *Manager) Invalidate() {
 	m.mu.Lock()
+	instanceID := ""
+	if m.state != nil {
+		instanceID = m.state.instanceID
+	}
 	m.state = nil
 	m.mu.Unlock()
+	slog.Debug("session invalidated", "instance_id", instanceID)
 }
 
 // EndSession deletes the upstream session (if any) and clears the cache.
@@ -295,6 +308,7 @@ func (m *Manager) EndSession(ctx context.Context) error {
 	if instanceID == "" {
 		return nil
 	}
+	slog.Debug("session ended", "instance_id", instanceID)
 	if err := m.client.EndSession(ctx, instanceID); err != nil && !errors.Is(err, upstream.ErrSessionInvalid) {
 		return err
 	}

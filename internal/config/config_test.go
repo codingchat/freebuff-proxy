@@ -14,7 +14,7 @@ import (
 var envKeys = []string{
 	"LISTEN_ADDR", "UPSTREAM_BASE_URL", "AUTH_TOKENS", "ROTATION_INTERVAL",
 	"REQUEST_TIMEOUT", "SESSION_CALL_TIMEOUT", "API_KEYS", "HTTP_PROXY",
-	"SOCKS5_PROXY", "COST_MODE", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE",
+	"SOCKS5_PROXY", "COST_MODE", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE", "LOG_LEVEL",
 }
 
 func clearEnv(t *testing.T) {
@@ -62,6 +62,9 @@ func TestDefaults(t *testing.T) {
 	}
 	if cfg.LogFile != "" {
 		t.Errorf("LogFile = %q, want empty", cfg.LogFile)
+	}
+	if cfg.LogLevel != "" {
+		t.Errorf("LogLevel = %q, want empty", cfg.LogLevel)
 	}
 	if cfg.HTTPProxy != "" || cfg.SOCKS5Proxy != "" {
 		t.Errorf("proxies = %q/%q, want empty", cfg.HTTPProxy, cfg.SOCKS5Proxy)
@@ -413,6 +416,43 @@ func TestBadDuration(t *testing.T) {
 	t.Setenv("ROTATION_INTERVAL", "soon")
 	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "ROTATION_INTERVAL") {
 		t.Fatalf("Load with bad duration: err = %v, want parse error mentioning ROTATION_INTERVAL", err)
+	}
+}
+
+func TestLogLevel(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AUTH_TOKENS", "tok")
+
+	// default: empty when unset
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load (default): %v", err)
+	} else if cfg.LogLevel != "" {
+		t.Errorf("LogLevel = %q, want empty by default", cfg.LogLevel)
+	}
+
+	// env source
+	t.Setenv("LOG_LEVEL", "debug")
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load (env debug): %v", err)
+	} else if cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want debug", cfg.LogLevel)
+	}
+
+	// invalid level fails validation
+	t.Setenv("LOG_LEVEL", "bogus")
+	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "LOG_LEVEL") {
+		t.Fatalf("Load (invalid level): err = %v, want error mentioning LOG_LEVEL", err)
+	}
+
+	// .env source
+	t.Setenv("LOG_LEVEL", "")
+	if err := os.WriteFile(".env", []byte("AUTH_TOKENS=tok\nLOG_LEVEL=warn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load (.env): %v", err)
+	} else if cfg.LogLevel != "warn" {
+		t.Errorf("LogLevel = %q, want warn (from .env)", cfg.LogLevel)
 	}
 }
 

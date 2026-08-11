@@ -137,6 +137,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 
 		if until := tok.runs.CooldownUntil(); time.Now().Before(until) {
 			errs = append(errs, fmt.Sprintf("%s: cooling down until %s", name, until.Format(time.RFC3339)))
+			p.logger.Debug("pool: token skipped (cooldown)", "token", idx+1, "until", until.Format(time.RFC3339))
 			continue
 		}
 
@@ -144,6 +145,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		if err != nil {
 			if errors.Is(err, upstream.ErrAuthRejected) {
 				tok.runs.Cooldown(runs.DefaultCooldown)
+				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
 			}
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 			continue
@@ -163,11 +165,14 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			continue
 		}
 
+		p.logger.Debug("pool: lease acquired", "token", idx+1, "model", model, "agent", agentID, "instance_id", instanceID)
 		return &Lease{Token: idx, AgentID: agentID, Run: run, SessionInstanceID: instanceID}, nil
 	}
 
 	if len(waiting) == len(p.toks) && len(waiting) > 0 {
-		return nil, bestWaitingRoom(waiting)
+		wr := bestWaitingRoom(waiting)
+		p.logger.Debug("pool: waiting room surfaced", "position", wr.Position, "queue_depth", wr.QueueDepth, "retry_after", wr.RetryAfter.String())
+		return nil, wr
 	}
 	return nil, fmt.Errorf("unable to acquire run from any token: %s", strings.Join(errs, "; "))
 }

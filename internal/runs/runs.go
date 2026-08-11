@@ -289,6 +289,7 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 	if err != nil {
 		return err
 	}
+	slog.Debug("runs: run started", "agent_id", agentID, "run_id", runID)
 
 	m.mu.Lock()
 	oldRun := m.runs[agentID]
@@ -326,7 +327,7 @@ func (m *RunManager) finishIfReady(run *Run) {
 		m.mu.Lock()
 		run.finishing = false
 		m.mu.Unlock()
-		slog.Debug("runs: finish draining run failed", "run_id", run.RunID, "err", err)
+		slog.Warn("runs: finish draining run failed", "run_id", run.RunID, "requests", run.Requests, "err", err)
 		return
 	}
 
@@ -339,6 +340,7 @@ func (m *RunManager) finishIfReady(run *Run) {
 	}
 	m.draining = filtered
 	m.mu.Unlock()
+	slog.Debug("runs: run finished", "run_id", run.RunID, "requests", run.Requests)
 }
 
 // drop removes run from the active set (if it is still current) and the
