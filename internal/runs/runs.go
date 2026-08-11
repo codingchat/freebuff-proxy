@@ -290,6 +290,10 @@ func (m *RunManager) CooldownBan(be *upstream.BanError) {
 	} else {
 		m.banUntil = time.Now().Add(24 * time.Hour) // no timestamp: safe default
 	}
+	// The ban also fills the shared cooldown deadline so Acquire skips the
+	// token entirely during the window (the remembered error is surfaced by
+	// the cooldown-skip branch instead of re-hitting upstream).
+	m.cooldownUntil = m.banUntil
 	m.rateLimit = nil // a ban supersedes any rate-limit cooldown
 	m.mu.Unlock()
 }
