@@ -6,7 +6,7 @@ freebuff-proxy is an OpenAI-compatible proxy bridge that turns FreeBuff (Codebuf
 
 **TL;DR:** copy `.env.example` to `.env`, set `AUTH_TOKENS` to your FreeBuff token, run `./freebuff-proxy` (or `docker compose up --build`), then point any OpenAI-compatible client at `http://localhost:3457/v1`. Full 9router wiring: [docs/guides/9router-integration.md](docs/guides/9router-integration.md).
 
-Docs: [PRD](docs/product/prd.md) · [Reference analysis](docs/research/freebuff-reference-analysis.md) · [FreeBuff limitations & quota research](docs/research/freebuff-limitations.md) · [Delivery tasks](docs/delivery/tasks.md) · [Kaspersky false-positive notes](docs/security/av-kaspersky-false-positive.md)
+Docs: [9router integration guide](docs/guides/9router-integration.md) — all other project docs (PRD, research notes, delivery tasks, security notes) are **local-only dev docs**, gitignored on purpose.
 
 ## How it works
 
@@ -154,7 +154,7 @@ Quick reference:
 
 - Dashboard → **Providers → Add OpenAI Compatible** → `base_url http://localhost:3457/v1`
 - `api_key`: any value when the proxy has no `API_KEYS` set; otherwise one of your `API_KEYS`
-- Models: the live list from `/v1/models` (12 models, refreshed every 6h from upstream sources)
+- Models: the live list from `/v1/models` (15 models in the boot fallback, refreshed every 6h from upstream sources)
 - Model combo ids become `freebuff/<model-id>` (e.g. `freebuff/deepseek-v4-flash`)
 
 ## Testing against the mock upstream
@@ -165,7 +165,7 @@ The test suite runs against a mock Codebuff upstream (`internal/testutil`) — n
 go test ./...
 ```
 
-CI runs `go vet` and `go test -race ./...` on Linux (the race detector needs a C toolchain, hence CI-only). On this Windows dev machine, Kaspersky may quarantine freshly linked test binaries out of the go-build cache (`fork/exec ... Access is denied`); that is a validated false positive — see [docs/security/av-kaspersky-false-positive.md](docs/security/av-kaspersky-false-positive.md) for workarounds (add a Kaspersky exclusion for the `go-build*` cache path, or `go test -c -o out\convert.test.exe ./internal/convert` + run it directly).
+CI runs `go vet` and `go test -race ./...` on Linux (the race detector needs a C toolchain, hence CI-only). On this Windows dev machine, Kaspersky may quarantine freshly linked test binaries out of the go-build cache (`fork/exec ... Access is denied`); that is a validated false positive — workarounds: add a Kaspersky exclusion for the `go-build*` cache path, or run `go test -c -o out\convert.test.exe ./internal/convert` + execute it directly.
 
 ## Troubleshooting
 

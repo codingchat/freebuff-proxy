@@ -119,7 +119,7 @@ cat <<EOF
 
   Verify before creating the node:
         curl http://${GATEWAY}:3457/v1/models
-     (or http://127.0.0.1:3457/v1/models) — should list 12 models.
+     (or http://127.0.0.1:3457/v1/models) — should list the model catalog (~15 models).
 
   After Create, add models to the node, e.g.:
         deepseek/deepseek-v4-flash
