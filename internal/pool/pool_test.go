@@ -863,3 +863,138 @@ func (e *atomicErr) get() error {
 	defer e.mu.Unlock()
 	return e.err
 }
+
+// --- bridge mode ---
+
+// newBridgePool wires a pool in bridge mode (no AUTH_TOKENS) whose lazily
+// created per-client-token clients talk to the given mock upstream.
+func newBridgePool(t *testing.T, mock *testutil.MockUpstream) *Pool {
+	t.Helper()
+	cfg := &config.Config{
+		RotationInterval:   time.Hour,
+		RequestTimeout:     15 * time.Minute,
+		SessionCallTimeout: 5 * time.Second,
+		RegistryRefresh:    6 * time.Hour,
+		UpstreamBaseURL:    mock.URL(),
+	}
+	reg := registry.New(cfg, nil)
+	reg.LoadFallback()
+	p, err := New(cfg, nil, nil, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestBridgeAcquireReusesEntry(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	const clientToken = "client-tok-1"
+	lease1, err := p.AcquireBridge(context.Background(), clientToken, modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease1.Token != -1 {
+		t.Errorf("bridge lease token = %d, want -1", lease1.Token)
+	}
+	if lease1.Bridge == nil {
+		t.Fatal("bridge lease missing Bridge entry")
+	}
+	if lease1.SessionInstanceID != "inst-abc-123" {
+		t.Errorf("instance = %q, want inst-abc-123", lease1.SessionInstanceID)
+	}
+	p.LeaseRelease(lease1)
+
+	lease2, err := p.AcquireBridge(context.Background(), clientToken, modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.LeaseRelease(lease2)
+
+	// One entry per client token: the second acquire reused the first.
+	if got := p.bridgeLen(); got != 1 {
+		t.Errorf("bridge entries = %d, want 1 (reused)", got)
+	}
+	if entry := p.bridgeToken(clientToken); entry == nil {
+		t.Fatal("bridge entry missing after two acquires")
+	}
+	// The shared entry started the run and created the session exactly once.
+	if got := mock.StartedRunsSnapshot(); len(got) != 1 {
+		t.Errorf("started runs = %v, want 1 (single entry reused)", got)
+	}
+	if mock.SessionCreates != 1 {
+		t.Errorf("session creates = %d, want 1 (single entry reused)", mock.SessionCreates)
+	}
+
+	// Chat through the bridge lease goes out with the CLIENT's token.
+	mock.ChatBody = testutil.SSEEvent(`{"id":"chatcmpl-b1","object":"chat.completion.chunk","created":1,"model":"` + modelA + `","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`)
+	opts := upstream.ChatOptions{Model: modelA, RunID: lease2.Run.RunID, SessionInstanceID: lease2.SessionInstanceID}
+	body := []byte(`{"model":"` + modelA + `","messages":[{"role":"user","content":"ping"}]}`)
+	rc, err := p.Chat(context.Background(), lease2, opts, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	if len(mock.RecordedChatHeaders) != 1 {
+		t.Fatalf("upstream chat calls = %d, want 1", len(mock.RecordedChatHeaders))
+	}
+	if got := mock.RecordedChatHeaders[0].Get("Authorization"); got != "Bearer "+clientToken {
+		t.Errorf("upstream Authorization = %q, want %q", got, "Bearer "+clientToken)
+	}
+}
+
+func TestBridgeEviction(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ids := make([]string, maxBridgeEntries+4)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("run-%04d", i)
+	}
+	mock.RunIDs = ids
+	p := newBridgePool(t, mock)
+
+	// Create more distinct client tokens than the cache cap; the oldest
+	// entries must be LRU-evicted.
+	for i := 0; i < maxBridgeEntries+2; i++ {
+		lease, err := p.AcquireBridge(context.Background(), fmt.Sprintf("client-tok-%02d", i), modelA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.LeaseRelease(lease)
+	}
+	if got := p.bridgeLen(); got != maxBridgeEntries {
+		t.Errorf("bridge entries = %d, want %d (LRU cap)", got, maxBridgeEntries)
+	}
+	// The two oldest tokens were evicted; the newest is cached.
+	if e := p.bridgeToken("client-tok-00"); e != nil {
+		t.Error("oldest bridge entry still cached, want evicted")
+	}
+	if e := p.bridgeToken("client-tok-01"); e != nil {
+		t.Error("second-oldest bridge entry still cached, want evicted")
+	}
+	if e := p.bridgeToken(fmt.Sprintf("client-tok-%02d", maxBridgeEntries+1)); e == nil {
+		t.Error("newest bridge entry not cached")
+	}
+	// An evicted entry's run was FINISHed best-effort.
+	if got := mock.FinishedRunsSnapshot(); len(got) < 2 {
+		t.Errorf("finished runs = %d, want >= 2 (evicted entries finished)", len(got))
+	}
+}
+
+func TestBridgeAcquireEmptyToken(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	if _, err := p.AcquireBridge(context.Background(), "", modelA); err == nil {
+		t.Fatal("want error for empty client token")
+	}
+	if _, err := p.AcquireBridge(context.Background(), "   ", modelA); err == nil {
+		t.Fatal("want error for whitespace-only client token")
+	}
+	if got := p.bridgeLen(); got != 0 {
+		t.Errorf("bridge entries = %d, want 0 (no entry for empty token)", got)
+	}
+}

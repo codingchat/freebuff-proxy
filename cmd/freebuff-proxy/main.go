@@ -98,6 +98,7 @@ func main() {
 		"listen_addr", cfg.ListenAddr,
 		"upstream", cfg.UpstreamBaseURL,
 		"auth_tokens", len(cfg.AuthTokens),
+		"bridge_mode", len(cfg.AuthTokens) == 0,
 		"api_keys", len(cfg.APIKeys),
 		"cost_mode", cfg.CostMode,
 		"rotation_interval", cfg.RotationInterval.String(),

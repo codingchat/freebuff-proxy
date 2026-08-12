@@ -1,8 +1,8 @@
 # Example deployment for the FreeBuff proxy bridge.
 #
-# .env is REQUIRED: copy .env.example to .env and set AUTH_TOKENS (a
-# FreeBuff/Codebuff token; comma-separated for multiple accounts). The proxy
-# refuses to start without at least one token.
+# .env: copy .env.example to .env and set AUTH_TOKENS (a FreeBuff/Codebuff
+# token; comma-separated for multiple accounts). Empty AUTH_TOKENS starts
+# the proxy in bridge mode: clients send their own token per request.
 #
 # The container runs as a non-root user and the binary writes nothing to its
 # own filesystem by default. If you enable DEBUG_DUMP=true, uncomment the

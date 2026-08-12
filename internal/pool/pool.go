@@ -46,16 +46,39 @@ const usageWindow = 24 * time.Hour
 // caller's context carries no earlier deadline.
 const shutdownTimeout = 10 * time.Second
 
+// maxBridgeEntries caps the in-memory bridge cache: one entry (upstream
+// client + session manager + run manager) per distinct client token. LRU
+// eviction makes room when the cap is exceeded.
+const maxBridgeEntries = 32
+
+// bridgeIdleEvict is how long a bridge entry may sit unused before the
+// maintain loop FINISHes its runs and drops it from the cache.
+const bridgeIdleEvict = 2 * time.Hour
+
 // Lease is one acquired right to send a chat request through a specific
 // token. The caller must call Pool.LeaseRelease when the request completes
 // or fails (it decrements the run's inflight counter).
 type Lease struct {
-	Token             int // index into config.AuthTokens
+	Token             int // index into config.AuthTokens (-1 for bridge leases)
 	AgentID           string
 	Run               *runs.Run
-	SessionInstanceID string // "" when the session is disabled
-	TierAccess        string // upstream accessTier, "" when unknown
-	TierCountry       string // upstream countryCode, "" when unknown
+	SessionInstanceID string       // "" when the session is disabled
+	TierAccess        string       // upstream accessTier, "" when unknown
+	TierCountry       string       // upstream countryCode, "" when unknown
+	Bridge            *bridgeEntry // nil for pooled (fixed-token) leases
+}
+
+// bridgeEntry is one lazily-created client-token slot in bridge mode: the
+// upstream client, session manager, and run manager for a single client-
+// supplied token, created on first use and reused across that client's
+// later requests. lastUsed and usage are guarded by Pool.bridgeMu.
+type bridgeEntry struct {
+	token    string
+	client   *upstream.Client
+	session  *session.Manager
+	runs     *runs.RunManager
+	lastUsed time.Time
+	usage    []time.Time // rolling 24h successful-chat timestamps (MAX_MESSAGES_PER_DAY)
 }
 
 // TokenSnapshot is one token's healthz view.
@@ -95,6 +118,12 @@ type Pool struct {
 	lastActiveMu sync.Mutex
 	lastActive   time.Time
 	idleFinished bool
+
+	// Bridge mode (no AUTH_TOKENS): lazily-created per-client-token entries.
+	// bridgeOrder keeps the LRU order, oldest first. Guarded by bridgeMu.
+	bridgeMu    sync.Mutex
+	bridge      map[string]*bridgeEntry
+	bridgeOrder []string
 }
 
 type tokenEntry struct {
@@ -120,7 +149,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		return nil, fmt.Errorf("pool: %d sessions for %d tokens", len(sessions), len(cfg.AuthTokens))
 	}
 
-	p := &Pool{cfg: cfg, reg: reg, logger: slog.Default()}
+	p := &Pool{cfg: cfg, reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry)}
 	p.msgsPerToken = make([][]time.Time, len(cfg.AuthTokens))
 	for i := range cfg.AuthTokens {
 		p.toks = append(p.toks, &tokenEntry{
@@ -252,10 +281,94 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	return nil, fmt.Errorf("unable to acquire run from any token: %s", strings.Join(errs, "; "))
 }
 
+// AcquireBridge acquires a lease for one client-supplied token in bridge
+// mode (no AUTH_TOKENS configured). The entry — upstream client, session
+// manager, and run manager — is created lazily on first use and cached for
+// reuse across that client's later requests (least quota burn). There is no
+// multi-token failover: a single token either yields a lease or its error
+// is returned as-is. Registry misses pass through.
+func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*Lease, error) {
+	clientToken = strings.TrimSpace(clientToken)
+	if clientToken == "" {
+		return nil, errors.New("bridge: empty client token")
+	}
+	agentID, err := p.reg.AgentForModel(model)
+	if err != nil {
+		return nil, err
+	}
+
+	entry, err := p.bridgeEntryFor(clientToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cooldown: skip the entry during its window; surface the remembered
+	// rate-limit/ban error so the client keeps getting 429/403 instead of a
+	// generic failure (mirrors the fixed-token cooldown-skip branch).
+	if until := entry.runs.CooldownUntil(); time.Now().Before(until) {
+		if rle := entry.runs.RateLimitError(); rle != nil {
+			return nil, rle
+		}
+		if be := entry.runs.BanError(); be != nil {
+			return nil, be
+		}
+		return nil, fmt.Errorf("bridge: token cooling down until %s", until.Format(time.RFC3339))
+	}
+
+	// Daily rolling cap, per client token (mirrors the fixed-token path).
+	if p.cfg.MaxMessagesPerDay > 0 && p.bridgeUsageCount(entry) >= p.cfg.MaxMessagesPerDay {
+		p.logger.Debug("pool: bridge entry daily message limit", "limit", p.cfg.MaxMessagesPerDay)
+		return nil, p.bridgeDailyLimitError(entry)
+	}
+
+	run, err := entry.runs.Acquire(ctx, agentID)
+	if err != nil {
+		if errors.Is(err, upstream.ErrAuthRejected) {
+			entry.runs.Cooldown(runs.DefaultCooldown)
+			p.logger.Debug("pool: bridge entry cooling down", "duration", runs.DefaultCooldown.String())
+		}
+		if rle := asRateLimit(err); rle != nil {
+			entry.runs.CooldownRateLimit(rle)
+		}
+		if be := asBan(err); be != nil {
+			entry.runs.CooldownBan(be)
+		}
+		return nil, err
+	}
+
+	instanceID, err := entry.session.EnsureSession(ctx)
+	if err != nil {
+		// Release the run lease we just acquired — otherwise the inflight
+		// counter never returns to zero and the run can never be FINISHed
+		// on rotation (draining-list leak).
+		entry.runs.Release(run)
+		if rle := asRateLimit(err); rle != nil {
+			entry.runs.CooldownRateLimit(rle)
+		}
+		if be := asBan(err); be != nil {
+			entry.runs.CooldownBan(be)
+		}
+		return nil, err
+	}
+
+	ss := entry.session.Snapshot()
+	p.logger.Debug("pool: bridge lease acquired", "model", model, "agent", agentID, "instance_id", instanceID,
+		"tier", ss.TierAccess, "country", ss.TierCountry)
+	return &Lease{Token: -1, AgentID: agentID, Run: run, SessionInstanceID: instanceID,
+		TierAccess: ss.TierAccess, TierCountry: ss.TierCountry, Bridge: entry}, nil
+}
+
 // LeaseRelease decrements the leased run's inflight counter. Call when the
 // request completes or fails. Safe on nil leases.
 func (p *Pool) LeaseRelease(lease *Lease) {
-	if lease == nil || lease.Token < 0 || lease.Token >= len(p.toks) || lease.Run == nil {
+	if lease == nil || lease.Run == nil {
+		return
+	}
+	if lease.Bridge != nil {
+		lease.Bridge.runs.Release(lease.Run)
+		return
+	}
+	if lease.Token < 0 || lease.Token >= len(p.toks) {
 		return
 	}
 	p.toks[lease.Token].runs.Release(lease.Run)
@@ -309,12 +422,76 @@ func (p *Pool) CooldownTokenBan(token int, be *upstream.BanError) {
 	p.toks[token].runs.CooldownBan(be)
 }
 
+// InvalidateBridgeSession drops the cached free session of the bridge
+// entry so the next AcquireBridge re-creates it (session-invalid recovery).
+func (p *Pool) InvalidateBridgeSession(lease *Lease) {
+	if lease == nil || lease.Bridge == nil {
+		return
+	}
+	lease.Bridge.session.Invalidate()
+}
+
+// InvalidateBridgeRun drops the current run of the bridge entry for agentID
+// so the next AcquireBridge starts a fresh one (run-invalid recovery).
+func (p *Pool) InvalidateBridgeRun(lease *Lease, agentID string) {
+	if lease == nil || lease.Bridge == nil {
+		return
+	}
+	lease.Bridge.runs.Invalidate(agentID)
+}
+
+// CooldownBridge puts the bridge entry's token in a cooldown window of
+// duration d (auth-reject recovery, e.g. runs.DefaultCooldown).
+func (p *Pool) CooldownBridge(lease *Lease, d time.Duration) {
+	if lease == nil || lease.Bridge == nil {
+		return
+	}
+	lease.Bridge.runs.Cooldown(d)
+}
+
+// CooldownBridgeRateLimit applies a rate-limit cooldown to the bridge entry
+// (remembered so AcquireBridge surfaces 429 + Retry-After).
+func (p *Pool) CooldownBridgeRateLimit(lease *Lease, rle *upstream.RateLimitError) {
+	if lease == nil || lease.Bridge == nil || rle == nil {
+		return
+	}
+	lease.Bridge.runs.CooldownRateLimit(rle)
+}
+
+// CooldownBridgeBan applies a ban cooldown to the bridge entry (remembered
+// so AcquireBridge surfaces 403 banned + resumes-at during the window).
+func (p *Pool) CooldownBridgeBan(lease *Lease, be *upstream.BanError) {
+	if lease == nil || lease.Bridge == nil || be == nil {
+		return
+	}
+	lease.Bridge.runs.CooldownBan(be)
+}
+
+// BridgeCount returns the number of cached bridge entries (healthz).
+func (p *Pool) BridgeCount() int {
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+	return len(p.bridge)
+}
+
 // Chat sends a chat-completion request through the leased token's upstream
 // client, returning the raw SSE body reader on 2xx. The caller must release
 // the lease (LeaseRelease) once the request completes or fails, and close
 // the returned body.
 func (p *Pool) Chat(ctx context.Context, lease *Lease, opts upstream.ChatOptions, body []byte) (io.ReadCloser, error) {
-	if lease == nil || lease.Token < 0 || lease.Token >= len(p.toks) {
+	if lease == nil {
+		return nil, errors.New("pool: chat: invalid lease")
+	}
+	if lease.Bridge != nil {
+		rc, err := lease.Bridge.client.ChatCompletions(ctx, opts, body)
+		if err == nil {
+			// Only chats that actually went upstream count against the
+			// daily cap; errors are not recorded.
+			p.bridgeRecordChat(lease.Bridge)
+		}
+		return rc, err
+	}
+	if lease.Token < 0 || lease.Token >= len(p.toks) {
 		return nil, errors.New("pool: chat: invalid lease token")
 	}
 	rc, err := p.toks[lease.Token].client.ChatCompletions(ctx, opts, body)
@@ -450,6 +627,149 @@ func (p *Pool) usageResetIn(token int) time.Duration {
 	return reset
 }
 
+// --- bridge mode internals ---
+
+// bridgeEntryFor returns the cached bridge entry for clientToken, creating
+// it on first use (upstream client + session manager + run manager) and
+// recording the use for LRU order. A token that cannot build an upstream
+// client yields an error and is never cached.
+func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+
+	if entry, ok := p.bridge[clientToken]; ok {
+		entry.lastUsed = time.Now()
+		p.bridgeTouch(clientToken)
+		return entry, nil
+	}
+
+	client, err := upstream.New(clientToken, p.cfg)
+	if err != nil {
+		return nil, fmt.Errorf("bridge: %w", err)
+	}
+	entry := &bridgeEntry{token: clientToken, client: client}
+	entry.session = session.NewManager(client)
+	entry.runs = runs.NewRunManager(client, entry.session, p.cfg.RotationInterval)
+	entry.lastUsed = time.Now()
+
+	p.bridge[clientToken] = entry
+	p.bridgeOrder = append(p.bridgeOrder, clientToken)
+	p.bridgeEvictLocked()
+	return entry, nil
+}
+
+// bridgeTouch moves clientToken to the newest end of the LRU order.
+func (p *Pool) bridgeTouch(clientToken string) {
+	for i, tok := range p.bridgeOrder {
+		if tok == clientToken {
+			if i < len(p.bridgeOrder)-1 {
+				copy(p.bridgeOrder[i:], p.bridgeOrder[i+1:])
+				p.bridgeOrder[len(p.bridgeOrder)-1] = clientToken
+			}
+			return
+		}
+	}
+	p.bridgeOrder = append(p.bridgeOrder, clientToken)
+}
+
+// bridgeEvictLocked evicts the oldest bridge entries while the cache is
+// over maxBridgeEntries (LRU): the evicted entry's runs are FINISHed
+// best-effort (bounded by the client's session-call timeout), then the
+// entry is dropped. Caller holds bridgeMu.
+func (p *Pool) bridgeEvictLocked() {
+	for len(p.bridgeOrder) > maxBridgeEntries {
+		oldest := p.bridgeOrder[0]
+		if entry, ok := p.bridge[oldest]; ok {
+			entry.runs.FinishAllRuns(context.Background())
+		}
+		delete(p.bridge, oldest)
+		p.bridgeOrder = p.bridgeOrder[1:]
+		p.logger.Debug("pool: bridge entry evicted (cache full)", "bridge_entries", len(p.bridge))
+	}
+}
+
+// bridgeRecordChat appends one successful upstream chat for the bridge
+// entry and prunes its usage history outside the 24h window.
+func (p *Pool) bridgeRecordChat(entry *bridgeEntry) {
+	if entry == nil {
+		return
+	}
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+	cutoff := time.Now().Add(-usageWindow)
+	history := entry.usage
+	first := 0
+	for first < len(history) && history[first].Before(cutoff) {
+		first++
+	}
+	entry.usage = append(history[first:], time.Now())
+}
+
+// bridgeUsageCount returns how many successful chats the bridge entry sent
+// within the last usageWindow, pruning expired timestamps.
+func (p *Pool) bridgeUsageCount(entry *bridgeEntry) int {
+	if entry == nil {
+		return 0
+	}
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+	cutoff := time.Now().Add(-usageWindow)
+	history := entry.usage
+	first := 0
+	for first < len(history) && history[first].Before(cutoff) {
+		first++
+	}
+	entry.usage = history[first:]
+	return len(entry.usage)
+}
+
+// bridgeUsageResetIn is how long until the bridge entry's oldest usage
+// timestamp ages out of the window (0 when no usage is recorded or the
+// reset is due).
+func (p *Pool) bridgeUsageResetIn(entry *bridgeEntry) time.Duration {
+	if entry == nil {
+		return 0
+	}
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+	history := entry.usage
+	if len(history) == 0 {
+		return 0
+	}
+	reset := time.Until(history[0].Add(usageWindow))
+	if reset < 0 {
+		return 0
+	}
+	return reset
+}
+
+// bridgeDailyLimitError builds the 429 surfaced when the bridge entry is
+// capped by MAX_MESSAGES_PER_DAY (mirrors dailyLimitError for fixed
+// tokens): RetryAfter is the time until the entry's oldest recorded chat
+// ages out of the 24h window.
+func (p *Pool) bridgeDailyLimitError(entry *bridgeEntry) *upstream.RateLimitError {
+	return &upstream.RateLimitError{
+		RetryAfter:  p.bridgeUsageResetIn(entry),
+		Limit:       float64(p.cfg.MaxMessagesPerDay),
+		RecentCount: float64(p.bridgeUsageCount(entry)),
+		Body:        "daily message limit reached",
+	}
+}
+
+// bridgeLen returns the number of cached bridge entries (test accessor).
+func (p *Pool) bridgeLen() int {
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+	return len(p.bridge)
+}
+
+// bridgeToken returns the cached entry for clientToken (test accessor).
+func (p *Pool) bridgeToken(clientToken string) *bridgeEntry {
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+	return p.bridge[clientToken]
+}
+
 // bestDailyLimit picks the daily-cap error whose window frees first: the
 // client retries when the first token has a free slot again.
 func bestDailyLimit(entries []*upstream.RateLimitError) *upstream.RateLimitError {
@@ -551,6 +871,46 @@ func (p *Pool) maintainTick(ctx context.Context) {
 		}
 		cancel()
 	}
+	// Bridge sweep: drop entries idle past bridgeIdleEvict (runs FINISHed
+	// best-effort), maintain the rest like the fixed tokens above.
+	p.bridgeMaintain(ctx)
+}
+
+// bridgeMaintain sweeps the bridge cache: entries idle past bridgeIdleEvict
+// are dropped (runs FINISHed best-effort); the rest get the per-token
+// maintain work — rotate aged runs and advance queued sessions, bounded by
+// the same RequestTimeout ctx as the fixed-token loop.
+func (p *Pool) bridgeMaintain(ctx context.Context) {
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+	now := time.Now()
+	for token, entry := range p.bridge {
+		if now.Sub(entry.lastUsed) > bridgeIdleEvict {
+			entry.runs.FinishAllRuns(context.Background())
+			delete(p.bridge, token)
+			p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, token)
+			p.logger.Debug("pool: bridge entry evicted (idle)", "bridge_entries", len(p.bridge))
+			continue
+		}
+		mCtx, cancel := context.WithTimeout(ctx, p.cfg.RequestTimeout)
+		entry.runs.Maintain(mCtx)
+		if snap := entry.session.Snapshot(); snap.Status == "queued" {
+			if _, err := entry.session.EnsureSession(mCtx); err != nil {
+				p.logger.Debug("pool: bridge maintain session not ready", "err", err)
+			}
+		}
+		cancel()
+	}
+}
+
+// removeBridgeOrder drops token from the LRU order slice.
+func removeBridgeOrder(order []string, token string) []string {
+	for i, tok := range order {
+		if tok == token {
+			return append(order[:i], order[i+1:]...)
+		}
+	}
+	return order
 }
 
 // bestWaitingRoom picks the queue entry with the lowest position; ties break

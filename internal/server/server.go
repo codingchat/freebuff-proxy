@@ -19,6 +19,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -134,9 +135,11 @@ func remoteHost(r *http.Request) string {
 
 // requireAuth wraps a handler with client-auth enforcement. When no API keys
 // are configured the handler passes through untouched; /healthz is always
-// exempt (the caller wires it without requireAuth).
+// exempt (the caller wires it without requireAuth). Bridge mode (no
+// AUTH_TOKENS) also passes through: the Authorization header IS the upstream
+// token there, and API_KEYS is meaningless.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
-	if len(s.cfg.APIKeys) == 0 {
+	if len(s.cfg.APIKeys) == 0 || s.cfg.BridgeMode() {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -168,6 +171,19 @@ func (s *Server) authorized(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// clientToken returns the request's bearer token (Authorization: Bearer or
+// x-api-key), trimmed. Empty when the request carries none. In bridge mode
+// this token IS the client's FreeBuff token relayed upstream.
+func clientToken(r *http.Request) string {
+	provided := ""
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		provided = strings.TrimPrefix(h, "Bearer ")
+	} else if h := r.Header.Get("x-api-key"); h != "" {
+		provided = h
+	}
+	return strings.TrimSpace(provided)
 }
 
 // --- chat ---
@@ -220,10 +236,90 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	s.logger.Debug("chat request", "model", model, "stream", stream, "remote", remoteHost(r))
 
-	lease, err := s.pool.Acquire(ctx, model)
+	// Bridge mode (no AUTH_TOKENS): the client's Authorization header IS the
+	// upstream token. No token → 401 before touching the pool.
+	var up io.ReadCloser
+	var lease *pool.Lease
+	if s.cfg.BridgeMode() {
+		tok := clientToken(r)
+		if tok == "" {
+			s.writeJSONError(w, http.StatusUnauthorized,
+				"bridge mode: send your FreeBuff token as Authorization: Bearer <token> (no AUTH_TOKENS configured on the proxy)",
+				"invalid_request_error", "missing_bearer_token", 0)
+			return
+		}
+		up, lease, err = s.chatAttempt(ctx, model, normalized,
+			func(ctx context.Context, model string) (*pool.Lease, error) {
+				return s.pool.AcquireBridge(ctx, tok, model)
+			},
+			s.pool.Chat,
+			s.pool.InvalidateBridgeSession,
+			s.pool.InvalidateBridgeRun,
+			func(l *pool.Lease) { s.pool.CooldownBridge(l, runs.DefaultCooldown) },
+			s.pool.CooldownBridgeBan,
+			s.pool.CooldownBridgeRateLimit,
+		)
+	} else {
+		up, lease, err = s.chatAttempt(ctx, model, normalized,
+			func(ctx context.Context, model string) (*pool.Lease, error) { return s.pool.Acquire(ctx, model) },
+			s.pool.Chat,
+			func(l *pool.Lease) { s.pool.InvalidateSession(l.Token) },
+			func(l *pool.Lease, agentID string) { s.pool.InvalidateRun(l.Token, agentID) },
+			func(l *pool.Lease) { s.pool.CooldownToken(l.Token, runs.DefaultCooldown) },
+			func(l *pool.Lease, be *upstream.BanError) { s.pool.CooldownTokenBan(l.Token, be) },
+			func(l *pool.Lease, rle *upstream.RateLimitError) { s.pool.CooldownTokenRateLimit(l.Token, rle) },
+		)
+	}
 	if err != nil {
 		s.writeError(w, r, err)
 		return
+	}
+	defer func() { _ = up.Close() }()
+
+	s.logger.Debug("chat upstream ok",
+		"token", tokenLabel(lease), "model", model, "stream", stream)
+
+	if stream {
+		stats := &relayStats{}
+		s.relayStream(ctx, w, up, stats)
+		s.logger.Info("chat done",
+			"model", model, "stream", true,
+			"ms", time.Since(start).Milliseconds(),
+			"chunks", stats.chunks, "bytes", stats.bytes)
+	} else {
+		stats := &relayStats{}
+		s.relayJSON(ctx, w, up, stats)
+		s.logger.Info("chat done",
+			"model", model, "stream", false,
+			"ms", time.Since(start).Milliseconds(),
+			"bytes", stats.bytes)
+	}
+}
+
+// chatAttempt runs the retry-once recovery loop for one chat request: chat
+// through the leased token; on session-invalid / run-invalid the lease is
+// released, the cached session/run invalidated, and a fresh lease acquired
+// once; on auth-reject / ban / rate-limit the token is cooled down and the
+// error returned for writeError. The acquire/chat/invalidate/cooldown hooks
+// are closures so the pooled (fixed-token) and bridge paths share the exact
+// same recovery semantics. On success the returned body reader and final
+// lease belong to the caller: close the body and release the lease via
+// Pool.LeaseRelease when done.
+func (s *Server) chatAttempt(
+	ctx context.Context,
+	model string,
+	normalized []byte,
+	acquire func(context.Context, string) (*pool.Lease, error),
+	chat func(context.Context, *pool.Lease, upstream.ChatOptions, []byte) (io.ReadCloser, error),
+	invalidateSession func(*pool.Lease),
+	invalidateRun func(*pool.Lease, string),
+	cooldownAuth func(*pool.Lease),
+	cooldownBan func(*pool.Lease, *upstream.BanError),
+	cooldownRate func(*pool.Lease, *upstream.RateLimitError),
+) (io.ReadCloser, *pool.Lease, error) {
+	lease, err := acquire(ctx, model)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	opts := upstream.ChatOptions{
@@ -244,77 +340,60 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	var up io.ReadCloser
 	attempts := 0
 	for {
-		up, err = s.pool.Chat(ctx, lease, opts, normalized)
+		up, err = chat(ctx, lease, opts, normalized)
 		if err == nil {
-			break
+			return up, lease, nil
 		}
 		attempts++
 		switch {
 		case errors.Is(err, upstream.ErrSessionInvalid):
 			release()
-			s.pool.InvalidateSession(lease.Token)
+			invalidateSession(lease)
 		case errors.Is(err, upstream.ErrRunInvalid):
 			release()
-			s.pool.InvalidateRun(lease.Token, lease.AgentID)
+			invalidateRun(lease, lease.AgentID)
 		case errors.Is(err, upstream.ErrAuthRejected):
-			s.pool.CooldownToken(lease.Token, runs.DefaultCooldown)
+			cooldownAuth(lease)
 			release()
-			s.writeError(w, r, err)
-			return
+			return nil, nil, err
 		case errors.Is(err, upstream.ErrBanned):
 			var be *upstream.BanError
 			if errors.As(err, &be) {
-				s.pool.CooldownTokenBan(lease.Token, be)
+				cooldownBan(lease, be)
 			}
 			release()
-			s.writeError(w, r, err)
-			return
+			return nil, nil, err
 		case errors.Is(err, upstream.ErrRateLimited):
 			var rle *upstream.RateLimitError
 			if errors.As(err, &rle) {
-				s.pool.CooldownTokenRateLimit(lease.Token, rle)
+				cooldownRate(lease, rle)
 			}
 			release()
-			s.writeError(w, r, err)
-			return
+			return nil, nil, err
 		default:
 			release()
-			s.writeError(w, r, err)
-			return
+			return nil, nil, err
 		}
 		if attempts > 1 {
-			s.writeError(w, r, err)
-			return
+			return nil, nil, err
 		}
-		lease, err = s.pool.Acquire(ctx, model)
+		lease, err = acquire(ctx, model)
 		if err != nil {
-			s.writeError(w, r, err)
-			return
+			return nil, nil, err
 		}
 		released = false
 		opts.RunID = lease.Run.RunID
 		opts.SessionInstanceID = lease.SessionInstanceID
 	}
-	defer func() { _ = up.Close() }()
+}
 
-	s.logger.Debug("chat upstream ok",
-		"token", lease.Token+1, "model", model, "stream", stream)
-
-	if stream {
-		stats := &relayStats{}
-		s.relayStream(ctx, w, up, stats)
-		s.logger.Info("chat done",
-			"model", model, "stream", true,
-			"ms", time.Since(start).Milliseconds(),
-			"chunks", stats.chunks, "bytes", stats.bytes)
-	} else {
-		stats := &relayStats{}
-		s.relayJSON(ctx, w, up, stats)
-		s.logger.Info("chat done",
-			"model", model, "stream", false,
-			"ms", time.Since(start).Milliseconds(),
-			"bytes", stats.bytes)
+// tokenLabel renders the lease's token for logging: "bridge" for bridge
+// leases, the 1-based fixed-token index otherwise.
+func tokenLabel(lease *pool.Lease) string {
+	if lease == nil || lease.Bridge != nil {
+		return "bridge"
 	}
+	return fmt.Sprintf("%d", lease.Token+1)
 }
 
 // relayStats accumulates per-response relay counters for logging.
@@ -424,13 +503,15 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 }
 
-// handleHealthz reports uptime, model count, and the per-token snapshot.
+// handleHealthz reports uptime, model count, the per-token snapshot, and
+// the cached bridge entries (bridge mode).
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"uptime_seconds": int64(time.Since(s.started).Seconds()),
 		"models":         s.reg.ModelCount(),
 		"tokens":         s.pool.Snapshot(),
+		"bridge_tokens":  s.pool.BridgeCount(),
 	})
 }
 

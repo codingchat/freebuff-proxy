@@ -40,6 +40,11 @@ type Config struct {
 	IdleRotationTimeout time.Duration // 0 = disabled: pause rotation/refresh after this idle period
 }
 
+// BridgeMode reports whether the proxy runs without any AUTH_TOKENS: every
+// client supplies their own FreeBuff token per request (Authorization: Bearer
+// or x-api-key), and the proxy relays with that token upstream.
+func (c Config) BridgeMode() bool { return len(c.AuthTokens) == 0 }
+
 // rawConfig mirrors the JSON file / env keys as strings so that parsing and
 // validation happen once, after all overrides are applied.
 type rawConfig struct {
@@ -176,8 +181,6 @@ func Load(configPath string) (Config, error) {
 // Validate checks the resolved configuration. It must be called before use.
 func (c Config) Validate() error {
 	switch {
-	case len(c.AuthTokens) == 0:
-		return errors.New("at least one AUTH_TOKENS is required")
 	case c.ListenAddr == "":
 		return errors.New("LISTEN_ADDR cannot be empty")
 	case c.UpstreamBaseURL == "":

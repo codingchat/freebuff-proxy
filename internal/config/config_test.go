@@ -75,10 +75,17 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadNoTokensFails(t *testing.T) {
+func TestLoadNoTokensBridgeMode(t *testing.T) {
 	clearEnv(t)
-	if _, err := Load(""); err == nil {
-		t.Fatal("Load with no AUTH_TOKENS succeeded, want error")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load with no AUTH_TOKENS: %v", err)
+	}
+	if len(cfg.AuthTokens) != 0 {
+		t.Errorf("AuthTokens = %v, want empty (bridge mode)", cfg.AuthTokens)
+	}
+	if !cfg.BridgeMode() {
+		t.Error("BridgeMode() = false, want true with no tokens")
 	}
 }
 
@@ -288,7 +295,6 @@ func TestValidate(t *testing.T) {
 		name   string
 		mutate func(*Config)
 	}{
-		{"no tokens", func(c *Config) { c.AuthTokens = nil }},
 		{"empty url", func(c *Config) { c.UpstreamBaseURL = "" }},
 		{"unparseable url", func(c *Config) { c.UpstreamBaseURL = "https://exa mple.com" }},
 		{"non-http scheme", func(c *Config) { c.UpstreamBaseURL = "ftp://codebuff.com" }},
