@@ -66,7 +66,7 @@ graph TD
 
 | Term | Meaning |
 |---|---|
-| **Token** | Your FreeBuff authentication credential (`auth_code`). Obtained via web login at freebuff.llm.pm or official CLI. |
+| **Token** | Your FreeBuff authentication credential (`authToken`). Obtained via official CLI login (`freebuff`). |
 | **Session** | A "free session" created upstream by the proxy so FreeBuff treats requests as coming from the official CLI. |
 | **Run** | An "agent run" inside a session required for model requests. Automatically rotated every 6h. |
 | **Rotation** | Periodically finishing old agent runs and starting new ones upstream to prevent long-lived session detection. |
@@ -198,13 +198,13 @@ Windows builds: `go build -o freebuff-proxy.exe ./cmd/freebuff-proxy`.
 
 ## Getting a token
 
-Two ways, plus scripts that automate the CLI path:
+The FreeBuff token (`authToken`) is issued when you log in through the official `freebuff` CLI:
 
-- **Official CLI (Recommended):** `npm i -g freebuff`, run `freebuff` once to log in, and the CLI saves `authToken` to `~/.config/manicode/credentials.json` (Windows: `C:\Users\<you>\.config\manicode\credentials.json`). The value of `authToken` is your token.
-- **Web flow (freebuff.llm.pm):** Log in at [freebuff.llm.pm](https://freebuff.llm.pm). Under **Freebuff Auth** click **Generate login URL** (`https://freebuff.com/login?auth_code=...`). Open the link in a browser to complete authentication; the resulting `authToken` (or `auth_code` key for automated scripts) is written into `.env`.
-- **Scripts:** `scripts/get-freebuff-token.sh` (bash) or `scripts/get-freebuff-token.ps1` (PowerShell) automate installing the CLI, completing login, and writing `AUTH_TOKENS` into `.env`.
-Use the token without any `Bearer ` prefix; the proxy adds it upstream itself. For higher throughput, log in with several accounts and comma-separate the tokens: `AUTH_TOKENS=tok1,tok2`.
+1. **Official CLI:** Run `npm i -g freebuff` and run `freebuff` once to log in via your browser.
+2. **Token location:** The CLI saves `authToken` to `~/.config/manicode/credentials.json` (Windows: `C:\Users\<you>\.config\manicode\credentials.json`).
+3. **Scripts:** `scripts/get-freebuff-token.sh` (bash) or `scripts/get-freebuff-token.ps1` (PowerShell) automate installing the CLI, completing the login, and writing `AUTH_TOKENS` into `.env` for you.
 
+Use the `authToken` value without any `Bearer ` prefix; the proxy adds it upstream automatically. For higher throughput, log in with several accounts and comma-separate the tokens: `AUTH_TOKENS=tok1,tok2`.
 ## Quick start
 
 1. Copy the example config:

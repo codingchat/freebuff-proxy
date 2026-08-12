@@ -66,8 +66,7 @@ function Get-AuthToken([string]$path) {
 if (-not (Get-Command freebuff -ErrorAction SilentlyContinue)) {
   if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     Write-Host "ERROR: node/npm not found and the freebuff CLI is not installed either." -ForegroundColor Red
-    Write-Host "Install Node.js >= 22 (https://nodejs.org) and re-run, or log in at" -ForegroundColor Red
-    Write-Host "https://freebuff.llm.pm and copy the token from the page instead." -ForegroundColor Red
+    Write-Host "Install Node.js >= 22 (https://nodejs.org) and re-run." -ForegroundColor Red
     exit 1
   }
   Write-Host "Installing the FreeBuff CLI (npm i -g freebuff)..." -ForegroundColor Cyan
@@ -88,11 +87,8 @@ if (-not $Force -and $existing -and (Get-AuthToken $existing)) {
 # --- 3. extract the token ---------------------------------------------------
 $creds = Find-CredentialsFile
 if (-not $creds) {
-  Write-Host "ERROR: credentials file not found after login. Looked in ~/.config/manicode|codebuff/credentials.json" -ForegroundColor Red
-  Write-Host "Fallback (web, no CLI):" -ForegroundColor Yellow
-  Write-Host "  1. Log in at https://freebuff.llm.pm, Freebuff Auth -> Generate login URL" -ForegroundColor Yellow
-  Write-Host "  2. Copy the URL it shows (https://freebuff.com/login?auth_code=...)" -ForegroundColor Yellow
-  Write-Host "  3. The token is the auth_code value from that link; set AUTH_TOKENS=<that value> in .env" -ForegroundColor Yellow
+  Write-Host "ERROR: credentials file not found after login (~\.config\manicode\credentials.json)." -ForegroundColor Red
+  Write-Host "Make sure you completed the 'freebuff' CLI login in your browser." -ForegroundColor Red
   exit 1
 }
 $token = Get-AuthToken $creds

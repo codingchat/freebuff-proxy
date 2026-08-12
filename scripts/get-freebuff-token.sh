@@ -49,8 +49,7 @@ done
 if ! command -v freebuff >/dev/null 2>&1; then
   if ! command -v node >/dev/null 2>&1; then
     echo "ERROR: node/npm not found and the freebuff CLI is not installed either." >&2
-    echo "Install Node.js >= 22 (https://nodejs.org) and re-run, or log in at" >&2
-    echo "https://freebuff.llm.pm and copy the token from the page instead." >&2
+    echo "Install Node.js >= 22 (https://nodejs.org) and re-run." >&2
     exit 1
   fi
   echo "Installing the FreeBuff CLI (npm i -g freebuff)..."
@@ -98,11 +97,8 @@ for p in "$HOME/.config/manicode/credentials.json" "$HOME/.config/codebuff/crede
   [ -f "$p" ] && CREDS="$p" && break
 done
 if [ -z "$CREDS" ]; then
-  echo "ERROR: credentials file not found after login (~/.config/manicode|codebuff/credentials.json)." >&2
-  echo "Fallback (web, no CLI):" >&2
-  echo "  1. Log in at https://freebuff.llm.pm, Freebuff Auth -> Generate login URL" >&2
-  echo "  2. Copy the URL it shows (https://freebuff.com/login?auth_code=...)" >&2
-  echo "  3. The token is the auth_code value from that link; set AUTH_TOKENS=<that value> in .env" >&2
+  echo "ERROR: credentials file not found after login (~/.config/manicode/credentials.json)." >&2
+  echo "Make sure you completed the 'freebuff' CLI login in your browser." >&2
   exit 1
 fi
 TOKEN="$(extract_token)"

@@ -236,9 +236,8 @@ if (-not $NoEnv) {
     Write-Host "AUTH_TOKENS written into $envPath (value hidden)." -ForegroundColor Green
   } else {
     Write-Host "No CLI token available." -ForegroundColor Yellow
-    $pasted = Read-Host "Paste a FreeBuff login URL or auth_code (Enter to leave empty / bridge mode)"
-    $pasted = $pasted.Trim()
-    if ($pasted -match 'auth_code=([^&\s]+)') { $pasted = $Matches[1] }
+    $pasted = Read-Host "Paste your FreeBuff authToken (Enter to leave empty / bridge mode)"
+    $pasted = $pasted.Trim().Trim('"').Trim("'")
     if ($pasted.Length -gt 8) {
       Set-EnvValue "AUTH_TOKENS" $pasted
       Write-Host "AUTH_TOKENS written into $envPath (value hidden)." -ForegroundColor Green

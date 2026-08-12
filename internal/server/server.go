@@ -633,9 +633,7 @@ func defaultHintForCode(code, message string) string {
 	case code == "account_banned" || strings.Contains(lowerMsg, "banned"):
 		return "Account suspended upstream. Token is dead; create a fresh account with an established GitHub login."
 	case code == "upstream_auth_rejected" || code == "invalid_api_key" || strings.Contains(lowerMsg, "invalid api key"):
-		return "Token invalid or expired. Get a fresh token at https://freebuff.llm.pm or run scripts/get-freebuff-token.sh"
-	case code == "waiting_room_queued":
-		return "Upstream queue busy. Client will auto-retry after Retry-After duration."
+		return "Token invalid or expired. Get a fresh token by running freebuff or scripts/get-freebuff-token.sh"
 	case code == "rate_limited":
 		return "Daily message cap or rate limit reached. Wait for quota reset or add another token."
 	case code == "missing_bearer_token":

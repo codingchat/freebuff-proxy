@@ -291,14 +291,11 @@ ensure_cli_login() {
 paste_token() {
   [ "$NO_PROMPT" = "1" ] && { warn "No token and --no-prompt: AUTH_TOKENS stays empty. Chat will not work until you set it."; return 1; }
   echo ""
-  warn "Fallback without the CLI: log in at https://freebuff.llm.pm,"
-  warn "Freebuff Auth -> Generate login URL, then copy the URL it shows."
+  warn "Manual token entry: paste your FreeBuff authToken from credentials.json"
   local pasted=""
-  ask pasted "Paste the login URL or just the auth_code (Enter to skip)" ""
+  ask pasted "Paste your authToken (Enter to skip)" ""
   [ -n "$pasted" ] || { warn "Skipped - you can set AUTH_TOKENS in .env later."; return 1; }
-  if [[ "$pasted" =~ auth_code=([^\&[:space:]]+) ]]; then
-    pasted="${BASH_REMATCH[1]}"
-  fi
+  pasted="$(echo "$pasted" | tr -d '[:space:]"')"
   if [ "${#pasted}" -gt 8 ]; then
     TOKEN_VALUE="$pasted"
     TOKEN_SOURCE="pasted"
