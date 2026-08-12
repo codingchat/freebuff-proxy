@@ -6,7 +6,8 @@
 #   1. Open a terminal
 #   2. Run:
 #        curl -sSL https://raw.githubusercontent.com/trefeon/freebuff-proxy/main/scripts/install-freebuff-proxy.sh | bash
-#   3. Read what it prints. It downloads the binary, creates .env from the
+#   3. Read what it prints. It checks dependencies (installing missing ones
+#      via your package manager), downloads the binary, creates .env from the
 #      example, and either pulls your token from the freebuff CLI login or
 #      asks you to paste it (a login URL or just the auth_code).
 #
@@ -18,6 +19,7 @@ REPO="trefeon/freebuff-proxy"
 DIR=""
 SKIP_TOKEN=0
 NO_ENV=0
+FORCE=0
 ENV_FILE=""
 
 while [ $# -gt 0 ]; do
@@ -26,9 +28,10 @@ while [ $# -gt 0 ]; do
     --dir) DIR="${2:-}"; shift 2 ;;
     --skip-token) SKIP_TOKEN=1; shift ;;
     --no-env) NO_ENV=1; shift ;;
+    --force) FORCE=1; shift ;;
     --env-file=*) ENV_FILE="${1#*=}"; shift ;;
     --env-file) ENV_FILE="${2:-}"; shift 2 ;;
-    -h|--help) grep '^#' "$0" | head -30; exit 0 ;;
+    -h|--help) grep '^#' "$0" | head -40; exit 0 ;;
     *) echo "unknown arg: $1 (see header)" >&2; exit 1 ;;
   esac
 done
@@ -53,11 +56,48 @@ echo "" >&2
 if [ -z "$DIR" ]; then DIR="$(pwd)"; fi
 mkdir -p "$DIR"
 
-# --- 2. resolve the latest release ------------------------------------------
+# --- 2. dependencies: detect what is missing, install it ---------------------
+NEEDED=""
+for bin in curl tar sha256sum; do
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    NEEDED="$NEEDED $bin"
+  fi
+done
+if [ -n "$NEEDED" ]; then
+  warn "Missing dependencies:$NEEDED — installing via your package manager..."
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update -qq && sudo apt-get install -y -qq curl tar coreutils
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y curl tar coreutils
+  elif command -v yum >/dev/null 2>&1; then
+    sudo yum install -y curl tar coreutils
+  elif command -v apk >/dev/null 2>&1; then
+    sudo apk add --no-cache curl tar
+  elif command -v brew >/dev/null 2>&1; then
+    brew install curl gnu-tar coreutils
+  else
+    echo "ERROR: no supported package manager found. Install curl, tar and coreutils manually, then re-run." >&2
+    exit 1
+  fi
+  for bin in curl tar sha256sum; do
+    command -v "$bin" >/dev/null 2>&1 || { echo "ERROR: $bin still missing after install." >&2; exit 1; }
+  done
+fi
+ok "Dependencies OK (curl, tar, sha256sum)"
+
+# node is optional: only needed to extract a token from the freebuff CLI's
+# credentials file. Without it the script falls back to python3 or asks you
+# to paste a token from the web page.
+if ! command -v node >/dev/null 2>&1; then
+  warn "node not found — token auto-extraction from the freebuff CLI login will fall back to python3 or manual paste (fine for most users)."
+fi
+
+# --- 3. resolve the latest release ------------------------------------------
 RELEASE="$(curl -sSL "https://api.github.com/repos/$REPO/releases/latest")"
 VERSION="$(printf '%s' "$RELEASE" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1 | sed 's/^v//')"  # assets use 0.1.1, tag is v0.1.1
 if [ -z "$VERSION" ]; then
-  echo "ERROR: could not resolve the latest release from GitHub." >&2
+  echo "ERROR: could not resolve the latest release from GitHub (offline? blocked?)." >&2
+  echo "If you already have a freebuff-proxy binary, use --skip-install... there is no such flag; run the binary directly." >&2
   exit 1
 fi
 ok "Latest release: v$VERSION"
@@ -78,43 +118,50 @@ esac
 ASSET="freebuff-proxy_${VERSION}_${GOOS}_${GOARCH}.tar.gz"
 ok "Asset: $ASSET"
 
-ASSET_URL="$(printf '%s' "$RELEASE" | tr ',' '\n' | sed -n "s/.*\"browser_download_url\": *\"\([^\"]*${ASSET}\"\).*/\1/p" | head -1 | tr -d '"')"
-SUMS_URL="$(printf '%s' "$RELEASE" | tr ',' '\n' | sed -n 's/.*"browser_download_url": *"\([^"]*checksums.txt"\).*/\1/p' | head -1 | tr -d '"')"
-if [ -z "$ASSET_URL" ]; then
-  echo "ERROR: asset $ASSET not found in the release." >&2
-  exit 1
+# --- 4. already installed? ---------------------------------------------------
+EXISTING_BIN="$(find "$DIR" -maxdepth 2 -type f -name freebuff-proxy -perm -u+x 2>/dev/null | head -1)"
+if [ -n "$EXISTING_BIN" ] && [ "$FORCE" = "0" ]; then
+  warn "freebuff-proxy already exists: $EXISTING_BIN"
+  warn "Skipping the download (re-run with --force to update)."
+  BIN="$EXISTING_BIN"
+else
+  ASSET_URL="$(printf '%s' "$RELEASE" | tr ',' '\n' | sed -n "s/.*\"browser_download_url\": *\"\([^\"]*${ASSET}\"\).*/\1/p" | head -1 | tr -d '"')"
+  SUMS_URL="$(printf '%s' "$RELEASE" | tr ',' '\n' | sed -n 's/.*"browser_download_url": *"\([^"]*checksums.txt"\).*/\1/p' | head -1 | tr -d '"')"
+  if [ -z "$ASSET_URL" ]; then
+    echo "ERROR: asset $ASSET not found in the release." >&2
+    exit 1
+  fi
+
+  # --- 5. download + verify --------------------------------------------------
+  TMP="$(mktemp -d)"
+  echo "Downloading..."
+  curl -sSL -o "$TMP/$ASSET" "$ASSET_URL"
+  curl -sSL -o "$TMP/checksums.txt" "$SUMS_URL"
+
+  HASH_FILE="$(sha256sum "$TMP/$ASSET" | awk '{print $1}')"
+  EXPECTED="$(sed -n "s/^\([a-f0-9]*\)  .*${ASSET}$/\1/p" "$TMP/checksums.txt" | head -1)"
+  if [ -z "$EXPECTED" ]; then
+    EXPECTED="$(awk -v a="$ASSET" '$2==a {print $1}' "$TMP/checksums.txt" | head -1)"
+  fi
+  if [ "$HASH_FILE" != "$EXPECTED" ]; then
+    echo "ERROR: checksum mismatch for $ASSET" >&2
+    echo "  expected: $EXPECTED" >&2
+    echo "  actual:   $HASH_FILE" >&2
+    exit 1
+  fi
+  ok "Checksum OK."
+
+  # --- 6. extract ------------------------------------------------------------
+  tar xzf "$TMP/$ASSET" -C "$DIR"
+  BIN="$DIR/freebuff-proxy"
+  if [ ! -x "$BIN" ]; then
+    BIN="$(find "$DIR" -type f -name freebuff-proxy | head -1)"
+  fi
+  if [ -n "$BIN" ]; then chmod +x "$BIN"; fi
+  c "Binary: $BIN"
 fi
 
-# --- 3. download + verify ----------------------------------------------------
-TMP="$(mktemp -d)"
-echo "Downloading..."
-curl -sSL -o "$TMP/$ASSET" "$ASSET_URL"
-curl -sSL -o "$TMP/checksums.txt" "$SUMS_URL"
-
-HASH_FILE="$(sha256sum "$TMP/$ASSET" | awk '{print $1}')"
-EXPECTED="$(sed -n "s/^\([a-f0-9]*\)  .*${ASSET}$/\1/p" "$TMP/checksums.txt" | head -1)"
-if [ -z "$EXPECTED" ]; then
-  EXPECTED="$(awk -v a="$ASSET" '$2==a {print $1}' "$TMP/checksums.txt" | head -1)"
-fi
-if [ "$HASH_FILE" != "$EXPECTED" ]; then
-  echo "ERROR: checksum mismatch for $ASSET" >&2
-  echo "  expected: $EXPECTED" >&2
-  echo "  actual:   $HASH_FILE" >&2
-  exit 1
-fi
-ok "Checksum OK."
-
-# --- 4. extract --------------------------------------------------------------
-tar xzf "$TMP/$ASSET" -C "$DIR"
-BIN="$DIR/freebuff-proxy"
-if [ ! -x "$BIN" ]; then
-  # goreleaser wraps into a subdir when not set; find it.
-  BIN="$(find "$DIR" -type f -name freebuff-proxy | head -1)"
-fi
-if [ -n "$BIN" ]; then chmod +x "$BIN"; fi
-c "Binary: $BIN"
-
-# --- 5. .env -----------------------------------------------------------------
+# --- 7. .env -----------------------------------------------------------------
 ENVPATH="$ENV_FILE"
 if [ -z "$ENVPATH" ]; then ENVPATH="$DIR/.env"; fi
 if [ "$NO_ENV" = "0" ]; then
@@ -132,7 +179,7 @@ if [ "$NO_ENV" = "0" ]; then
   fi
 fi
 
-# --- 6. token ----------------------------------------------------------------
+# --- 8. token ----------------------------------------------------------------
 if [ "$SKIP_TOKEN" = "0" ]; then
   TOKEN=""
   CREDS=""
@@ -193,7 +240,7 @@ if [ "$SKIP_TOKEN" = "0" ]; then
   fi
 fi
 
-# --- 7. next steps -----------------------------------------------------------
+# --- 9. next steps -----------------------------------------------------------
 echo ""
 c "Done. Next:"
 echo "  cd $DIR"
