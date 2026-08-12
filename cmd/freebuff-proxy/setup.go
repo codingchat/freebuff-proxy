@@ -36,18 +36,30 @@ func runSetup(autoYes bool) {
 
 	// 1. Continue (VS Code / JetBrains)
 	continueDir := filepath.Join(home, ".continue")
-	continueCfgPath := filepath.Join(continueDir, "config.json")
-	if fileExists(continueDir) || fileExists(continueCfgPath) {
+	continueYamlPath := filepath.Join(continueDir, "config.yaml")
+	continueJsonPath := filepath.Join(continueDir, "config.json")
+	if fileExists(continueDir) || fileExists(continueYamlPath) || fileExists(continueJsonPath) {
 		fmt.Printf("\n[+] Detected Continue extension (~/.continue/)\n")
-		if ask("Would you like to add freebuff-proxy to your Continue config?") {
-			if setupContinueConfig(continueCfgPath) {
-				fmt.Printf("    [ok] Configured Continue in %s (backup saved to .bak)\n", continueCfgPath)
-				configured++
+		targetPath := continueYamlPath
+		if !fileExists(continueYamlPath) && fileExists(continueJsonPath) {
+			targetPath = continueJsonPath
+		}
+		if ask(fmt.Sprintf("Would you like to add freebuff-proxy to Continue (%s)?", filepath.Base(targetPath))) {
+			if strings.HasSuffix(targetPath, ".yaml") || strings.HasSuffix(targetPath, ".yml") {
+				if setupContinueYamlConfig(targetPath) {
+					fmt.Printf("    [ok] Configured Continue in %s (backup saved to .bak)\n", targetPath)
+					configured++
+				}
+			} else {
+				if setupContinueConfig(targetPath) {
+					fmt.Printf("    [ok] Configured Continue in %s (backup saved to .bak)\n", targetPath)
+					configured++
+				}
 			}
 		} else {
 			fmt.Println("    [skipped] Left Continue config untouched.")
-			fmt.Println("    Manual snippet for ~/.continue/config.json:")
-			fmt.Println(`    {"title": "FreeBuff DeepSeek", "provider": "openai", "model": "deepseek/deepseek-v4-flash", "apiBase": "http://localhost:3457/v1", "apiKey": "not-needed"}`)
+			fmt.Println("    Manual snippet for ~/.continue/config.yaml:")
+			fmt.Println("    models:\n      - title: \"FreeBuff DeepSeek\"\n        provider: \"openai\"\n        model: \"deepseek/deepseek-v4-flash\"\n        apiBase: \"http://localhost:3457/v1\"\n        apiKey: \"not-needed\"")
 		}
 	} else {
 		fmt.Println("[-] Continue (~/.continue/) not found on this system")
@@ -105,6 +117,29 @@ func backupFile(p string) {
 	if err == nil {
 		_ = os.WriteFile(bak, data, 0644)
 	}
+}
+
+func setupContinueYamlConfig(p string) bool {
+	dir := filepath.Dir(p)
+	_ = os.MkdirAll(dir, 0755)
+
+	backupFile(p)
+
+	snippet := "\nmodels:\n  - title: \"FreeBuff DeepSeek Flash\"\n    provider: \"openai\"\n    model: \"deepseek/deepseek-v4-flash\"\n    apiBase: \"http://localhost:3457/v1\"\n    apiKey: \"not-needed\"\n"
+	if fileExists(p) {
+		existing, err := os.ReadFile(p)
+		if err == nil && strings.Contains(string(existing), "localhost:3457") {
+			return true
+		}
+		f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return false
+		}
+		defer func() { _ = f.Close() }()
+		_, err = f.WriteString(snippet)
+		return err == nil
+	}
+	return os.WriteFile(p, []byte(snippet), 0644) == nil
 }
 
 func setupContinueConfig(p string) bool {

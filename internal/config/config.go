@@ -47,6 +47,7 @@ type Config struct {
 	DiscoveredSource    string            // auto-discovered credentials file path (if any)
 	DiscoveredEmail     string            // auto-discovered account email (if any)
 }
+
 // BridgeMode reports whether the proxy runs without any AUTH_TOKENS: every
 // client supplies their own FreeBuff token per request (Authorization: Bearer
 // or x-api-key), and the proxy relays with that token upstream.
