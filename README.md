@@ -150,6 +150,10 @@ The CLI envelope did not satisfy the anti-bot gate. Check `COST_MODE` and the `c
 
 The token's daily session quota is exhausted (6 sessions per day on the limited tier, resets at Pacific midnight). The proxy returns `429` with the upstream `resetAt` so clients back off. Add another `AUTH_TOKENS` or wait for the reset.
 
+**I get `403` with `account_banned` / `{"status":"banned"}`.**
+
+Your FreeBuff account was banned upstream. This is the ToS risk this project documents; the token is dead and no setting will unban it. Get a fresh account and token. The proxy remembers the ban, stops hammering the upstream, and surfaces `403` with the upstream `resumes-at` until the window passes (24h if upstream sends no timestamp), then automatically re-probes: still banned means another window, unbanned means it just works.
+
 **I get `503` with `waiting_room_queued`.**
 
 Normal. The free session is queued in the waiting room. The `Retry-After` header tells the client when to retry; 9router and opencode retry automatically.
