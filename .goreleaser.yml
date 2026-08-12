@@ -21,7 +21,10 @@ builds:
       - -s -w
 
 archives:
-  - formats: [tar.gz, zip]
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     files:
       - README.md
       - LICENSE
