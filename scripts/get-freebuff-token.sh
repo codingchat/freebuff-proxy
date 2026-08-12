@@ -31,6 +31,7 @@ echo "" >&2
 PRINT=0
 CLIPBOARD=0
 FORCE=0
+LOGOUT=0
 ENV_FILE=""
 
 while [ $# -gt 0 ]; do
@@ -38,12 +39,20 @@ while [ $# -gt 0 ]; do
     --print) PRINT=1; shift ;;
     --clipboard) CLIPBOARD=1; shift ;;
     --force) FORCE=1; shift ;;
+    --logout) LOGOUT=1; shift ;;
     --env-file) ENV_FILE="${2:-}"; shift 2 ;;
     --env-file=*) ENV_FILE="${1#*=}"; shift ;;
-    -h|--help) grep '^#' "$0" | head -30; exit 0 ;;
+    --help) grep '^#' "$0" | head -30; exit 0 ;;
     *) echo "unknown arg: $1 (see header)" >&2; exit 1 ;;
   esac
 done
+
+if [ "$LOGOUT" = "1" ]; then
+  for p in "$HOME/.config/manicode/credentials.json" "$HOME/.config/codebuff/credentials.json"; do
+    [ -f "$p" ] && rm -f "$p" && echo "Cleared existing login credentials ($p)."
+  done
+  echo "Ready to log in with a new FreeBuff account."
+fi
 
 # --- 2. install the FreeBuff CLI -------------------------------------------
 if ! command -v freebuff >/dev/null 2>&1; then
@@ -83,14 +92,36 @@ extract_token() {
   fi
 }
 
-if [ "$FORCE" = "0" ] && [ -n "$CREDS" ] && [ -n "$(extract_token)" ]; then
-  echo "Already logged in — reusing the existing token ($CREDS). Use --force to re-login."
+extract_email() {
+  if command -v node >/dev/null 2>&1; then
+    node -e '
+      const fs = require("fs");
+      const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const acct = data.default || Object.values(data)[0];
+      if (acct && acct.email) process.stdout.write(acct.email);
+    ' "$CREDS" 2>/dev/null || true
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+      import json, sys
+      d = json.load(open(sys.argv[1], encoding="utf-8"))
+      acct = d.get("default") or next(iter(d.values()), {})
+      e = acct.get("email") if isinstance(acct, dict) else None
+      if e: sys.stdout.write(e)
+    ' "$CREDS" 2>/dev/null || true
+  fi
+}
+
+EMAIL="$(extract_email)"
+if [ "$FORCE" = "0" ] && [ "$LOGOUT" = "0" ] && [ -n "$CREDS" ] && [ -n "$(extract_token)" ]; then
+  if [ -n "$EMAIL" ]; then
+    echo "Already logged in as $EMAIL — reusing the existing token ($CREDS). Use --logout to log in with a new account."
+  else
+    echo "Already logged in — reusing the existing token ($CREDS). Use --logout to log in with a new account."
+  fi
 else
   echo "Starting the FreeBuff login — complete it in the browser/terminal that opens, then come back."
-  echo "(If it asks you to paste a URL code, do so. The CLI saves the token when done.)"
   freebuff
 fi
-
 # --- 3. extract the token ---------------------------------------------------
 CREDS=""
 for p in "$HOME/.config/manicode/credentials.json" "$HOME/.config/codebuff/credentials.json"; do

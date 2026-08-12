@@ -20,6 +20,7 @@ param(
   [switch]$Print,
   [switch]$ToClipboard,
   [switch]$Force,
+  [switch]$Logout,
   [string]$EnvFile = ""
 )
 
@@ -45,8 +46,6 @@ function Find-CredentialsFile {
 }
 
 function Get-AuthToken([string]$path) {
-  # Native PowerShell parsing (no node): works identically in Windows
-  # PowerShell 5.1 and PowerShell 7+.
   try {
     $data = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
   } catch {
@@ -62,6 +61,32 @@ function Get-AuthToken([string]$path) {
   return $null
 }
 
+function Get-AccountEmail([string]$path) {
+  try {
+    $data = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    $acct = $null
+    if ($null -ne $data.default) { $acct = $data.default }
+    if ($null -eq $acct -and $null -ne $data) {
+      $acct = $data.PSObject.Properties | ForEach-Object { $_.Value } |
+        Where-Object { $_ -and $_.email } | Select-Object -First 1
+    }
+    if ($acct -and $acct.email) { return [string]$acct.email }
+  } catch {}
+  return $null
+}
+
+# --- 1. handle logout if requested ----------------------------------------
+if ($Logout) {
+  $creds = Find-CredentialsFile
+  if ($creds -and (Test-Path $creds)) {
+    Remove-Item -LiteralPath $creds -Force -ErrorAction SilentlyContinue
+    Write-Host "Cleared existing login credentials ($creds)." -ForegroundColor Yellow
+  } else {
+    Write-Host "No existing credentials found to clear." -ForegroundColor Yellow
+  }
+  Write-Host "Ready to log in with a new FreeBuff account." -ForegroundColor Cyan
+}
+
 # --- 2. install the FreeBuff CLI -------------------------------------------
 if (-not (Get-Command freebuff -ErrorAction SilentlyContinue)) {
   if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
@@ -75,15 +100,18 @@ if (-not (Get-Command freebuff -ErrorAction SilentlyContinue)) {
 }
 
 $existing = Find-CredentialsFile
-if (-not $Force -and $existing -and (Get-AuthToken $existing)) {
-  Write-Host "Already logged in - reusing the existing token ($existing). Use -Force to re-login." -ForegroundColor Green
+if (-not $Force -and -not $Logout -and $existing -and (Get-AuthToken $existing)) {
+  $email = Get-AccountEmail $existing
+  if ($email) {
+    Write-Host "Already logged in as $email - reusing existing token ($existing). Use -Logout to log in with a new account." -ForegroundColor Green
+  } else {
+    Write-Host "Already logged in - reusing existing token ($existing). Use -Logout to log in with a new account." -ForegroundColor Green
+  }
 } else {
   Write-Host "Starting the FreeBuff login - complete it in the browser/terminal that opens, then come back." -ForegroundColor Yellow
-  Write-Host "(If it asks you to paste a URL code, do so. The CLI saves the token when done.)" -ForegroundColor Yellow
   & freebuff
   if ($LASTEXITCODE -ne 0) { Write-Host "freebuff exited with code $LASTEXITCODE - login may have failed." -ForegroundColor Red; exit 1 }
 }
-
 # --- 3. extract the token ---------------------------------------------------
 $creds = Find-CredentialsFile
 if (-not $creds) {

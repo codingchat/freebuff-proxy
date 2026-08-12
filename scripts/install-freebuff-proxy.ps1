@@ -18,9 +18,9 @@ param(
   [switch]$SkipToken,         # do not look for a token (set AUTH_TOKENS later)
   [switch]$NoEnv,             # do not create .env (advanced)
   [switch]$Force,             # re-download even if the binary already exists
+  [switch]$Logout,            # clear existing CLI credentials to log in with a new account
   [string]$EnvFile = ""       # explicit .env target (advanced)
 )
-
 $ErrorActionPreference = "Stop"
 $Repo = "trefeon/freebuff-proxy"
 
@@ -32,6 +32,14 @@ function Find-CredentialsFile {
   )
   foreach ($p in $candidates) { if (Test-Path $p) { return $p } }
   return $null
+}
+
+if ($Logout) {
+  $creds = Find-CredentialsFile
+  if ($creds -and (Test-Path $creds)) {
+    Remove-Item -LiteralPath $creds -Force -ErrorAction SilentlyContinue
+    Write-Host "Cleared existing login credentials ($creds)." -ForegroundColor Yellow
+  }
 }
 
 function Get-AuthToken([string]$path) {

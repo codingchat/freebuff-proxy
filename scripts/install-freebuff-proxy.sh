@@ -39,6 +39,7 @@ DIR=""
 SKIP_TOKEN=0
 NO_ENV=0
 FORCE=0
+LOGOUT=0
 ENV_FILE=""
 METHOD=""
 NO_PROMPT=0
@@ -53,16 +54,23 @@ while [ $# -gt 0 ]; do
     --skip-token) SKIP_TOKEN=1; shift ;;
     --no-env) NO_ENV=1; shift ;;
     --force) FORCE=1; shift ;;
+    --logout) LOGOUT=1; shift ;;
     --env-file=*) ENV_FILE="${1#*=}"; shift ;;
     --env-file) ENV_FILE="${2:-}"; shift 2 ;;
     --method=*) METHOD="${1#*=}"; shift ;;
     --method) METHOD="${2:-}"; shift 2 ;;
     --no-prompt) NO_PROMPT=1; shift ;;
     --no-cli-install) NO_CLI_INSTALL=1; shift ;;
-    -h|--help) grep '^#' "$0" | head -36; exit 0 ;;
+    --help) grep '^#' "$0" | head -36; exit 0 ;;
     *) echo "unknown arg: $1 (see header)" >&2; exit 1 ;;
   esac
 done
+
+if [ "$LOGOUT" = "1" ]; then
+  for p in "$HOME/.config/manicode/credentials.json" "$HOME/.config/codebuff/credentials.json"; do
+    [ -f "$p" ] && rm -f "$p" && ok "Cleared existing login credentials ($p)."
+  done
+fi
 
 c() { printf '\033[36m%s\033[0m\n' "$*"; }
 ok() { printf '\033[32m%s\033[0m\n' "$*"; }
