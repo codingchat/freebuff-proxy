@@ -122,9 +122,8 @@ irm https://raw.githubusercontent.com/trefeon/freebuff-proxy/main/scripts/instal
 curl -sSL https://raw.githubusercontent.com/trefeon/freebuff-proxy/main/scripts/install-freebuff-proxy.sh | bash
 ```
 
-Both scripts install into the current directory (`--dir <path>` to change it), create
-`AUTH_TOKENS` in `.env` from your freebuff CLI login, or prompt you to paste a login URL
-(`https://freebuff.com/login?auth_code=...`), and print the run and smoke-test commands.
+Both scripts install into the current directory (`--dir <path>` to change it), extract
+`AUTH_TOKENS` into `.env` from your official `freebuff` CLI login, and print the run and smoke-test commands.
 
 ### Option 2: manual download (no version lookup)
 
