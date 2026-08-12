@@ -28,6 +28,8 @@ archives:
     files:
       - README.md
       - LICENSE
+      - .env.example
+      - config.example.json
 
 sboms:
   - artifacts: archive

@@ -56,7 +56,29 @@ What this is not: an official FreeBuff or Codebuff product. It is a community br
 
 ## Install
 
-### Option 1: release binaries (recommended)
+### Option 1: one-command installer (recommended)
+
+Downloads the **latest** release binary for your platform, verifies its checksum, sets up
+`.env`, asks for your token, and prints the next steps. No version to look up, no manual
+downloads.
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/trefeon/freebuff-proxy/main/scripts/install-freebuff-proxy.ps1 | iex
+```
+
+**Linux / macOS (bash):**
+
+```bash
+curl -sSL https://raw.githubusercontent.com/trefeon/freebuff-proxy/main/scripts/install-freebuff-proxy.sh | bash
+```
+
+Both scripts install into the current directory (`--dir <path>` to change it), create
+`AUTH_TOKENS` in `.env` from your freebuff CLI login, or prompt you to paste a login URL
+(`https://freebuff.com/login?auth_code=...`), and print the run and smoke-test commands.
+
+### Option 2: manual download
 
 Download the archive for your platform from the [latest release](https://github.com/trefeon/freebuff-proxy/releases). Assets are named `freebuff-proxy_<version>_<os>_<arch>.tar.gz` (`zip` on Windows), and every release ships `checksums.txt`.
 
@@ -69,10 +91,10 @@ Download the archive for your platform from the [latest release](https://github.
 | windows / amd64 | `freebuff-proxy_<version>_windows_amd64.zip` |
 | windows / arm64 | `freebuff-proxy_<version>_windows_arm64.zip` |
 
-Example on linux amd64 (replace the version):
+Example on linux amd64 (replace `<version>`, e.g. `0.1.1`):
 
 ```bash
-curl -sSL -o freebuff-proxy.tar.gz https://github.com/trefeon/freebuff-proxy/releases/latest/download/freebuff-proxy_0.1.1_linux_amd64.tar.gz
+curl -sSL -o freebuff-proxy.tar.gz https://github.com/trefeon/freebuff-proxy/releases/latest/download/freebuff-proxy_<version>_linux_amd64.tar.gz
 tar xzf freebuff-proxy.tar.gz
 sha256sum -c checksums.txt --ignore-missing 2>/dev/null || echo "download checksums.txt from the release to verify"
 ./freebuff-proxy
@@ -80,7 +102,7 @@ sha256sum -c checksums.txt --ignore-missing 2>/dev/null || echo "download checks
 
 Windows: extract the zip, then run `freebuff-proxy.exe` in a terminal.
 
-### Option 2: Docker
+### Option 3: Docker
 
 Copy `.env.example` to `.env` and set `AUTH_TOKENS` first, then:
 
@@ -102,7 +124,11 @@ Windows builds: `go build -o freebuff-proxy.exe ./cmd/freebuff-proxy`.
 
 Two ways, plus scripts that automate the CLI path:
 
-- **Web (no install):** log in at [freebuff.llm.pm](https://freebuff.llm.pm) and copy the token shown on the page.
+- **Web (no install):** log in at [freebuff.llm.pm](https://freebuff.llm.pm). Under
+  **Freebuff Auth** click **Generate login URL**, then **copy** the URL it shows
+  (`https://freebuff.com/login?auth_code=...`). The token is the `auth_code` value from
+  that link, e.g. from `...?auth_code=4v2G-8dmPXNjgZvbCvhIcA` the token is
+  `4v2G-8dmPXNjgZvbCvhIcA`. Pasting the whole URL also works in the scripts below.
 - **Official CLI:** `npm i -g freebuff`, run `freebuff` once to log in, then read `authToken` from `~/.config/manicode/credentials.json` (Windows: `C:\Users\<you>\.config\manicode\credentials.json`).
 - **Scripts:** `scripts/get-freebuff-token.sh` (bash) or `scripts/get-freebuff-token.ps1` (PowerShell) install the CLI, log in, and write `AUTH_TOKENS` into `.env` for you.
 

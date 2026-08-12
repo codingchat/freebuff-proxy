@@ -25,6 +25,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# --- 0. warning -------------------------------------------------------------
+Write-Host ""
+Write-Host "WARNING: using your FreeBuff token through this proxy conflicts with FreeBuff/Codebuff" -ForegroundColor Red
+Write-Host "terms of service. Accounts get suspended or banned (403 account_banned, dashboard shows" -ForegroundColor Red
+Write-Host "'suspended'). Bans are per account, usually permanent, and there is no self-service" -ForegroundColor Red
+Write-Host "unban. Use ONE account, keep usage modest, do not run the proxy 24/7, and expect the" -ForegroundColor Red
+Write-Host "account to be banned eventually. You accept this risk by continuing." -ForegroundColor Red
+Write-Host ""
+
 function Find-CredentialsFile {
   $candidates = @(
     (Join-Path $env:USERPROFILE ".config\manicode\credentials.json"),
@@ -36,25 +45,31 @@ function Find-CredentialsFile {
 }
 
 function Get-AuthToken([string]$path) {
-  # Parse with node (guaranteed present - npm was required to install the CLI).
-  $script = @'
-const fs = require("fs");
-const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-const acct = data.default || Object.values(data)[0];
-if (acct && acct.authToken) { process.stdout.write(acct.authToken); }
-'@
-  $token = node -e $script $path
-  return $token
-}
-
-# --- 1. node/npm -----------------------------------------------------------
-if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  Write-Host "ERROR: node/npm not found. Install Node.js >= 22 first (https://nodejs.org)." -ForegroundColor Red
-  exit 1
+  # Native PowerShell parsing (no node): works identically in Windows
+  # PowerShell 5.1 and PowerShell 7+.
+  try {
+    $data = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+  } catch {
+    return $null
+  }
+  $acct = $null
+  if ($null -ne $data.default) { $acct = $data.default }
+  if ($null -eq $acct -and $null -ne $data) {
+    $acct = $data.PSObject.Properties | ForEach-Object { $_.Value } |
+      Where-Object { $_ -and $_.authToken } | Select-Object -First 1
+  }
+  if ($acct -and $acct.authToken) { return [string]$acct.authToken }
+  return $null
 }
 
 # --- 2. install the FreeBuff CLI -------------------------------------------
 if (-not (Get-Command freebuff -ErrorAction SilentlyContinue)) {
+  if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    Write-Host "ERROR: node/npm not found and the freebuff CLI is not installed either." -ForegroundColor Red
+    Write-Host "Install Node.js >= 22 (https://nodejs.org) and re-run, or log in at" -ForegroundColor Red
+    Write-Host "https://freebuff.llm.pm and copy the token from the page instead." -ForegroundColor Red
+    exit 1
+  }
   Write-Host "Installing the FreeBuff CLI (npm i -g freebuff)..." -ForegroundColor Cyan
   npm install -g freebuff
   if ($LASTEXITCODE -ne 0) { Write-Host "npm install failed." -ForegroundColor Red; exit 1 }
@@ -74,7 +89,10 @@ if (-not $Force -and $existing -and (Get-AuthToken $existing)) {
 $creds = Find-CredentialsFile
 if (-not $creds) {
   Write-Host "ERROR: credentials file not found after login. Looked in ~/.config/manicode|codebuff/credentials.json" -ForegroundColor Red
-  Write-Host "Fallback: log in at https://freebuff.llm.pm and copy the token from the page." -ForegroundColor Yellow
+  Write-Host "Fallback (web, no CLI):" -ForegroundColor Yellow
+  Write-Host "  1. Log in at https://freebuff.llm.pm, Freebuff Auth -> Generate login URL" -ForegroundColor Yellow
+  Write-Host "  2. Copy the URL it shows (https://freebuff.com/login?auth_code=...)" -ForegroundColor Yellow
+  Write-Host "  3. The token is the auth_code value from that link; set AUTH_TOKENS=<that value> in .env" -ForegroundColor Yellow
   exit 1
 }
 $token = Get-AuthToken $creds

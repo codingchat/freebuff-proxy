@@ -19,6 +19,15 @@
 # prefix — the proxy adds it upstream itself.
 set -euo pipefail
 
+# --- 0. warning -------------------------------------------------------------
+echo ""
+echo "WARNING: using your FreeBuff token through this proxy conflicts with FreeBuff/Codebuff" >&2
+echo "terms of service. Accounts get suspended or banned (403 account_banned, dashboard shows" >&2
+echo "'suspended'). Bans are per account, usually permanent, and there is no self-service" >&2
+echo "unban. Use ONE account, keep usage modest, do not run the proxy 24/7, and expect the" >&2
+echo "account to be banned eventually. You accept this risk by continuing." >&2
+echo "" >&2
+
 PRINT=0
 CLIPBOARD=0
 FORCE=0
@@ -37,14 +46,14 @@ for arg in "$@"; do
   shift
 done
 
-# --- 1. node/npm -----------------------------------------------------------
-if ! command -v node >/dev/null 2>&1; then
-  echo "ERROR: node/npm not found. Install Node.js >= 22 first (https://nodejs.org)." >&2
-  exit 1
-fi
-
 # --- 2. install the FreeBuff CLI -------------------------------------------
 if ! command -v freebuff >/dev/null 2>&1; then
+  if ! command -v node >/dev/null 2>&1; then
+    echo "ERROR: node/npm not found and the freebuff CLI is not installed either." >&2
+    echo "Install Node.js >= 22 (https://nodejs.org) and re-run, or log in at" >&2
+    echo "https://freebuff.llm.pm and copy the token from the page instead." >&2
+    exit 1
+  fi
   echo "Installing the FreeBuff CLI (npm i -g freebuff)..."
   npm install -g freebuff
 fi
@@ -55,12 +64,25 @@ for p in "$HOME/.config/manicode/credentials.json" "$HOME/.config/codebuff/crede
 done
 
 extract_token() {
-  node -e '
-    const fs = require("fs");
-    const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    const acct = data.default || Object.values(data)[0];
-    if (acct && acct.authToken) process.stdout.write(acct.authToken);
-  ' "$CREDS"
+  if command -v node >/dev/null 2>&1; then
+    node -e '
+      const fs = require("fs");
+      const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const acct = data.default || Object.values(data)[0];
+      if (acct && acct.authToken) process.stdout.write(acct.authToken);
+    ' "$CREDS"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+      import json, sys
+      d = json.load(open(sys.argv[1], encoding="utf-8"))
+      acct = d.get("default") or next(iter(d.values()), {})
+      t = acct.get("authToken") if isinstance(acct, dict) else None
+      if t: sys.stdout.write(t)
+    ' "$CREDS"
+  else
+    # Crude fallback: single-line "authToken": "..." in the JSON.
+    sed -n 's/.*"authToken"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CREDS" | head -1
+  fi
 }
 
 if [ "$FORCE" = "0" ] && [ -n "$CREDS" ] && [ -n "$(extract_token)" ]; then
@@ -78,7 +100,10 @@ for p in "$HOME/.config/manicode/credentials.json" "$HOME/.config/codebuff/crede
 done
 if [ -z "$CREDS" ]; then
   echo "ERROR: credentials file not found after login (~/.config/manicode|codebuff/credentials.json)." >&2
-  echo "Fallback: log in at https://freebuff.llm.pm and copy the token from the page." >&2
+  echo "Fallback (web, no CLI):" >&2
+  echo "  1. Log in at https://freebuff.llm.pm, Freebuff Auth -> Generate login URL" >&2
+  echo "  2. Copy the URL it shows (https://freebuff.com/login?auth_code=...)" >&2
+  echo "  3. The token is the auth_code value from that link; set AUTH_TOKENS=<that value> in .env" >&2
   exit 1
 fi
 TOKEN="$(extract_token)"
