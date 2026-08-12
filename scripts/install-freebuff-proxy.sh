@@ -23,12 +23,15 @@ ENV_FILE=""
 for arg in "$@"; do
   case "$arg" in
     --dir=*) DIR="${arg#*=}" ;;
+    --dir) DIR="${2:-}"; shift ;;
     --skip-token) SKIP_TOKEN=1 ;;
     --no-env) NO_ENV=1 ;;
     --env-file=*) ENV_FILE="${arg#*=}" ;;
+    --env-file) ENV_FILE="${2:-}"; shift ;;
     -h|--help) grep '^#' "$0" | head -30; exit 0 ;;
     *) echo "unknown arg: $arg (see header)" >&2; exit 1 ;;
   esac
+  shift
 done
 
 c() { printf '\033[36m%s\033[0m\n' "$*"; }
