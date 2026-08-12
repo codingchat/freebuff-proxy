@@ -407,9 +407,7 @@ func jsonRepr(v any) string {
 // EncodeSSE renders one SSE frame: "data: " + data (callers pass compact
 // JSON from json.Marshal) + "\n\n".
 func EncodeSSE(data []byte) []byte {
-	out := make([]byte, 0, len(data)+len("data: ")+2)
-	out = append(out, "data: "...)
-	out = append(out, data...)
+	out := append([]byte("data: "), data...)
 	out = append(out, '\n', '\n')
 	return out
 }
