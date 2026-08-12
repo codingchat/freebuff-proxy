@@ -177,6 +177,7 @@ type Client struct {
 	debugDump          bool
 	stealthProfile     *stealth.Profile // nil when fingerprint unset
 }
+
 // cliUserAgent mirrors the official CLI / SDK user agent. The upstream
 // free-tier gate (403 free_mode_cli_required) requires requests to carry the
 // AI-SDK user agent; random browser UAs are rejected. Kept as a fixed

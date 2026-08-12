@@ -17,6 +17,7 @@ var envKeys = []string{
 	"SOCKS5_PROXY", "COST_MODE", "TLS_FINGERPRINT", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE", "LOG_LEVEL",
 	"MAX_MESSAGES_PER_DAY", "IDLE_ROTATION_TIMEOUT", "SAFE_MODE", "REQUEST_JITTER", "CLI_VERSION",
 }
+
 func clearEnv(t *testing.T) {
 	t.Helper()
 	// Isolate from any real ./.env in the working directory (the repo ships

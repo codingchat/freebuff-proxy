@@ -37,14 +37,15 @@ type Config struct {
 	RegistryRefresh     time.Duration
 	DebugDump           bool
 	LogFile             string
-	LogLevel            string        // "" (use -v/default) or debug|info|warn|error
-	MaxMessagesPerDay   int           // 0 = unlimited: per-token cap on successful chats per 24h
-	IdleRotationTimeout time.Duration // 0 = disabled: pause rotation/refresh after this idle period
-	SafeMode            bool          // true = apply recommended anti-ban safe defaults
-	RequestJitter       time.Duration // random delay range [0, RequestJitter) before upstream chat calls
+	LogLevel            string            // "" (use -v/default) or debug|info|warn|error
+	MaxMessagesPerDay   int               // 0 = unlimited: per-token cap on successful chats per 24h
+	IdleRotationTimeout time.Duration     // 0 = disabled: pause rotation/refresh after this idle period
+	SafeMode            bool              // true = apply recommended anti-ban safe defaults
+	RequestJitter       time.Duration     // random delay range [0, RequestJitter) before upstream chat calls
 	CLIVersion          string            // upstream CLI version string (default: 0.10.7)
 	ModelAliases        map[string]string // map model alias -> real model ID (#25)
 }
+
 // BridgeMode reports whether the proxy runs without any AUTH_TOKENS: every
 // client supplies their own FreeBuff token per request (Authorization: Bearer
 // or x-api-key), and the proxy relays with that token upstream.

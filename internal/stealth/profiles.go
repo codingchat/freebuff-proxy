@@ -25,6 +25,7 @@ const (
 	ProfileIDRandom     ProfileID = "random"
 	ProfileIDAuto       ProfileID = "auto"
 )
+
 // Profile defines a complete browser TLS fingerprint including the utls
 // ClientHelloID and matching HTTP headers.
 type Profile struct {
@@ -205,7 +206,6 @@ func RandomUserAgent() string {
 	}
 	return agents[cryptoRandInt(len(agents))]
 }
-
 
 // safari17Spec returns the custom ClientHelloSpec for Safari 17 on macOS.
 // Ported exactly from the reference implementation.

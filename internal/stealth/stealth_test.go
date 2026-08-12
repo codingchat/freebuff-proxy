@@ -17,9 +17,9 @@ import (
 
 func TestLookup(t *testing.T) {
 	tests := []struct {
-		name    string
-		wantID  ProfileID
-		wantOK  bool
+		name   string
+		wantID ProfileID
+		wantOK bool
 	}{
 		{"chrome120", ProfileIDChrome120, true},
 		{"chrome126", ProfileIDChrome126, true},

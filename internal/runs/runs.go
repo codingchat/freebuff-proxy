@@ -53,6 +53,7 @@ type RunSnapshot struct {
 	Requests      int
 	BanError      *upstream.BanError
 }
+
 // RunManager owns the current runs (one per agent) plus the draining list
 // for a single token.
 type RunManager struct {

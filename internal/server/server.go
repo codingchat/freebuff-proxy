@@ -646,6 +646,7 @@ func defaultHintForCode(code, message string) string {
 		return ""
 	}
 }
+
 // writeError maps any error from the pool/upstream to the PRD §6 matrix and
 // logs it once. Canceled client contexts are logged at debug and dropped (no
 // response written).

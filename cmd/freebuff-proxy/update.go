@@ -135,8 +135,13 @@ func runUpdate() {
 					fmt.Fprintf(os.Stderr, "ERROR: open zip file: %v\n", err)
 					os.Exit(1)
 				}
-				binaryBytes, err = io.ReadAll(rc)
+				var readErr error
+				binaryBytes, readErr = io.ReadAll(rc)
 				_ = rc.Close()
+				if readErr != nil {
+					fmt.Fprintf(os.Stderr, "ERROR: read zip entry: %v\n", readErr)
+					os.Exit(1)
+				}
 				break
 			}
 		}
@@ -156,7 +161,12 @@ func runUpdate() {
 				break
 			}
 			if filepath.Base(hdr.Name) == binaryName {
-				binaryBytes, err = io.ReadAll(tr)
+				var readErr error
+				binaryBytes, readErr = io.ReadAll(tr)
+				if readErr != nil {
+					fmt.Fprintf(os.Stderr, "ERROR: read tar entry: %v\n", readErr)
+					os.Exit(1)
+				}
 				break
 			}
 		}
