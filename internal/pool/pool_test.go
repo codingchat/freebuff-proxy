@@ -642,6 +642,195 @@ func TestConcurrentAcquireHammer(t *testing.T) {
 	}
 }
 
+// chatOnce sends one chat through the leased token against the mock
+// upstream and closes the body; used to accumulate successful chats for the
+// daily-cap tests.
+func chatOnce(t *testing.T, p *Pool, lease *Lease) {
+	t.Helper()
+	opts := upstream.ChatOptions{Model: modelA, RunID: lease.Run.RunID, SessionInstanceID: lease.SessionInstanceID}
+	body := []byte(`{"model":"` + modelA + `","messages":[{"role":"user","content":"ping"}]}`)
+	rc, err := p.Chat(context.Background(), lease, opts, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+}
+
+func TestDailyMessageCap(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	p.cfg.MaxMessagesPerDay = 2
+
+	for i := 0; i < 2; i++ {
+		lease, err := p.Acquire(context.Background(), modelA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chatOnce(t, p, lease)
+		p.LeaseRelease(lease)
+	}
+	if got := p.Snapshot()[0].Messages24h; got != 2 {
+		t.Errorf("Messages24h = %d, want 2", got)
+	}
+
+	// The third acquire hits the cap: the only token is daily-limited, so
+	// the pool surfaces a 429 with the time until a slot frees.
+	_, err := p.Acquire(context.Background(), modelA)
+	var rle *upstream.RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("want *upstream.RateLimitError for capped token, got %v", err)
+	}
+	if !errors.Is(err, upstream.ErrRateLimited) {
+		t.Error("errors.Is(ErrRateLimited) = false")
+	}
+	if rle.RetryAfter <= 0 || rle.RetryAfter > usageWindow {
+		t.Errorf("RetryAfter = %s, want within (0, 24h]", rle.RetryAfter)
+	}
+	if rle.Limit != 2 || rle.RecentCount != 2 {
+		t.Errorf("quota = %v/%v, want 2/2", rle.RecentCount, rle.Limit)
+	}
+	if !strings.Contains(err.Error(), "daily message limit reached") {
+		t.Errorf("error = %q, want daily-limit message", err)
+	}
+	if got := p.Snapshot()[0].Messages24h; got != 2 {
+		t.Errorf("Messages24h = %d, want 2 (usage still visible)", got)
+	}
+}
+
+func TestDailyMessageCapFailover(t *testing.T) {
+	mock0 := testutil.NewMock()
+	defer mock0.Close()
+	mock1 := testutil.NewMock()
+	defer mock1.Close()
+	p := newTestPool(t, mock0, mock1)
+	p.cfg.MaxMessagesPerDay = 1
+
+	// Round-robin: first acquire lands on token-1; cap it with a chat.
+	lease, err := p.Acquire(context.Background(), modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.Token != 0 {
+		t.Fatalf("first lease token = %d, want 0", lease.Token)
+	}
+	chatOnce(t, p, lease)
+	p.LeaseRelease(lease)
+
+	// Second acquire fails over to token-2 (token-1 is capped); cap it too.
+	lease, err = p.Acquire(context.Background(), modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.Token != 1 {
+		t.Fatalf("second lease token = %d, want 1 (failover to uncapped)", lease.Token)
+	}
+	chatOnce(t, p, lease)
+	p.LeaseRelease(lease)
+
+	// Both tokens capped: the pool surfaces the daily-limit 429 (not a
+	// combined error).
+	_, err = p.Acquire(context.Background(), modelA)
+	var rle *upstream.RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("want *upstream.RateLimitError when every token is capped, got %v", err)
+	}
+	if rle.RetryAfter <= 0 || rle.RetryAfter > usageWindow {
+		t.Errorf("RetryAfter = %s, want within (0, 24h]", rle.RetryAfter)
+	}
+}
+
+func TestDailyMessageCapDisabled(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock) // MaxMessagesPerDay = 0: unlimited
+
+	for i := 0; i < 3; i++ {
+		lease, err := p.Acquire(context.Background(), modelA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chatOnce(t, p, lease)
+		p.LeaseRelease(lease)
+	}
+	lease, err := p.Acquire(context.Background(), modelA)
+	if err != nil {
+		t.Fatalf("acquire with cap 0 must not be limited, got %v", err)
+	}
+	p.LeaseRelease(lease)
+	if got := p.Snapshot()[0].Messages24h; got != 3 {
+		t.Errorf("Messages24h = %d, want 3 (usage still tracked)", got)
+	}
+}
+
+func TestIdleRotationFinishesRuns(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	p.cfg.IdleRotationTimeout = 10 * time.Millisecond
+
+	lease, err := p.Acquire(context.Background(), modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.LeaseRelease(lease)
+	if got := mock.StartedRunsSnapshot(); len(got) != 1 {
+		t.Fatalf("started runs = %v, want 1", got)
+	}
+
+	// Not idle yet: a maintain pass runs normally (no FINISH).
+	p.maintainTick(context.Background())
+	if got := mock.FinishedRunsSnapshot(); len(got) != 0 {
+		t.Fatalf("finished runs = %v before idle, want none", got)
+	}
+
+	// Past the idle threshold: one pass FINISHes all runs...
+	time.Sleep(30 * time.Millisecond)
+	p.maintainTick(context.Background())
+	finished := mock.FinishedRunsSnapshot()
+	if len(finished) != 1 || finished[0].Status != "completed" {
+		t.Fatalf("finished runs after idle = %v, want 1 completed", finished)
+	}
+
+	// ...and later idle passes stay dormant (no further FINISH or START).
+	for i := 0; i < 2; i++ {
+		p.maintainTick(context.Background())
+	}
+	if got := mock.FinishedRunsSnapshot(); len(got) != 1 {
+		t.Errorf("finished runs = %v, want still 1 (dormant while idle)", got)
+	}
+	if got := mock.StartedRunsSnapshot(); len(got) != 1 {
+		t.Errorf("started runs = %v, want still 1", got)
+	}
+
+	// The next request re-creates the run on demand.
+	lease, err = p.Acquire(context.Background(), modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.LeaseRelease(lease)
+	if got := mock.StartedRunsSnapshot(); len(got) != 2 {
+		t.Errorf("started runs = %v, want 2 (re-created on demand)", got)
+	}
+}
+
+func TestIdleRotationDisabled(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock) // IdleRotationTimeout = 0: never idle-pauses
+
+	lease, err := p.Acquire(context.Background(), modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.LeaseRelease(lease)
+
+	p.maintainTick(context.Background())
+	if got := mock.FinishedRunsSnapshot(); len(got) != 0 {
+		t.Fatalf("finished runs = %v with idle rotation disabled, want none", got)
+	}
+}
+
 // eventually polls cond until it holds or the deadline passes.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()

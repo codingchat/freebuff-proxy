@@ -14,57 +14,64 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // Config is the fully-resolved, validated runtime configuration.
 type Config struct {
-	ListenAddr         string
-	UpstreamBaseURL    string
-	AuthTokens         []string
-	RotationInterval   time.Duration
-	RequestTimeout     time.Duration
-	SessionCallTimeout time.Duration
-	APIKeys            []string
-	HTTPProxy          string
-	SOCKS5Proxy        string
-	CostMode           string // "" (omit) or "free"; A/B pending, PRD §8
-	TLSFingerprint     string // "" (plain Go transport) | chrome120 | safari17 | firefox120 | random
-	RegistryRefresh    time.Duration
-	DebugDump          bool
-	LogFile            string
-	LogLevel           string // "" (use -v/default) or debug|info|warn|error
+	ListenAddr          string
+	UpstreamBaseURL     string
+	AuthTokens          []string
+	RotationInterval    time.Duration
+	RequestTimeout      time.Duration
+	SessionCallTimeout  time.Duration
+	APIKeys             []string
+	HTTPProxy           string
+	SOCKS5Proxy         string
+	CostMode            string // "" (omit) or "free"; A/B pending, PRD §8
+	TLSFingerprint      string // "" (plain Go transport) | chrome120 | safari17 | firefox120 | random
+	RegistryRefresh     time.Duration
+	DebugDump           bool
+	LogFile             string
+	LogLevel            string        // "" (use -v/default) or debug|info|warn|error
+	MaxMessagesPerDay   int           // 0 = unlimited: per-token cap on successful chats per 24h
+	IdleRotationTimeout time.Duration // 0 = disabled: pause rotation/refresh after this idle period
 }
 
 // rawConfig mirrors the JSON file / env keys as strings so that parsing and
 // validation happen once, after all overrides are applied.
 type rawConfig struct {
-	ListenAddr         string   `json:"LISTEN_ADDR"`
-	UpstreamBaseURL    string   `json:"UPSTREAM_BASE_URL"`
-	AuthTokens         []string `json:"AUTH_TOKENS"`
-	RotationInterval   string   `json:"ROTATION_INTERVAL"`
-	RequestTimeout     string   `json:"REQUEST_TIMEOUT"`
-	SessionCallTimeout string   `json:"SESSION_CALL_TIMEOUT"`
-	APIKeys            []string `json:"API_KEYS"`
-	HTTPProxy          string   `json:"HTTP_PROXY"`
-	SOCKS5Proxy        string   `json:"SOCKS5_PROXY"`
-	CostMode           string   `json:"COST_MODE"`
-	TLSFingerprint     string   `json:"TLS_FINGERPRINT"`
-	RegistryRefresh    string   `json:"REGISTRY_REFRESH"`
-	DebugDump          bool     `json:"DEBUG_DUMP"`
-	LogFile            string   `json:"LOG_FILE"`
-	LogLevel           string   `json:"LOG_LEVEL"`
+	ListenAddr          string   `json:"LISTEN_ADDR"`
+	UpstreamBaseURL     string   `json:"UPSTREAM_BASE_URL"`
+	AuthTokens          []string `json:"AUTH_TOKENS"`
+	RotationInterval    string   `json:"ROTATION_INTERVAL"`
+	RequestTimeout      string   `json:"REQUEST_TIMEOUT"`
+	SessionCallTimeout  string   `json:"SESSION_CALL_TIMEOUT"`
+	APIKeys             []string `json:"API_KEYS"`
+	HTTPProxy           string   `json:"HTTP_PROXY"`
+	SOCKS5Proxy         string   `json:"SOCKS5_PROXY"`
+	CostMode            string   `json:"COST_MODE"`
+	TLSFingerprint      string   `json:"TLS_FINGERPRINT"`
+	RegistryRefresh     string   `json:"REGISTRY_REFRESH"`
+	DebugDump           bool     `json:"DEBUG_DUMP"`
+	LogFile             string   `json:"LOG_FILE"`
+	LogLevel            string   `json:"LOG_LEVEL"`
+	MaxMessagesPerDay   int      `json:"MAX_MESSAGES_PER_DAY"`
+	IdleRotationTimeout string   `json:"IDLE_ROTATION_TIMEOUT"`
 }
 
 func defaultRawConfig() rawConfig {
 	return rawConfig{
-		ListenAddr:         "127.0.0.1:3457",       // loopback by default (PRD §3); containers set LISTEN_ADDR=:3457
-		UpstreamBaseURL:    "https://codebuff.com", // normalized to www.
-		RotationInterval:   "6h",
-		RequestTimeout:     "15m",
-		SessionCallTimeout: "30s",
-		RegistryRefresh:    "6h",
+		ListenAddr:          "127.0.0.1:3457",       // loopback by default (PRD §3); containers set LISTEN_ADDR=:3457
+		UpstreamBaseURL:     "https://codebuff.com", // normalized to www.
+		RotationInterval:    "6h",
+		RequestTimeout:      "15m",
+		SessionCallTimeout:  "30s",
+		RegistryRefresh:     "6h",
+		MaxMessagesPerDay:   0,   // 0 = unlimited
+		IdleRotationTimeout: "0", // 0 = disabled
 	}
 }
 
@@ -98,6 +105,8 @@ func Load(configPath string) (Config, error) {
 	overrideBool(&raw.DebugDump, "DEBUG_DUMP")
 	overrideString(&raw.LogFile, "LOG_FILE")
 	overrideString(&raw.LogLevel, "LOG_LEVEL")
+	overrideInt(&raw.MaxMessagesPerDay, "MAX_MESSAGES_PER_DAY")
+	overrideString(&raw.IdleRotationTimeout, "IDLE_ROTATION_TIMEOUT")
 
 	parseDuration := func(raw, name string) (time.Duration, error) {
 		d, err := time.ParseDuration(strings.TrimSpace(raw))
@@ -123,6 +132,14 @@ func Load(configPath string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// IDLE_ROTATION_TIMEOUT is zero-tolerant: "" or "0" both mean disabled.
+	idleRotationTimeout := time.Duration(0)
+	if strings.TrimSpace(raw.IdleRotationTimeout) != "" {
+		idleRotationTimeout, err = parseDuration(raw.IdleRotationTimeout, "IDLE_ROTATION_TIMEOUT")
+		if err != nil {
+			return Config{}, err
+		}
+	}
 
 	upstreamBaseURL, err := normalizeUpstreamBaseURL(raw.UpstreamBaseURL)
 	if err != nil {
@@ -130,21 +147,23 @@ func Load(configPath string) (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddr:         strings.TrimSpace(raw.ListenAddr),
-		UpstreamBaseURL:    upstreamBaseURL,
-		AuthTokens:         dedupeStrings(raw.AuthTokens),
-		RotationInterval:   rotationInterval,
-		RequestTimeout:     requestTimeout,
-		SessionCallTimeout: sessionCallTimeout,
-		APIKeys:            dedupeStrings(raw.APIKeys),
-		HTTPProxy:          strings.TrimSpace(raw.HTTPProxy),
-		SOCKS5Proxy:        strings.TrimSpace(raw.SOCKS5Proxy),
-		CostMode:           strings.TrimSpace(raw.CostMode),
-		TLSFingerprint:     strings.TrimSpace(raw.TLSFingerprint),
-		RegistryRefresh:    registryRefresh,
-		DebugDump:          raw.DebugDump,
-		LogFile:            strings.TrimSpace(raw.LogFile),
-		LogLevel:           strings.TrimSpace(raw.LogLevel),
+		ListenAddr:          strings.TrimSpace(raw.ListenAddr),
+		UpstreamBaseURL:     upstreamBaseURL,
+		AuthTokens:          dedupeStrings(raw.AuthTokens),
+		RotationInterval:    rotationInterval,
+		RequestTimeout:      requestTimeout,
+		SessionCallTimeout:  sessionCallTimeout,
+		APIKeys:             dedupeStrings(raw.APIKeys),
+		HTTPProxy:           strings.TrimSpace(raw.HTTPProxy),
+		SOCKS5Proxy:         strings.TrimSpace(raw.SOCKS5Proxy),
+		CostMode:            strings.TrimSpace(raw.CostMode),
+		TLSFingerprint:      strings.TrimSpace(raw.TLSFingerprint),
+		RegistryRefresh:     registryRefresh,
+		DebugDump:           raw.DebugDump,
+		LogFile:             strings.TrimSpace(raw.LogFile),
+		LogLevel:            strings.TrimSpace(raw.LogLevel),
+		MaxMessagesPerDay:   raw.MaxMessagesPerDay,
+		IdleRotationTimeout: idleRotationTimeout,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -273,6 +292,8 @@ func applyDotenv(raw *rawConfig) error {
 	overrideBoolFrom(&raw.DebugDump, get, "DEBUG_DUMP")
 	overrideStringFrom(&raw.LogFile, get, "LOG_FILE")
 	overrideStringFrom(&raw.LogLevel, get, "LOG_LEVEL")
+	overrideIntFrom(&raw.MaxMessagesPerDay, get, "MAX_MESSAGES_PER_DAY")
+	overrideStringFrom(&raw.IdleRotationTimeout, get, "IDLE_ROTATION_TIMEOUT")
 	return nil
 }
 
@@ -340,6 +361,20 @@ func overrideBoolFrom(target *bool, get func(string) string, envName string) {
 		*target = true
 	case "0", "false", "no", "off":
 		*target = false
+	}
+}
+
+// overrideInt sets target from MAX_MESSAGES_PER_DAY-style env vars; unset or
+// unparseable values leave the file/default value untouched.
+func overrideInt(target *int, envName string) {
+	overrideIntFrom(target, os.Getenv, envName)
+}
+
+func overrideIntFrom(target *int, get func(string) string, envName string) {
+	if value := strings.TrimSpace(get(envName)); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			*target = parsed
+		}
 	}
 }
 

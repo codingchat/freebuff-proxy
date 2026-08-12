@@ -222,6 +222,31 @@ func (m *RunManager) Shutdown(ctx context.Context) {
 	}
 }
 
+// FinishAllRuns FINISHes every active run and drops it from the active set,
+// leaving the session untouched (unlike Shutdown). Used by the pool's idle
+// rotation: once a token has been idle past IDLE_ROTATION_TIMEOUT, its runs
+// are finished so no rotation/refresh activity continues upstream; the next
+// Acquire starts a fresh run on demand.
+func (m *RunManager) FinishAllRuns(ctx context.Context) {
+	m.mu.Lock()
+	all := make([]*Run, 0, len(m.runs))
+	for _, run := range m.runs {
+		all = append(all, run)
+	}
+	m.runs = make(map[string]*Run)
+	m.mu.Unlock()
+
+	var errs []string
+	for _, run := range all {
+		if err := m.client.FinishRun(ctx, run.RunID, run.Requests); err != nil {
+			errs = append(errs, fmt.Sprintf("finish run %s: %v", run.RunID, err))
+		}
+	}
+	if len(errs) > 0 {
+		slog.Warn("runs: idle finish with errors", "errors", strings.Join(errs, "; "))
+	}
+}
+
 // Invalidate drops the current run for agentID so the next Acquire starts a
 // fresh one. Used when an upstream chat reports the run id as unknown
 // (ErrRunInvalid); the dead run is not FINISHed (upstream already forgot it)

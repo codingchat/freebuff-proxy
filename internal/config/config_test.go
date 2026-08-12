@@ -15,6 +15,7 @@ var envKeys = []string{
 	"LISTEN_ADDR", "UPSTREAM_BASE_URL", "AUTH_TOKENS", "ROTATION_INTERVAL",
 	"REQUEST_TIMEOUT", "SESSION_CALL_TIMEOUT", "API_KEYS", "HTTP_PROXY",
 	"SOCKS5_PROXY", "COST_MODE", "TLS_FINGERPRINT", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE", "LOG_LEVEL",
+	"MAX_MESSAGES_PER_DAY", "IDLE_ROTATION_TIMEOUT",
 }
 
 func clearEnv(t *testing.T) {
@@ -481,6 +482,102 @@ func TestTLSFingerprint(t *testing.T) {
 	t.Setenv("TLS_FINGERPRINT", "bogus")
 	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "TLS_FINGERPRINT") {
 		t.Fatalf("Load (invalid TLSFingerprint): err = %v, want error mentioning TLS_FINGERPRINT", err)
+	}
+}
+
+func TestMaxMessagesPerDay(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AUTH_TOKENS", "tok")
+
+	// default: 0 = unlimited
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load: %v", err)
+	} else if cfg.MaxMessagesPerDay != 0 {
+		t.Errorf("MaxMessagesPerDay = %d, want 0 (default)", cfg.MaxMessagesPerDay)
+	}
+
+	// env override
+	t.Setenv("MAX_MESSAGES_PER_DAY", "25")
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load (env): %v", err)
+	} else if cfg.MaxMessagesPerDay != 25 {
+		t.Errorf("MaxMessagesPerDay = %d, want 25 (env)", cfg.MaxMessagesPerDay)
+	}
+
+	// unparseable env value is ignored (keeps the file value)
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"MAX_MESSAGES_PER_DAY": 3}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MAX_MESSAGES_PER_DAY", "soon")
+	if cfg, err := Load(path); err != nil {
+		t.Fatalf("Load (bad env + file): %v", err)
+	} else if cfg.MaxMessagesPerDay != 3 {
+		t.Errorf("MaxMessagesPerDay = %d, want 3 (bad env ignored, file kept)", cfg.MaxMessagesPerDay)
+	}
+
+	// JSON file value
+	t.Setenv("MAX_MESSAGES_PER_DAY", "")
+	if cfg, err := Load(path); err != nil {
+		t.Fatalf("Load (file): %v", err)
+	} else if cfg.MaxMessagesPerDay != 3 {
+		t.Errorf("MaxMessagesPerDay = %d, want 3 (file)", cfg.MaxMessagesPerDay)
+	}
+}
+
+func TestIdleRotationTimeout(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AUTH_TOKENS", "tok")
+
+	// default: 0 = disabled
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load: %v", err)
+	} else if cfg.IdleRotationTimeout != 0 {
+		t.Errorf("IdleRotationTimeout = %v, want 0 (default)", cfg.IdleRotationTimeout)
+	}
+
+	// env override
+	t.Setenv("IDLE_ROTATION_TIMEOUT", "90m")
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load (env): %v", err)
+	} else if cfg.IdleRotationTimeout != 90*time.Minute {
+		t.Errorf("IdleRotationTimeout = %v, want 90m (env)", cfg.IdleRotationTimeout)
+	}
+
+	// explicit "0" disables
+	t.Setenv("IDLE_ROTATION_TIMEOUT", "0")
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load (env 0): %v", err)
+	} else if cfg.IdleRotationTimeout != 0 {
+		t.Errorf("IdleRotationTimeout = %v, want 0 (explicit 0)", cfg.IdleRotationTimeout)
+	}
+
+	// empty string in JSON is tolerated as disabled
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"IDLE_ROTATION_TIMEOUT": ""}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("IDLE_ROTATION_TIMEOUT", "")
+	if cfg, err := Load(path); err != nil {
+		t.Fatalf("Load (empty file): %v", err)
+	} else if cfg.IdleRotationTimeout != 0 {
+		t.Errorf("IdleRotationTimeout = %v, want 0 (empty tolerated)", cfg.IdleRotationTimeout)
+	}
+
+	// JSON file value
+	if err := os.WriteFile(path, []byte(`{"IDLE_ROTATION_TIMEOUT": "2h"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := Load(path); err != nil {
+		t.Fatalf("Load (file): %v", err)
+	} else if cfg.IdleRotationTimeout != 2*time.Hour {
+		t.Errorf("IdleRotationTimeout = %v, want 2h (file)", cfg.IdleRotationTimeout)
+	}
+
+	// invalid value fails
+	t.Setenv("IDLE_ROTATION_TIMEOUT", "soon")
+	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "IDLE_ROTATION_TIMEOUT") {
+		t.Fatalf("Load (bad): err = %v, want parse error mentioning IDLE_ROTATION_TIMEOUT", err)
 	}
 }
 

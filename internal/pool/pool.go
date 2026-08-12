@@ -37,6 +37,11 @@ import (
 // advances queued sessions (PRD §3: 60s maintain ticker).
 const maintainInterval = time.Minute
 
+// usageWindow is the rolling window for the per-token daily message cap
+// (MAX_MESSAGES_PER_DAY): a token may send at most N successful chat
+// requests per 24h of usage history.
+const usageWindow = 24 * time.Hour
+
 // shutdownTimeout bounds each token's Shutdown during Pool.Shutdown when the
 // caller's context carries no earlier deadline.
 const shutdownTimeout = 10 * time.Second
@@ -63,6 +68,7 @@ type TokenSnapshot struct {
 	SessionQueueDepth    int
 	ActiveRuns           int
 	Requests             int
+	Messages24h          int // successful chats in the last 24h (MAX_MESSAGES_PER_DAY usage)
 }
 
 // Pool balances requests across the configured tokens.
@@ -77,6 +83,18 @@ type Pool struct {
 	once   sync.Once
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// Usage tracking for MAX_MESSAGES_PER_DAY: one timestamp per successful
+	// upstream chat, per token. Guarded by usageMu.
+	usageMu      sync.Mutex
+	msgsPerToken [][]time.Time
+
+	// Idle rotation (IDLE_ROTATION_TIMEOUT): last successful Acquire and
+	// whether the maintain loop already FINISHed all runs for the current
+	// idle stretch. Guarded by lastActiveMu.
+	lastActiveMu sync.Mutex
+	lastActive   time.Time
+	idleFinished bool
 }
 
 type tokenEntry struct {
@@ -103,6 +121,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 	}
 
 	p := &Pool{cfg: cfg, reg: reg, logger: slog.Default()}
+	p.msgsPerToken = make([][]time.Time, len(cfg.AuthTokens))
 	for i := range cfg.AuthTokens {
 		p.toks = append(p.toks, &tokenEntry{
 			session: sessions[i],
@@ -130,6 +149,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	var waiting []*session.WaitingRoomError
 	var rateLimited []*upstream.RateLimitError
 	var banned []*upstream.BanError
+	var dailyLimited []*upstream.RateLimitError
 
 	for offset := 0; offset < len(p.toks); offset++ {
 		if err := ctx.Err(); err != nil {
@@ -148,6 +168,17 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			if be := tok.runs.BanError(); be != nil {
 				banned = append(banned, be)
 			}
+			continue
+		}
+
+		// Daily rolling cap: a token that already sent its
+		// MAX_MESSAGES_PER_DAY successful chats in the last 24h is skipped
+		// like a cooldown; when every token is capped, the pool surfaces a
+		// 429 with the earliest window reset.
+		if p.cfg.MaxMessagesPerDay > 0 && p.usageCount(idx) >= p.cfg.MaxMessagesPerDay {
+			dailyLimited = append(dailyLimited, p.dailyLimitError(idx))
+			errs = append(errs, fmt.Sprintf("%s: daily message limit (%d) reached", name, p.cfg.MaxMessagesPerDay))
+			p.logger.Debug("pool: token skipped (daily message limit)", "token", idx+1, "limit", p.cfg.MaxMessagesPerDay)
 			continue
 		}
 
@@ -194,6 +225,12 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		ss := tok.session.Snapshot()
 		p.logger.Debug("pool: lease acquired", "token", idx+1, "model", model, "agent", agentID, "instance_id", instanceID,
 			"tier", ss.TierAccess, "country", ss.TierCountry)
+		// Track the activity and end any idle-maintenance pause: the next
+		// maintain tick resumes rotation/refresh work.
+		p.lastActiveMu.Lock()
+		p.lastActive = time.Now()
+		p.idleFinished = false
+		p.lastActiveMu.Unlock()
 		return &Lease{Token: idx, AgentID: agentID, Run: run, SessionInstanceID: instanceID,
 			TierAccess: ss.TierAccess, TierCountry: ss.TierCountry}, nil
 	}
@@ -208,6 +245,9 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	}
 	if len(banned) == len(p.toks) && len(banned) > 0 {
 		return nil, banned[0]
+	}
+	if len(dailyLimited) == len(p.toks) && len(dailyLimited) > 0 {
+		return nil, bestDailyLimit(dailyLimited)
 	}
 	return nil, fmt.Errorf("unable to acquire run from any token: %s", strings.Join(errs, "; "))
 }
@@ -277,7 +317,13 @@ func (p *Pool) Chat(ctx context.Context, lease *Lease, opts upstream.ChatOptions
 	if lease == nil || lease.Token < 0 || lease.Token >= len(p.toks) {
 		return nil, errors.New("pool: chat: invalid lease token")
 	}
-	return p.toks[lease.Token].client.ChatCompletions(ctx, opts, body)
+	rc, err := p.toks[lease.Token].client.ChatCompletions(ctx, opts, body)
+	if err == nil {
+		// Only chats that actually went upstream count against the daily
+		// cap; errors are not recorded.
+		p.recordChat(lease.Token)
+	}
+	return rc, err
 }
 
 // Start launches the background jobs: a best-effort prewarm of every
@@ -328,6 +374,7 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			CooldownUntil:        rs.CooldownUntil,
 			ActiveRuns:           rs.ActiveRuns,
 			Requests:             rs.Requests,
+			Messages24h:          p.usageCount(i),
 			SessionStatus:        ss.Status,
 			SessionInstanceID:    ss.InstanceID,
 			SessionQueuePosition: ss.QueuePosition,
@@ -338,6 +385,107 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 }
 
 // --- internals ---
+
+// recordChat appends one successful upstream chat for token and prunes the
+// token's usage history outside the 24h window.
+func (p *Pool) recordChat(token int) {
+	if token < 0 || token >= len(p.toks) {
+		return
+	}
+	p.usageMu.Lock()
+	defer p.usageMu.Unlock()
+	cutoff := time.Now().Add(-usageWindow)
+	history := p.msgsPerToken[token]
+	first := 0
+	for first < len(history) && history[first].Before(cutoff) {
+		first++
+	}
+	p.msgsPerToken[token] = append(history[first:], time.Now())
+}
+
+// usageCount returns how many successful chats token sent within the last
+// usageWindow, pruning expired timestamps.
+func (p *Pool) usageCount(token int) int {
+	if token < 0 || token >= len(p.toks) {
+		return 0
+	}
+	p.usageMu.Lock()
+	defer p.usageMu.Unlock()
+	cutoff := time.Now().Add(-usageWindow)
+	history := p.msgsPerToken[token]
+	first := 0
+	for first < len(history) && history[first].Before(cutoff) {
+		first++
+	}
+	p.msgsPerToken[token] = history[first:]
+	return len(p.msgsPerToken[token])
+}
+
+// dailyLimitError builds the 429 surfaced when token is capped by
+// MAX_MESSAGES_PER_DAY: RetryAfter is the time until the token's oldest
+// recorded chat ages out of the 24h window (the earliest moment a slot
+// frees).
+func (p *Pool) dailyLimitError(token int) *upstream.RateLimitError {
+	return &upstream.RateLimitError{
+		RetryAfter:  p.usageResetIn(token),
+		Limit:       float64(p.cfg.MaxMessagesPerDay),
+		RecentCount: float64(p.usageCount(token)),
+		Body:        "daily message limit reached",
+	}
+}
+
+// usageResetIn is how long until token's oldest usage timestamp ages out of
+// the window (0 when the token has no recorded usage or the reset is due).
+func (p *Pool) usageResetIn(token int) time.Duration {
+	p.usageMu.Lock()
+	defer p.usageMu.Unlock()
+	history := p.msgsPerToken[token]
+	if len(history) == 0 {
+		return 0
+	}
+	reset := time.Until(history[0].Add(usageWindow))
+	if reset < 0 {
+		return 0
+	}
+	return reset
+}
+
+// bestDailyLimit picks the daily-cap error whose window frees first: the
+// client retries when the first token has a free slot again.
+func bestDailyLimit(entries []*upstream.RateLimitError) *upstream.RateLimitError {
+	best := entries[0]
+	for _, e := range entries[1:] {
+		if e.RetryAfter < best.RetryAfter {
+			best = e
+		}
+	}
+	return best
+}
+
+// idleFor is how long the pool has gone without a successful Acquire (0
+// when no request ever arrived, so a freshly prewarmed pool is not treated
+// as idle).
+func (p *Pool) idleFor() time.Duration {
+	p.lastActiveMu.Lock()
+	defer p.lastActiveMu.Unlock()
+	if p.lastActive.IsZero() {
+		return 0
+	}
+	return time.Since(p.lastActive)
+}
+
+// setIdleFinishedOnce marks the idle FINISH as done and reports whether
+// this call performed it (false when it was already done). The next
+// Acquire success resets the flag.
+func (p *Pool) setIdleFinishedOnce() bool {
+	p.lastActiveMu.Lock()
+	defer p.lastActiveMu.Unlock()
+	if p.idleFinished {
+		return false
+	}
+	p.idleFinished = true
+	return true
+}
 
 // prewarm starts a run for every agent on every token, best-effort, bounded
 // by the request timeout.
@@ -352,7 +500,12 @@ func (p *Pool) prewarm(ctx context.Context, agentIDs []string) {
 }
 
 // maintainLoop ticks every maintainInterval: per token, rotate aged runs and
-// refresh the session (advances queued sessions past pollAt).
+// refresh the session (advances queued sessions past pollAt). When
+// IDLE_ROTATION_TIMEOUT is set, the pool pauses this activity after it has
+// been idle past the timeout: one pass FINISHes all runs (so no
+// rotation/session-refresh activity continues upstream) and every further
+// pass is skipped until the next request — Acquire re-creates runs on
+// demand.
 func (p *Pool) maintainLoop(ctx context.Context) {
 	defer p.wg.Done()
 	ticker := time.NewTicker(maintainInterval)
@@ -362,20 +515,41 @@ func (p *Pool) maintainLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			for i, tok := range p.toks {
-				mCtx, cancel := context.WithTimeout(ctx, p.cfg.RequestTimeout)
-				tok.runs.Maintain(mCtx)
-				// Advance queued sessions only (GET poll — zero quota cost). Session
-				// creation stays lazy on first request: a scheduled POST here would
-				// burn one of the ~6 daily admissions every hour of uptime.
-				if snap := tok.session.Snapshot(); snap.Status == "queued" {
-					if _, err := tok.session.EnsureSession(mCtx); err != nil {
-						p.logger.Debug("pool: maintain session not ready", "token", i+1, "err", err)
-					}
-				}
-				cancel()
+			p.maintainTick(ctx)
+		}
+	}
+}
+
+// maintainTick runs one maintenance pass: the idle handling (see
+// maintainLoop), then the per-token rotate/refresh work. Split out of
+// maintainLoop so tests can drive a pass without waiting for the
+// minute-long ticker.
+func (p *Pool) maintainTick(ctx context.Context) {
+	if p.cfg.IdleRotationTimeout > 0 && p.idleFor() > p.cfg.IdleRotationTimeout {
+		// Past the idle threshold. If this is the first idle pass, FINISH
+		// every run so the token's rotation/refresh activity stops
+		// upstream; sessions are left untouched. Later passes skip the
+		// per-token work entirely while the pool stays idle.
+		if !p.setIdleFinishedOnce() {
+			return
+		}
+		for _, tok := range p.toks {
+			tok.runs.FinishAllRuns(context.Background())
+		}
+		return
+	}
+	for i, tok := range p.toks {
+		mCtx, cancel := context.WithTimeout(ctx, p.cfg.RequestTimeout)
+		tok.runs.Maintain(mCtx)
+		// Advance queued sessions only (GET poll — zero quota cost). Session
+		// creation stays lazy on first request: a scheduled POST here would
+		// burn one of the ~6 daily admissions every hour of uptime.
+		if snap := tok.session.Snapshot(); snap.Status == "queued" {
+			if _, err := tok.session.EnsureSession(mCtx); err != nil {
+				p.logger.Debug("pool: maintain session not ready", "token", i+1, "err", err)
 			}
 		}
+		cancel()
 	}
 }
 
