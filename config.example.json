@@ -11,5 +11,7 @@
   "SOCKS5_PROXY": "",
   "COST_MODE": "",
   "DEBUG_DUMP": false,
-  "LOG_FILE": ""
+  "LOG_FILE": "",
+  "MAX_MESSAGES_PER_DAY": 0,
+  "IDLE_ROTATION_TIMEOUT": "0"
 }

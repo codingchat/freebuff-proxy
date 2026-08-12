@@ -159,6 +159,8 @@ Every key is read from the environment and overrides the JSON config file passed
 | `LOG_FILE` | empty | Append logs to a file in addition to stderr. |
 | `LOG_LEVEL` | info | `debug`, `info`, `warn`, or `error`. `-v` implies debug; `LOG_LEVEL` wins. |
 | `TLS_FINGERPRINT` | empty | Outbound JA3 fingerprint: `chrome120`, `safari17`, `firefox120`, or `random`. |
+| `MAX_MESSAGES_PER_DAY` | `0` | Per-token rolling 24h message cap. At the cap the proxy answers `429 rate_limited` with `Retry-After` instead of hitting upstream, keeping the account far under FreeBuff's abuse thresholds (~500 msgs/24h). `0` = unlimited. |
+| `IDLE_ROTATION_TIMEOUT` | `0` | Pause background work after this long without traffic (e.g. `30m`): runs are FINISHed and maintenance stops until the next request, so the account is not kept artificially active 24/7. `0` = always maintain. |
 
 ## 9router integration
 
@@ -201,6 +203,15 @@ Go binaries trip AV heuristics; this is a validated false positive, not malware.
 **Is this against FreeBuff's terms?**
 
 FreeBuff is intended to be used through the official CLI only. This proxy uses undocumented endpoints and replicates CLI fingerprints, which conflicts with the letter of the service terms. Account bans are possible. Use it for personal and educational experimentation, keep usage modest, at your own risk.
+
+**How do I keep my account from getting banned?**
+
+Use less, use it like a human, and let the proxy do the same. Set
+`MAX_MESSAGES_PER_DAY` (well under the ~500 msgs/24h threshold, e.g. `150`) and
+`IDLE_ROTATION_TIMEOUT` (e.g. `30m`) so the proxy stops background work when you are not
+using it; do not run it 24/7, stop when you see `429 rate_limited`, and never share a
+token between the proxy, the official CLI, and the web dashboard at the same time. See
+the WARNING at the top of this file and the Terms of use.
 
 **Still stuck?** Open an issue with the proxy version, your client, and `LOG_LEVEL=debug` output (redact tokens).
 

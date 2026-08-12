@@ -1,21 +1,21 @@
-# get-freebuff-token.ps1 — install the FreeBuff CLI, log in, extract the auth token
+﻿# get-freebuff-token.ps1 - install the FreeBuff CLI, log in, extract the auth token
 #
 # Usage:
 #   .\get-freebuff-token.ps1                # install + login (if needed) + write token into ../.env (or repo .env)
 #   .\get-freebuff-token.ps1 -ToClipboard   # copy the token to the clipboard instead
-#   .\get-freebuff-token.ps1 -Print         # print the RAW token (be careful — it is a credential)
+#   .\get-freebuff-token.ps1 -Print         # print the RAW token (be careful - it is a credential)
 #   .\get-freebuff-token.ps1 -Force         # force re-login even if a token already exists
 #   .\get-freebuff-token.ps1 -EnvFile D:\path\.env   # explicit target .env
 #
 # Token sources (documented by the community proxies):
-#   - Web:        https://freebuff.llm.pm  (login → token shown on the page; no install)
-#   - CLI:        this script — installs `freebuff`, runs the interactive login,
+#   - Web:        https://freebuff.llm.pm  (login -> token shown on the page; no install)
+#   - CLI:        this script - installs `freebuff`, runs the interactive login,
 #                 then reads the authToken from the credentials file the CLI writes:
 #                     %USERPROFILE%\.config\manicode\credentials.json
 #                     ~/.config/manicode/credentials.json          (WSL/bash)
 #
 # The token is a 36-char UUID (or user_... form) and is used WITHOUT any "Bearer "
-# prefix — the proxy adds it upstream itself.
+# prefix - the proxy adds it upstream itself.
 param(
   [switch]$Print,
   [switch]$ToClipboard,
@@ -36,7 +36,7 @@ function Find-CredentialsFile {
 }
 
 function Get-AuthToken([string]$path) {
-  # Parse with node (guaranteed present — npm was required to install the CLI).
+  # Parse with node (guaranteed present - npm was required to install the CLI).
   $script = @'
 const fs = require("fs");
 const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -62,12 +62,12 @@ if (-not (Get-Command freebuff -ErrorAction SilentlyContinue)) {
 
 $existing = Find-CredentialsFile
 if (-not $Force -and $existing -and (Get-AuthToken $existing)) {
-  Write-Host "Already logged in — reusing the existing token ($existing). Use -Force to re-login." -ForegroundColor Green
+  Write-Host "Already logged in - reusing the existing token ($existing). Use -Force to re-login." -ForegroundColor Green
 } else {
-  Write-Host "Starting the FreeBuff login — complete it in the browser/terminal that opens, then come back." -ForegroundColor Yellow
+  Write-Host "Starting the FreeBuff login - complete it in the browser/terminal that opens, then come back." -ForegroundColor Yellow
   Write-Host "(If it asks you to paste a URL code, do so. The CLI saves the token when done.)" -ForegroundColor Yellow
   & freebuff
-  if ($LASTEXITCODE -ne 0) { Write-Host "freebuff exited with code $LASTEXITCODE — login may have failed." -ForegroundColor Red; exit 1 }
+  if ($LASTEXITCODE -ne 0) { Write-Host "freebuff exited with code $LASTEXITCODE - login may have failed." -ForegroundColor Red; exit 1 }
 }
 
 # --- 3. extract the token ---------------------------------------------------
@@ -83,7 +83,11 @@ if (-not $token) {
   exit 1
 }
 
-$masked = if ($token.Length -gt 12) { $token.Substring(0, 8) + "..." + $token.Substring($token.Length - 4) } else { "***" }
+if ($token.Length -gt 12) {
+  $masked = $token.Substring(0, 8) + "..." + $token.Substring($token.Length - 4)
+} else {
+  $masked = "***"
+}
 Write-Host "Token found ($($token.Length) chars): $masked" -ForegroundColor Green
 
 # --- 4. deliver --------------------------------------------------------------
@@ -116,5 +120,5 @@ if ($EnvFile) {
   Write-Host "AUTH_TOKENS written to $EnvFile (gitignored)." -ForegroundColor Green
 } else {
   Write-Host "Token: $token" -ForegroundColor Yellow
-  Write-Host "Run with -ToClipboard or -Print to see it again; or pass -EnvFile <path>." -ForegroundColor Yellow
+  Write-Host "Run with -ToClipboard or -Print to see it again; or pass -EnvFile with a path." -ForegroundColor Yellow
 }
