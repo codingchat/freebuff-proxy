@@ -221,7 +221,7 @@ func TestEnvelopeCostModeAndStopPreserved(t *testing.T) {
 	}
 }
 
-func TestUARotation(t *testing.T) {
+func TestUAIsCLIUserAgent(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 
@@ -229,17 +229,15 @@ func TestUARotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]bool{}
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 3; i++ {
 		rc, err := client.ChatCompletions(context.Background(), ChatOptions{Model: "m", RunID: "r"}, []byte(`{"model":"m"}`))
 		if err != nil {
 			t.Fatal(err)
 		}
 		_ = rc.Close()
-		seen[mock.RecordedChatHeaders[i].Get("User-Agent")] = true
-	}
-	if len(seen) < 2 {
-		t.Errorf("UA did not rotate: %v", seen)
+		if got := mock.RecordedChatHeaders[i].Get("User-Agent"); got != cliUserAgent {
+			t.Errorf("request %d UA = %q, want the fixed CLI UA %q", i, got, cliUserAgent)
+		}
 	}
 }
 

@@ -18,7 +18,6 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
-	mathrand "math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -176,16 +175,11 @@ type Client struct {
 	stealthProfile     *stealth.Profile // nil when fingerprint unset
 }
 
-// userAgents mirrors the official CLI / SDK user agents; one is picked at
-// random per request (proxy-freebuff upstream.js behavior).
-var userAgents = []string{
-	"codebuff-cli/1.0.0 (Windows; Node.js v22.3.0)",
-	"codebuff-cli/1.1.2 (darwin; Node.js v22.5.1)",
-	"freebuff/0.2.4 (linux; Node.js v20.11.1)",
-	"ai-sdk/openai-compatible/1.0.25/codebuff",
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-}
+// cliUserAgent mirrors the official CLI / SDK user agent. The upstream
+// free-tier gate (403 free_mode_cli_required) requires requests to carry the
+// AI-SDK user agent; random browser UAs are rejected. Kept as a fixed
+// constant so the envelope is identical on every request.
+const cliUserAgent = "ai-sdk/openai-compatible/0.10.7/codebuff"
 
 // New builds the client for one token. HTTP_PROXY (CONNECT) and SOCKS5_PROXY
 // are honored; SOCKS5 wins when both are set (cleaner geo-bypass path).
@@ -473,7 +467,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body []byt
 	if c.stealthProfile != nil {
 		stealth.SanitizeAndApply(req.Header, c.stealthProfile)
 	} else {
-		req.Header.Set("User-Agent", randomUA())
+		req.Header.Set("User-Agent", cliUserAgent)
 	}
 	return req, nil
 }
@@ -777,12 +771,6 @@ func parseProxyAddr(raw string) (string, error) {
 		return "", fmt.Errorf("proxy URL %q has no host", raw)
 	}
 	return u.Host, nil
-}
-
-// randomUA picks a random user agent per request.
-func randomUA() string {
-	idx := mathrand.Intn(len(userAgents))
-	return userAgents[idx]
 }
 
 func drainBody(r io.Reader) string {
