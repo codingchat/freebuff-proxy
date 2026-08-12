@@ -33,17 +33,16 @@ CLIPBOARD=0
 FORCE=0
 ENV_FILE=""
 
-for arg in "$@"; do
-  case "$arg" in
-    --print) PRINT=1 ;;
-    --clipboard) CLIPBOARD=1 ;;
-    --force) FORCE=1 ;;
-    --env-file) ENV_FILE="${2:-}" ;;
-    --env-file=*) ENV_FILE="${arg#*=}" ;;
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --print) PRINT=1; shift ;;
+    --clipboard) CLIPBOARD=1; shift ;;
+    --force) FORCE=1; shift ;;
+    --env-file) ENV_FILE="${2:-}"; shift 2 ;;
+    --env-file=*) ENV_FILE="${1#*=}"; shift ;;
     -h|--help) grep '^#' "$0" | head -30; exit 0 ;;
-    *) echo "unknown arg: $arg (see header)" >&2; exit 1 ;;
+    *) echo "unknown arg: $1 (see header)" >&2; exit 1 ;;
   esac
-  shift
 done
 
 # --- 2. install the FreeBuff CLI -------------------------------------------
