@@ -22,10 +22,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install syft (SBOM cataloger)
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:

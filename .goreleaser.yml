@@ -29,10 +29,6 @@ archives:
       - README.md
       - LICENSE
       - .env.example
-      - config.example.json
-
-sboms:
-  - artifacts: archive
 
 checksum:
   name_template: "checksums.txt"
