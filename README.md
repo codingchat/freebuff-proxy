@@ -10,6 +10,37 @@ FreeBuff (Codebuff's free coding agent) exposes its models only through the offi
 
 What this is not: an official FreeBuff or Codebuff product. It is a community bridge for an unofficial service. See the FAQ and Terms of use at the bottom.
 
+> ## WARNING: your account can get suspended or banned
+>
+> This project works by making FreeBuff believe it is talking to the official CLI. The
+> upstream service detects this and **does suspend and ban accounts**.
+>
+> - Suspended/banned accounts fail with `403 account_banned` / `{"status":"banned"}`, and
+>   the web dashboard shows **"suspended"**. Your FreeBuff/Codebuff account, tokens, and
+>   free-tier access are on the line.
+> - The ban is **per account and effectively terminal**. The official source code flags
+>   the account as banned ("terminal", returned from every endpoint). Unbanning is an
+>   internal admin operation; there is no self-service path. Community proxies have seen
+>   `resumes_at` timestamps in ban responses, which would mean temporary bans, but this is
+>   **not confirmed in any official source** and may just be the account being gone.
+> - Bans are scored by a public abuse-detection pipeline: heavy continuous usage (hundreds
+>   of messages a day, many distinct active hours, long unattended sessions), automation
+>   patterns, fresh GitHub accounts (under a few weeks old), throwaway email addresses,
+>   and clusters of new accounts created close together all raise the score.
+> - Codebuff's terms allow one account per person and explicitly prohibit wrappers,
+>   proxies, and non-human sessions. Using this proxy already conflicts with them.
+>
+> **Use at your own risk, and assume a ban is permanent.**
+>
+> - Use one modest account; do not run 24/7, do not leave sessions running unattended,
+>   stop when you see `429 rate_limited`.
+> - If you are banned: the token is dead. Wait and re-probe once (cheap to try), then get
+>   a **new account with an established GitHub login (months old, not fresh) and a clean
+>   IP, without a VPN**. That is the only realistic recovery.
+> - Appeals go to support@codebuff.com and realistically only succeed for false positives,
+>   not for proxy use. The maintainers have had accounts suspended while building and
+>   testing this project. This is not a toy warning.
+
 ## What it does
 
 - Serves `/v1/chat/completions`, `/v1/models`, and `/healthz` on `127.0.0.1:3457` by default.
@@ -152,7 +183,12 @@ The token's daily session quota is exhausted (6 sessions per day on the limited 
 
 **I get `403` with `account_banned` / `{"status":"banned"}`.**
 
-Your FreeBuff account was banned upstream. This is the ToS risk this project documents; the token is dead and no setting will unban it. Get a fresh account and token. The proxy remembers the ban, stops hammering the upstream, and surfaces `403` with the upstream `resumes-at` until the window passes (24h if upstream sends no timestamp), then automatically re-probes: still banned means another window, unbanned means it just works.
+Your FreeBuff account was banned or suspended upstream. See the **WARNING** at the top of
+this file: the ban is per account and effectively permanent, the token is dead, and no
+setting will revive it. The proxy stops using the token during the ban window (upstream
+`resumes-at`, or 24h if none) and then re-probes once, which is cheap to try; if it still
+fails, get a new account with an established GitHub login and a clean IP (no VPN). Appeals
+go to support@codebuff.com but realistically only succeed for false positives.
 
 **I get `503` with `waiting_room_queued`.**
 
