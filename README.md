@@ -180,7 +180,7 @@ Every key is read from the environment and overrides the JSON config file passed
 | `API_KEYS` | empty | Optional client auth. Comma-separated keys clients must present. Empty means no client auth. |
 | `HTTP_PROXY` | empty | Outbound HTTP/HTTPS proxy (CONNECT tunneling). |
 | `SOCKS5_PROXY` | empty | Outbound SOCKS5 proxy, e.g. `socks5://127.0.0.1:1080`. |
-| `COST_MODE` | empty | `cost_mode` sent upstream: omit or `"free"`. A/B testing pending (PRD section 8). |
+| `COST_MODE` | `free` | Mode sent upstream with chat requests. Must be `free`: the upstream 402 balance check runs only when `cost_mode != "free"`, so omitting it makes fresh free-tier accounts fail with `402 "Out of credits. Please add credits at codebuff.com/usage"`. |
 | `DEBUG_DUMP` | `false` | Dump raw upstream traffic into `./dump` (sensitive headers redacted). |
 | `LOG_FILE` | empty | Append logs to a file in addition to stderr. |
 | `LOG_LEVEL` | info | `debug`, `info`, `warn`, or `error`. `-v` implies debug; `LOG_LEVEL` wins. |
@@ -203,7 +203,11 @@ Quick version: Dashboard, Providers, Add OpenAI Compatible. Base URL `http://loc
 
 **The proxy returns `403 free_mode_cli_required`.**
 
-The CLI envelope did not satisfy the anti-bot gate. Check `COST_MODE` and the `client_id` format (13-char base36). If it started failing after a FreeBuff update, open an issue with the debug log (`LOG_LEVEL=debug`).
+The CLI envelope did not satisfy the anti-bot gate. Check `COST_MODE` (must be `free`, the default) and the `client_id` format (13-char base36). If it started failing after a FreeBuff update, open an issue with the debug log (`LOG_LEVEL=debug`).
+
+**I get `402` / "Out of credits. Please add credits at codebuff.com/usage".**
+
+The request went down the paid path. Upstream runs its balance check only when `cost_mode != "free"`, so a fresh free account (balance 0) always gets 402 unless `COST_MODE=free` is sent. Check your `.env`: `COST_MODE` must be `free` (the default and the value in `.env.example`). If it is empty, the proxy bills the request as paid. Old configs copied before v0.2.0 that set `COST_MODE=` empty need the value restored.
 
 **I get `429` with `rate_limited` in the body.**
 

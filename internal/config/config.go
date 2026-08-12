@@ -70,8 +70,9 @@ func defaultRawConfig() rawConfig {
 		RequestTimeout:      "15m",
 		SessionCallTimeout:  "30s",
 		RegistryRefresh:     "6h",
-		MaxMessagesPerDay:   0,   // 0 = unlimited
-		IdleRotationTimeout: "0", // 0 = disabled
+		CostMode:            "free", // free-tier mode; omission routes requests as PAID and fresh free accounts get 402 "Out of credits" (upstream check: cost_mode !== 'free' → billing)
+		MaxMessagesPerDay:   0,      // 0 = unlimited
+		IdleRotationTimeout: "0",    // 0 = disabled
 	}
 }
 

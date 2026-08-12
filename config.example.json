@@ -9,7 +9,7 @@
   "API_KEYS": [],
   "HTTP_PROXY": "",
   "SOCKS5_PROXY": "",
-  "COST_MODE": "",
+  "COST_MODE": "free",
   "DEBUG_DUMP": false,
   "LOG_FILE": "",
   "MAX_MESSAGES_PER_DAY": 0,

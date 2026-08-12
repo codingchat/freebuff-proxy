@@ -70,8 +70,8 @@ func TestDefaults(t *testing.T) {
 	if cfg.HTTPProxy != "" || cfg.SOCKS5Proxy != "" {
 		t.Errorf("proxies = %q/%q, want empty", cfg.HTTPProxy, cfg.SOCKS5Proxy)
 	}
-	if cfg.CostMode != "" {
-		t.Errorf("CostMode = %q, want empty", cfg.CostMode)
+	if cfg.CostMode != "free" {
+		t.Errorf("CostMode = %q, want free (default: omission routes requests as paid -> 402)", cfg.CostMode)
 	}
 }
 
