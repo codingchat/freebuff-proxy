@@ -79,7 +79,7 @@ ASSET="freebuff-proxy_${VERSION}_${GOOS}_${GOARCH}.tar.gz"
 ok "Asset: $ASSET"
 
 ASSET_URL="$(printf '%s' "$RELEASE" | tr ',' '\n' | sed -n "s/.*\"browser_download_url\": *\"\([^\"]*${ASSET}\"\).*/\1/p" | head -1 | tr -d '"')"
-SUMS_URL="$(printf '%s' "$RELEASE" | tr ',' '\n' | sed -n 's/.*"browser_download_url": *"\([^"]*checksums.txt"\).*/\1/p' | head -1)"
+SUMS_URL="$(printf '%s' "$RELEASE" | tr ',' '\n' | sed -n 's/.*"browser_download_url": *"\([^"]*checksums.txt"\).*/\1/p' | head -1 | tr -d '"')"
 if [ -z "$ASSET_URL" ]; then
   echo "ERROR: asset $ASSET not found in the release." >&2
   exit 1
