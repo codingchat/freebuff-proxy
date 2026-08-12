@@ -200,14 +200,9 @@ Windows builds: `go build -o freebuff-proxy.exe ./cmd/freebuff-proxy`.
 
 Two ways, plus scripts that automate the CLI path:
 
-- **Web (no install):** log in at [freebuff.llm.pm](https://freebuff.llm.pm). Under
-  **Freebuff Auth** click **Generate login URL**, then **copy** the URL it shows
-  (`https://freebuff.com/login?auth_code=...`). The token is the `auth_code` value from
-  that link, e.g. from `...?auth_code=4v2G-8dmPXNjgZvbCvhIcA` the token is
-  `4v2G-8dmPXNjgZvbCvhIcA`. Pasting the whole URL also works in the scripts below.
-- **Official CLI:** `npm i -g freebuff`, run `freebuff` once to log in, then read `authToken` from `~/.config/manicode/credentials.json` (Windows: `C:\Users\<you>\.config\manicode\credentials.json`).
-- **Scripts:** `scripts/get-freebuff-token.sh` (bash) or `scripts/get-freebuff-token.ps1` (PowerShell) install the CLI, log in, and write `AUTH_TOKENS` into `.env` for you.
-
+- **Official CLI (Recommended):** `npm i -g freebuff`, run `freebuff` once to log in, and the CLI saves `authToken` to `~/.config/manicode/credentials.json` (Windows: `C:\Users\<you>\.config\manicode\credentials.json`). The value of `authToken` is your token.
+- **Web flow (freebuff.llm.pm):** Log in at [freebuff.llm.pm](https://freebuff.llm.pm). Under **Freebuff Auth** click **Generate login URL** (`https://freebuff.com/login?auth_code=...`). Open the link in a browser to complete authentication; the resulting `authToken` (or `auth_code` key for automated scripts) is written into `.env`.
+- **Scripts:** `scripts/get-freebuff-token.sh` (bash) or `scripts/get-freebuff-token.ps1` (PowerShell) automate installing the CLI, completing login, and writing `AUTH_TOKENS` into `.env`.
 Use the token without any `Bearer ` prefix; the proxy adds it upstream itself. For higher throughput, log in with several accounts and comma-separate the tokens: `AUTH_TOKENS=tok1,tok2`.
 
 ## Quick start
