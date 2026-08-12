@@ -51,7 +51,7 @@ What this is not: an official FreeBuff or Codebuff product. It is a community br
 
 ## Requirements
 
-- One FreeBuff auth token. The proxy refuses to start without at least one. See Getting a token.
+- Zero or more FreeBuff auth tokens. With none, the proxy runs in **bridge mode** — each client sends their own token (see [Bridge mode](#bridge-mode)).
 - Release binaries run standalone. Building from source needs Go 1.26+ (see `go.mod`).
 
 ## Install
@@ -60,7 +60,9 @@ What this is not: an official FreeBuff or Codebuff product. It is a community br
 
 Downloads the **latest** release binary for your platform, verifies its checksum, sets up
 `.env`, asks for your token, and prints the next steps. No version to look up, no manual
-downloads.
+downloads. Running it in a terminal shows an interactive menu: easy install, manual binary,
+Docker Compose, or **bridge mode** (no proxy token — clients send their own). For scripted
+runs add `--no-prompt` (safe defaults) or pick a method with `--method=binary|docker|bridge`.
 
 **Windows (PowerShell):**
 
@@ -78,11 +80,11 @@ Both scripts install into the current directory (`--dir <path>` to change it), c
 `AUTH_TOKENS` in `.env` from your freebuff CLI login, or prompt you to paste a login URL
 (`https://freebuff.com/login?auth_code=...`), and print the run and smoke-test commands.
 
-### Option 2: manual download
+### Option 2: manual download (no version lookup)
 
-Download the archive for your platform from the [latest release](https://github.com/trefeon/freebuff-proxy/releases). Assets are named `freebuff-proxy_<version>_<os>_<arch>.tar.gz` (`zip` on Windows), and every release ships `checksums.txt`.
+Download the archive for your platform from the [latest release](https://github.com/trefeon/freebuff-proxy/releases/latest). The commands below resolve the version automatically — no manual `<version>` replacement needed. Every release ships `checksums.txt`.
 
-| Platform | Archive |
+| Platform | Asset name |
 |---|---|
 | linux / amd64 | `freebuff-proxy_<version>_linux_amd64.tar.gz` |
 | linux / arm64 | `freebuff-proxy_<version>_linux_arm64.tar.gz` |
@@ -91,16 +93,27 @@ Download the archive for your platform from the [latest release](https://github.
 | windows / amd64 | `freebuff-proxy_<version>_windows_amd64.zip` |
 | windows / arm64 | `freebuff-proxy_<version>_windows_arm64.zip` |
 
-Example on linux amd64 (replace `<version>`, e.g. `0.1.1`):
+**Linux / macOS** (one-liner, adjust the asset suffix for your platform):
 
 ```bash
-curl -sSL -o freebuff-proxy.tar.gz https://github.com/trefeon/freebuff-proxy/releases/latest/download/freebuff-proxy_<version>_linux_amd64.tar.gz
+VERSION="$(curl -fsSL https://api.github.com/repos/trefeon/freebuff-proxy/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+' )"
+curl -fsSL -o freebuff-proxy.tar.gz "https://github.com/trefeon/freebuff-proxy/releases/latest/download/freebuff-proxy_${VERSION}_linux_amd64.tar.gz"
+curl -fsSL -o checksums.txt "https://github.com/trefeon/freebuff-proxy/releases/latest/download/checksums.txt"
 tar xzf freebuff-proxy.tar.gz
-sha256sum -c checksums.txt --ignore-missing 2>/dev/null || echo "download checksums.txt from the release to verify"
+sha256sum -c checksums.txt --ignore-missing 2>/dev/null || echo "checksum mismatch — verify manually"
 ./freebuff-proxy
 ```
 
-Windows: extract the zip, then run `freebuff-proxy.exe` in a terminal.
+**Windows (PowerShell):**
+
+```powershell
+$v = (Invoke-RestMethod https://api.github.com/repos/trefeon/freebuff-proxy/releases/latest).tag_name
+Invoke-WebRequest -OutFile freebuff-proxy.zip "https://github.com/trefeon/freebuff-proxy/releases/latest/download/freebuff-proxy_${v}_windows_amd64.zip"
+Expand-Archive freebuff-proxy.zip
+.\freebuff-proxy.exe
+```
+
+For the fully automatic path (download + checksum + `.env` + token + next steps), just use the one-command installer in Option 1.
 
 ### Option 3: Docker
 
@@ -144,7 +157,7 @@ Use the token without any `Bearer ` prefix; the proxy adds it upstream itself. F
 
    (Windows PowerShell: `Copy-Item .env.example .env`)
 
-2. Edit `.env` and set `AUTH_TOKENS`. This key is required.
+2. Edit `.env` and set `AUTH_TOKENS`. Optional — empty starts the proxy in bridge mode (see [Bridge mode](#bridge-mode)).
 
 3. Run the proxy:
 
@@ -170,7 +183,7 @@ Every key is read from the environment and overrides the JSON config file passed
 
 | Key | Default | Description |
 |---|---|---|
-| `AUTH_TOKENS` | none, required | FreeBuff token(s), comma-separated. Round-robin + failover across tokens. |
+| `AUTH_TOKENS` | empty | FreeBuff token(s), comma-separated. Round-robin + failover across tokens. Empty = bridge mode: clients supply their own token per request. |
 | `LISTEN_ADDR` | `127.0.0.1:3457` | Listen address. Loopback only by default; use `:3457` in containers or behind a firewall. |
 | `UPSTREAM_BASE_URL` | `https://codebuff.com` | Upstream base URL (host normalized to `www.codebuff.com`). |
 | `ROTATION_INTERVAL` | `6h` | How long an agent run lives upstream before rotation (FINISH + restart). |
@@ -188,11 +201,32 @@ Every key is read from the environment and overrides the JSON config file passed
 | `MAX_MESSAGES_PER_DAY` | `0` | Per-token rolling 24h message cap. At the cap the proxy answers `429 rate_limited` with `Retry-After` instead of hitting upstream, keeping the account far under FreeBuff's abuse thresholds (~500 msgs/24h). `0` = unlimited. |
 | `IDLE_ROTATION_TIMEOUT` | `0` | Pause background work after this long without traffic (e.g. `30m`): runs are FINISHed and maintenance stops until the next request, so the account is not kept artificially active 24/7. `0` = always maintain. |
 
+## Bridge mode
+
+Leave `AUTH_TOKENS=` **empty** and the proxy boots in bridge mode: it holds no token of its own and is a pure relay. Every client sends their own FreeBuff token with each request:
+
+```bash
+curl -N http://localhost:3457/v1/chat/completions \
+  -H "Authorization: Bearer <your-freebuff-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":true}'
+```
+
+- The token from `Authorization: Bearer <token>` (or `x-api-key: <token>`) is used **verbatim upstream** — it is never written to `.env` or logged (only counts/hints are logged).
+- `/healthz` and `/v1/models` need no header. `API_KEYS` is **ignored** in bridge mode (the Authorization header is the upstream credential, not a proxy key).
+- Sessions and runs are created **lazily per token** on first use and **reused** across that client's later requests (least quota burn). The cache is bounded at **32 client tokens** with LRU eviction; entries idle for ~2h are finished and dropped.
+- All existing error mapping still applies **per account**: `403 account_banned`, `429 rate_limited` + `Retry-After`, `503 waiting_room_queued`, etc. — each client's token is cooled down / banned independently.
+- `MAX_MESSAGES_PER_DAY` applies **per client token** (each cached entry has its own rolling 24h counter).
+
+Readiness check: `/healthz` includes `bridge_tokens` — the number of cached client-token entries (0 until the first chat).
+
 ## 9router integration
 
 Add freebuff-proxy as an OpenAI-compatible custom provider in 9router. The step-by-step guide covers the dashboard form, model catalog, verification, and troubleshooting: [docs/guides/9router-integration.md](docs/guides/9router-integration.md).
 
 Quick version: Dashboard, Providers, Add OpenAI Compatible. Base URL `http://localhost:3457/v1`, API Type Chat Completions, any non-empty API key, and the model ids come from `/v1/models`. Model combos become `freebuff/<model-id>`.
+
+Alternatively, **bridge mode**: leave `AUTH_TOKENS` empty on the proxy and use **your FreeBuff token as the 9router API key** — the proxy then relays with your token (one token = one session; quota/ban status is yours).
 
 ## Docs
 
@@ -242,6 +276,13 @@ Use less, use it like a human, and let the proxy do the same. Set
 using it; do not run it 24/7, stop when you see `429 rate_limited`, and never share a
 token between the proxy, the official CLI, and the web dashboard at the same time. See
 the WARNING at the top of this file and the Terms of use.
+
+**I don't want to put my token in `.env` — can I send it per request?**
+
+Yes — run the proxy in **bridge mode**: leave `AUTH_TOKENS=` empty and send your FreeBuff
+token as `Authorization: Bearer <token>` (or `x-api-key: <token>`) on every chat request.
+The proxy relays with your token, never stores it in `.env`, and reuses one lazy session
+per token. See [Bridge mode](#bridge-mode).
 
 **Still stuck?** Open an issue with the proxy version, your client, and `LOG_LEVEL=debug` output (redact tokens).
 

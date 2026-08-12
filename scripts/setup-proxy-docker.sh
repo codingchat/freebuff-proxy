@@ -49,7 +49,7 @@ fi
 cd "$REPO_DIR"
 
 # --- 2. token ---------------------------------------------------------------
-if [ "$SKIP_TOKEN" = "0" ] && ! grep -q '^AUTH_TOKENS=..*' .env 2>/dev/null; then
+if [ "$SKIP_TOKEN" = "0" ] && ! grep -q '^AUTH_TOKENS=' .env 2>/dev/null; then
   c "No AUTH_TOKENS in .env — running the token helper (install CLI, login, extract)..."
   if [ -x scripts/get-freebuff-token.sh ]; then
     ./scripts/get-freebuff-token.sh
@@ -59,8 +59,12 @@ if [ "$SKIP_TOKEN" = "0" ] && ! grep -q '^AUTH_TOKENS=..*' .env 2>/dev/null; the
     exit 1
   fi
 fi
-grep -q '^AUTH_TOKENS=..*' .env 2>/dev/null || { echo "ERROR: AUTH_TOKENS missing in .env" >&2; exit 1; }
-ok "Token configured (AUTH_TOKENS present in .env)"
+grep -q '^AUTH_TOKENS=' .env 2>/dev/null || { echo "ERROR: AUTH_TOKENS missing in .env" >&2; exit 1; }
+if grep -Eq '^AUTH_TOKENS=[[:space:]]*$' .env 2>/dev/null; then
+  warn "AUTH_TOKENS is empty — bridge mode: clients must send their own FreeBuff token as Authorization: Bearer <token>."
+else
+  ok "Token configured (AUTH_TOKENS present in .env)"
+fi
 
 # --- 3. build + start -------------------------------------------------------
 c "Building the proxy image (this takes a minute the first time)..."
