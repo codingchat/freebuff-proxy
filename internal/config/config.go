@@ -44,8 +44,9 @@ type Config struct {
 	RequestJitter       time.Duration     // random delay range [0, RequestJitter) before upstream chat calls
 	CLIVersion          string            // upstream CLI version string (default: 0.10.7)
 	ModelAliases        map[string]string // map model alias -> real model ID (#25)
+	DiscoveredSource    string            // auto-discovered credentials file path (if any)
+	DiscoveredEmail     string            // auto-discovered account email (if any)
 }
-
 // BridgeMode reports whether the proxy runs without any AUTH_TOKENS: every
 // client supplies their own FreeBuff token per request (Authorization: Bearer
 // or x-api-key), and the proxy relays with that token upstream.
@@ -203,6 +204,20 @@ func Load(configPath string) (Config, error) {
 		ModelAliases:        parseMap(raw.ModelAliases),
 	}
 
+	// Auto-discover CLI token if no AUTH_TOKENS were explicitly configured
+	// and AUTO_DISCOVER_TOKEN is not disabled.
+	autoDiscover := true
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("AUTO_DISCOVER_TOKEN"))); v == "false" || v == "0" || v == "off" || v == "no" {
+		autoDiscover = false
+	}
+	if autoDiscover && len(cfg.AuthTokens) == 0 {
+		if token, email, srcPath, ok := discoverCLIToken(); ok {
+			cfg.AuthTokens = []string{token}
+			cfg.DiscoveredSource = srcPath
+			cfg.DiscoveredEmail = email
+		}
+	}
+
 	// SafeMode presets: when SAFE_MODE=true, apply recommended defaults
 	// for any zero-valued account-safety knob.
 	if cfg.SafeMode {
@@ -220,7 +235,48 @@ func Load(configPath string) (Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
+
 	return cfg, nil
+}
+
+// discoverCLIToken auto-discovers FreeBuff credentials from official CLI login files.
+func discoverCLIToken() (string, string, string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", "", "", false
+	}
+	candidates := []string{
+		filepath.Join(home, ".config", "manicode", "credentials.json"),
+		filepath.Join(home, ".config", "codebuff", "credentials.json"),
+	}
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			continue
+		}
+		acct, ok := parsed["default"].(map[string]any)
+		if !ok {
+			for _, v := range parsed {
+				if m, ok := v.(map[string]any); ok && m["authToken"] != nil {
+					acct = m
+					break
+				}
+			}
+		}
+		if acct != nil {
+			token, _ := acct["authToken"].(string)
+			email, _ := acct["email"].(string)
+			token = strings.TrimSpace(token)
+			if token != "" {
+				return token, email, path, true
+			}
+		}
+	}
+	return "", "", "", false
 }
 
 // Validate checks the resolved configuration. It must be called before use.

@@ -15,7 +15,7 @@ var envKeys = []string{
 	"LISTEN_ADDR", "UPSTREAM_BASE_URL", "AUTH_TOKENS", "ROTATION_INTERVAL",
 	"REQUEST_TIMEOUT", "SESSION_CALL_TIMEOUT", "API_KEYS", "HTTP_PROXY",
 	"SOCKS5_PROXY", "COST_MODE", "TLS_FINGERPRINT", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE", "LOG_LEVEL",
-	"MAX_MESSAGES_PER_DAY", "IDLE_ROTATION_TIMEOUT", "SAFE_MODE", "REQUEST_JITTER", "CLI_VERSION",
+	"MAX_MESSAGES_PER_DAY", "IDLE_ROTATION_TIMEOUT", "SAFE_MODE", "REQUEST_JITTER", "CLI_VERSION", "AUTO_DISCOVER_TOKEN",
 }
 
 func clearEnv(t *testing.T) {
@@ -26,6 +26,7 @@ func clearEnv(t *testing.T) {
 	for _, k := range envKeys {
 		t.Setenv(k, "")
 	}
+	t.Setenv("AUTO_DISCOVER_TOKEN", "false")
 }
 
 func TestDefaults(t *testing.T) {

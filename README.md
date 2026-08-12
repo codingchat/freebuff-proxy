@@ -77,13 +77,14 @@ graph TD
 ## What it does
 
 - Serves `/v1/chat/completions`, `/v1/models`, and `/healthz` on `127.0.0.1:3457` by default.
-- Self-diagnostic tool: `./freebuff-proxy -doctor` tests config, network, tokens, and upstream reachability (#15).
+- Auto-discovers CLI token: automatically reads `authToken` from `~/.config/manicode/credentials.json` on startup if `AUTH_TOKENS` is empty.
+- 1-click client setup: `./freebuff-proxy -setup` auto-configures Continue (VS Code), opencode, and aider with 1 command.
+- Self-diagnostic doctor: `./freebuff-proxy -doctor` tests config, network, tokens, and upstream reachability.
 - Pools tokens: `AUTH_TOKENS` accepts comma-separated values, round-robins across them, and cools a token down for 30 minutes after a 401.
 - Keeps free sessions alive: single-flight session create/poll/end, runs prewarmed at boot, rotated every `ROTATION_INTERVAL` (default 6h).
 - Refreshes the model catalog every 6h from the Codebuff sources (15 models at boot, served by `/v1/models`).
 - Sends outbound traffic through `HTTP_PROXY` or `SOCKS5_PROXY`, or impersonates a browser TLS fingerprint with `TLS_FINGERPRINT` (`chrome126`, `firefox128`, `safari18`, `edge126`, `auto`).
 - Account-safety knobs: `SAFE_MODE=true` preset, `MAX_MESSAGES_PER_DAY`, `IDLE_ROTATION_TIMEOUT`, and `REQUEST_JITTER`.
-
 - Zero or more FreeBuff auth tokens. With none, the proxy runs in **bridge mode** — each client sends their own token (see [Bridge mode](#bridge-mode)).
 - Release binaries run standalone. Building from source needs Go 1.26+ (see `go.mod`).
 

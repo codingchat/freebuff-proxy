@@ -38,6 +38,8 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	showDoctor := flag.Bool("doctor", false, "run environment and configuration diagnostics")
 	showUpdate := flag.Bool("update", false, "check for and download the latest release update")
+	showSetup := flag.Bool("setup", false, "run interactive client configuration helper")
+	autoYes := flag.Bool("yes", false, "auto-confirm prompts during setup")
 	flag.Parse()
 
 	if *showVersion {
@@ -50,6 +52,10 @@ func main() {
 	if *showUpdate {
 		runUpdate()
 	}
+	if *showSetup {
+		runSetup(*autoYes)
+	}
+
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "freebuff-proxy: invalid config:", err)
@@ -93,7 +99,9 @@ func main() {
 		clients = append(clients, client)
 		sessions = append(sessions, session.NewManager(client))
 	}
-
+	if cfg.DiscoveredSource != "" {
+		logger.Info("auto-discovered FreeBuff token from CLI login", "email", cfg.DiscoveredEmail, "file", cfg.DiscoveredSource)
+	}
 	p, err := pool.New(&cfg, clients, sessions, reg)
 	if err != nil {
 		logger.Error("failed to build pool", "err", err)

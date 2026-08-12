@@ -1,0 +1,205 @@
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+func runSetup(autoYes bool) {
+	fmt.Println("freebuff-proxy interactive client setup")
+	fmt.Println("======================================")
+	fmt.Println("This helper detects installed AI tools and offers to configure them.")
+	fmt.Println("No files will be modified without your explicit permission.")
+
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		fmt.Fprintf(os.Stderr, "ERROR: cannot determine user home directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	ask := func(prompt string) bool {
+		if autoYes {
+			return true
+		}
+		fmt.Printf("\n%s [y/N]: ", prompt)
+		input, _ := reader.ReadString('\n')
+		input = strings.ToLower(strings.TrimSpace(input))
+		return input == "y" || input == "yes"
+	}
+
+	configured := 0
+
+	// 1. Continue (VS Code / JetBrains)
+	continueDir := filepath.Join(home, ".continue")
+	continueCfgPath := filepath.Join(continueDir, "config.json")
+	if fileExists(continueDir) || fileExists(continueCfgPath) {
+		fmt.Printf("\n[+] Detected Continue extension (~/.continue/)\n")
+		if ask("Would you like to add freebuff-proxy to your Continue config?") {
+			if setupContinueConfig(continueCfgPath) {
+				fmt.Printf("    [ok] Configured Continue in %s (backup saved to .bak)\n", continueCfgPath)
+				configured++
+			}
+		} else {
+			fmt.Println("    [skipped] Left Continue config untouched.")
+			fmt.Println("    Manual snippet for ~/.continue/config.json:")
+			fmt.Println(`    {"title": "FreeBuff DeepSeek", "provider": "openai", "model": "deepseek/deepseek-v4-flash", "apiBase": "http://localhost:3457/v1", "apiKey": "not-needed"}`)
+		}
+	} else {
+		fmt.Println("[-] Continue (~/.continue/) not found on this system")
+	}
+
+	// 2. opencode
+	opencodeDir := filepath.Join(home, ".config", "opencode")
+	opencodeCfgPath := filepath.Join(opencodeDir, "opencode.json")
+	if fileExists(opencodeDir) || fileExists(opencodeCfgPath) {
+		fmt.Printf("\n[+] Detected opencode (~/.config/opencode/)\n")
+		if ask("Would you like to add the freebuff provider to opencode.json?") {
+			if setupOpencodeConfig(opencodeCfgPath) {
+				fmt.Printf("    [ok] Configured opencode in %s (backup saved to .bak)\n", opencodeCfgPath)
+				configured++
+			}
+		} else {
+			fmt.Println("    [skipped] Left opencode config untouched.")
+			fmt.Println("    Manual snippet for ~/.config/opencode/opencode.json:")
+			fmt.Println(`    "freebuff": {"type": "openai", "options": {"baseURL": "http://localhost:3457/v1", "apiKey": "not-needed"}}`)
+		}
+	} else {
+		fmt.Println("[-] opencode (~/.config/opencode/) not found on this system")
+	}
+
+	// 3. aider
+	aiderCfgPath := filepath.Join(home, ".aider.conf.yml")
+	if ask("Would you like to configure aider in ~/.aider.conf.yml?") {
+		if setupAiderConfig(aiderCfgPath) {
+			fmt.Printf("    [ok] Configured aider in %s\n", aiderCfgPath)
+			configured++
+		}
+	} else {
+		fmt.Println("    [skipped] Left aider config untouched.")
+		fmt.Println("    Manual flags: aider --openai-api-base http://localhost:3457/v1 --openai-api-key not-needed")
+	}
+
+	fmt.Printf("\n======================================\n")
+	fmt.Printf("Setup complete! Configured %d client tool(s).\n", configured)
+	fmt.Println("Base URL: http://localhost:3457/v1")
+	fmt.Println("Models available: deepseek/deepseek-v4-flash, z-ai/glm-5.2")
+	os.Exit(0)
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func backupFile(p string) {
+	if !fileExists(p) {
+		return
+	}
+	bak := p + ".bak"
+	data, err := os.ReadFile(p)
+	if err == nil {
+		_ = os.WriteFile(bak, data, 0644)
+	}
+}
+
+func setupContinueConfig(p string) bool {
+	dir := filepath.Dir(p)
+	_ = os.MkdirAll(dir, 0755)
+
+	backupFile(p)
+
+	var cfg map[string]any
+	if data, err := os.ReadFile(p); err == nil {
+		_ = json.Unmarshal(data, &cfg)
+	}
+	if cfg == nil {
+		cfg = make(map[string]any)
+	}
+
+	models, _ := cfg["models"].([]any)
+	hasFreebuff := false
+	for _, m := range models {
+		if mm, ok := m.(map[string]any); ok {
+			if apiBase, _ := mm["apiBase"].(string); strings.Contains(apiBase, "3457") {
+				hasFreebuff = true
+				break
+			}
+		}
+	}
+
+	if !hasFreebuff {
+		newModel := map[string]any{
+			"title":    "FreeBuff DeepSeek Flash",
+			"provider": "openai",
+			"model":    "deepseek/deepseek-v4-flash",
+			"apiBase":  "http://localhost:3457/v1",
+			"apiKey":   "not-needed",
+		}
+		models = append(models, newModel)
+		cfg["models"] = models
+
+		out, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			return false
+		}
+		return os.WriteFile(p, out, 0644) == nil
+	}
+
+	return true
+}
+
+func setupOpencodeConfig(p string) bool {
+	dir := filepath.Dir(p)
+	_ = os.MkdirAll(dir, 0755)
+
+	backupFile(p)
+
+	var cfg map[string]any
+	if data, err := os.ReadFile(p); err == nil {
+		_ = json.Unmarshal(data, &cfg)
+	}
+	if cfg == nil {
+		cfg = make(map[string]any)
+	}
+
+	providers, ok := cfg["providers"].(map[string]any)
+	if !ok {
+		providers = make(map[string]any)
+	}
+
+	providers["freebuff"] = map[string]any{
+		"type": "openai",
+		"options": map[string]any{
+			"baseURL": "http://localhost:3457/v1",
+			"apiKey":  "not-needed",
+		},
+		"models": []map[string]any{
+			{"id": "deepseek/deepseek-v4-flash", "name": "DeepSeek Flash"},
+			{"id": "z-ai/glm-5.2", "name": "GLM 5.2"},
+		},
+	}
+	cfg["providers"] = providers
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return false
+	}
+	return os.WriteFile(p, out, 0644) == nil
+}
+
+func setupAiderConfig(p string) bool {
+	content := "openai-api-base: http://localhost:3457/v1\nopenai-api-key: not-needed\nmodel: openai/deepseek/deepseek-v4-flash\n"
+	if fileExists(p) {
+		existing, err := os.ReadFile(p)
+		if err == nil && strings.Contains(string(existing), "localhost:3457") {
+			return true
+		}
+		backupFile(p)
+	}
+	return os.WriteFile(p, []byte(content), 0644) == nil
+}
