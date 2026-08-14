@@ -325,7 +325,6 @@ func (c *Client) ChatCompletions(ctx context.Context, opts ChatOptions, body []b
 	if opts.SessionInstanceID != "" {
 		req.Header.Set("x-freebuff-instance-id", opts.SessionInstanceID)
 	}
-
 	resp, _, err := c.do(req, 0)
 	if err != nil {
 		releaseCancel(cancel)
@@ -409,14 +408,14 @@ func (c *Client) EndSession(ctx context.Context, instanceID string) error {
 // StartRun POSTs /api/v1/agent-runs with action START and returns the run id.
 func (c *Client) StartRun(ctx context.Context, agentID string) (string, error) {
 	payload, _ := json.Marshal(map[string]any{
-		"action":  "START",
-		"agentId": agentID,
+		"action":         "START",
+		"agentId":        agentID,
+		"ancestorRunIds": []string{},
 	})
 	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/agent-runs", payload)
 	if err != nil {
 		return "", err
 	}
-
 	resp, cancel, err := c.do(req, c.sessionCallTimeout)
 	if err != nil {
 		return "", err
@@ -685,6 +684,60 @@ func (b *cancelBody) Close() error {
 	return err
 }
 
+const (
+	cliSystemMarker       = "You are Buffy, the strategic coding assistant. You are the AI agent behind the product, Freebuff, a tool where users can chat with you to code with AI for free."
+	cliSystemMarkerPhrase = "You are Buffy, the strategic coding assistant"
+)
+
+func ensureCliSystemMarker(payload map[string]any) {
+	rawMsgs, ok := payload["messages"].([]any)
+	if !ok || len(rawMsgs) == 0 {
+		payload["messages"] = []any{
+			map[string]any{"role": "system", "content": cliSystemMarker},
+		}
+		return
+	}
+
+	for _, m := range rawMsgs {
+		msg, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		if msg["role"] == "system" {
+			if content, ok := msg["content"].(string); ok && strings.Contains(content, cliSystemMarkerPhrase) {
+				return // already present
+			}
+		}
+	}
+
+	// Not present. Merge into first system message if exists, else unshift.
+	for i, m := range rawMsgs {
+		msg, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		if msg["role"] == "system" {
+			if content, ok := msg["content"].(string); ok {
+				if content == "" {
+					msg["content"] = cliSystemMarker
+				} else {
+					msg["content"] = cliSystemMarker + "\n\n" + content
+				}
+			} else {
+				msg["content"] = cliSystemMarker
+			}
+			rawMsgs[i] = msg
+			payload["messages"] = rawMsgs
+			return
+		}
+	}
+
+	newMsgs := make([]any, 0, len(rawMsgs)+1)
+	newMsgs = append(newMsgs, map[string]any{"role": "system", "content": cliSystemMarker})
+	newMsgs = append(newMsgs, rawMsgs...)
+	payload["messages"] = newMsgs
+}
+
 // injectEnvelope merges the CLI fingerprint into the request body without
 // disturbing client-supplied fields: codebuff_metadata, provider
 // data_collection=deny, stream=true, and the cb_easp stop sentinel when the
@@ -694,6 +747,8 @@ func injectEnvelope(body []byte, costMode string, opts ChatOptions) ([]byte, err
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("parse request body: %w", err)
 	}
+
+	ensureCliSystemMarker(payload)
 
 	metadata := map[string]any{
 		"run_id":    opts.RunID,

@@ -131,7 +131,6 @@ func TestChatCompletionsEnvelope(t *testing.T) {
 	if got := h.Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q", got)
 	}
-
 	var sent map[string]any
 	if err := json.Unmarshal([]byte(bodies[0]), &sent); err != nil {
 		t.Fatalf("recorded body not JSON: %v", err)
