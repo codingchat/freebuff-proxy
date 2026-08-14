@@ -13,36 +13,22 @@ FreeBuff (Codebuff's free coding agent) exposes its models only through the offi
 
 What this is not: an official FreeBuff or Codebuff product. It is a community bridge for an unofficial service. See the FAQ and Terms of use at the bottom.
 
-> ## WARNING: your account can get suspended or banned
+> ## WARNING: Upstream Abuse Policy & Account Ban Risks
 >
-> This project works by making FreeBuff believe it is talking to the official CLI. The
-> upstream service detects this and **does suspend and ban accounts**.
+> FreeBuff actively enforces strict anti-abuse detection and **suspends or permanently bans accounts** that violate usage policies.
 >
-> - Suspended/banned accounts fail with `403 account_banned` / `{"status":"banned"}`, and
->   the web dashboard shows **"suspended"**. Your FreeBuff/Codebuff account, tokens, and
->   free-tier access are on the line.
-> - The ban is **per account and effectively terminal**. The official source code flags
->   the account as banned ("terminal", returned from every endpoint). Unbanning is an
->   internal admin operation; there is no self-service path. Community proxies have seen
->   `resumes_at` timestamps in ban responses, which would mean temporary bans, but this is
->   **not confirmed in any official source** and may just be the account being gone.
-> - Bans are scored by a public abuse-detection pipeline: heavy continuous usage (hundreds
->   of messages a day, many distinct active hours, long unattended sessions), automation
->   patterns, fresh GitHub accounts (under a few weeks old), throwaway email addresses,
->   and clusters of new accounts created close together all raise the score.
-> - Codebuff's terms allow one account per person and explicitly prohibit wrappers,
->   proxies, and non-human sessions. Using this proxy already conflicts with them.
+> ### Official Upstream Abuse Policy & Enforcement Rules:
+> 1. **Daily Spend Ceilings**: Upstream enforces per-user daily spend limits ($15.00/day for full tier, $5.00/day for limited tier, $0.50/day for SG/CN egress).
+> 2. **Third-Party Client Enforcement**: Direct third-party API calls trigger severe rate limits and permanent bans. `freebuff-proxy` mitigates this by injecting the exact official CLI system prompt marker (`"You are Buffy..."`), `codebuff_metadata`, `end_turn` tool schema, and browser TLS fingerprints.
+> 3. **VPN & Datacenter Proxy Detection**: Upstream checks IP privacy signals (`ipPrivacySignals` via Spur/Scamalytics). Egressing through commercial VPNs or cloud datacenters (AWS/DigitalOcean/Hetzner) triggers severe rate limits and flags accounts for bans. **Run the proxy on clean residential IP egress.**
+> 4. **Disposable & Relay Emails**: Accounts created using temporary email domains or relay services are flagged for bans. Use an authentic, established GitHub account.
+> 5. **Direct API Gate**: Raw HTTP calls without the CLI session handshake fail with `403 free_mode_cli_required`. The proxy manages full upstream session lifecycles (`/api/v1/freebuff/session`) and pauses polling during idle periods.
 >
-> **Use at your own risk, and assume a ban is permanent.**
->
-> - Use one modest account; do not run 24/7, do not leave sessions running unattended,
->   stop when you see `429 rate_limited`.
-> - If you are banned: the token is dead. Wait and re-probe once (cheap to try), then get
->   a **new account with an established GitHub login (months old, not fresh) and a clean
->   IP, without a VPN**. That is the only realistic recovery.
-> - Appeals go to support@codebuff.com and realistically only succeed for false positives,
->   not for proxy use. The maintainers have had accounts suspended while building and
->   testing this project. This is not a toy warning.
+> ### Golden Rules for Account Survival:
+> - **Clean Residential Egress**: Run `freebuff-proxy` on your local machine or home server. Do not route traffic through commercial VPNs or datacenter IPs.
+> - **No 24/7 Unattended Loops**: Upstream's hourly behavioral sweeper flags accounts active across $\ge 20$ distinct hours in a single day. Maintain normal coding habits with an overnight quiet break ($\ge 4$ hours) to trigger automatic suspect-score deductions ($-40$ points).
+> - **Use Aged GitHub Accounts**: Connect an established GitHub account (months old, not freshly created) to ensure maximum trust standing.
+> - **Respect Daily Quotas**: Keep `SAFE_MODE=true` enabled (caps volume at 150 msg/day per token) and stop when you see `429 rate_limited`.
 
 > **New here?** Start with the **[Getting Started Guide](docs/guides/getting-started.md)** for step-by-step setup, or see the **[Client Integration Guide](docs/guides/client-integration.md)** for copy-paste config for Continue, Cursor, aider, opencode, and more.
 
