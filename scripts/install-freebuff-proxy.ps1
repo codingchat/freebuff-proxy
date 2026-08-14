@@ -258,19 +258,24 @@ if (-not $NoEnv) {
   Set-EnvValue "IDLE_ROTATION_TIMEOUT" "30m"
   Write-Host "Safety defaults: MAX_MESSAGES_PER_DAY=150, IDLE_ROTATION_TIMEOUT=30m" -ForegroundColor Green
 }
-# --- 9. next steps -----------------------------------------------------------
+# --- 9. next steps & doctor check -------------------------------------------
 Write-Host ""
-Write-Host "Done. Next:" -ForegroundColor Cyan
-Write-Host "  cd $Dir"
+Write-Host "Installation complete! Config: $envPath" -ForegroundColor Green
+Write-Host ""
+
 if (Test-Path -LiteralPath $exe) {
-  Write-Host "  .\freebuff-proxy.exe"
-} else {
-  Write-Host "  .\freebuff-proxy.exe   (find the exe first, see the WARNING above)"
+  Write-Host "Running self-diagnostic doctor..." -ForegroundColor Cyan
+  & $exe -doctor
+  Write-Host ""
 }
+
+Write-Host "Next steps:" -ForegroundColor Cyan
+Write-Host "  1. 1-Click Client Setup:   cd $Dir; .\freebuff-proxy.exe -setup"
+Write-Host "  2. Start the proxy server: cd $Dir; .\freebuff-proxy.exe"
 Write-Host ""
-Write-Host "Then check it:"
+Write-Host "Test the proxy:" -ForegroundColor Cyan
 Write-Host "  curl http://localhost:3457/healthz"
 Write-Host "  curl http://localhost:3457/v1/models"
+Write-Host "  curl -s -X POST http://localhost:3457/v1/chat/completions -H 'Content-Type: application/json' -d '{\`"model\`":\`"deepseek/deepseek-v4-flash\`",\`"messages\`":[{\`"role\`":\`"user\`",\`"content\`":\`"Say hello\`"}],\`"stream\`":false}'"
 Write-Host ""
-Write-Host "See the README (in the zip) for the full guide and 9router wiring."
-
+Write-Host "Quick Integration: Point your AI tools (Continue, Cursor, OpenCode, Aider, 9router) to http://localhost:3457/v1" -ForegroundColor Green

@@ -99,7 +99,7 @@ func runSetup(autoYes bool) {
 	fmt.Printf("\n======================================\n")
 	fmt.Printf("Setup complete! Configured %d client tool(s).\n", configured)
 	fmt.Println("Base URL: http://localhost:3457/v1")
-	fmt.Println("Models available: deepseek/deepseek-v4-flash, z-ai/glm-5.2")
+	fmt.Println("Models available: deepseek/deepseek-v4-flash, thudm/glm-5.2, moonshot/kimi-k2.5, minimax/minimax-m3, xiaomi/mimo-v2.5, deepseek/deepseek-v4-pro")
 	os.Exit(0)
 }
 

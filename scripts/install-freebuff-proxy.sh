@@ -594,32 +594,39 @@ if [ "$METHOD" = "docker" ]; then
   echo "============================================================"
 fi
 
-# --- 8. next steps ------------------------------------------------------------
+# --- 8. next steps & doctor check -------------------------------------------
 echo ""
-c "Done. Config: $ENVPATH"
-c "Next:"
+ok "Installation complete! Config: $ENVPATH"
+echo ""
+
+if [ -n "${BIN:-}" ] && [ -x "$BIN" ]; then
+  c "Running self-diagnostic doctor..."
+  "$BIN" -doctor || true
+  echo ""
+fi
+
+c "Next steps:"
 if [ "$METHOD" = "docker" ]; then
-  echo "  cd $REPO_DIR && docker compose ps      # confirm it is healthy"
-  echo "  docker compose logs -f                 # follow the logs"
+  echo "  1. View container status:  cd $REPO_DIR && docker compose ps"
+  echo "  2. Follow container logs:  docker compose logs -f"
 else
-  echo "  cd $CONFIG_DIR"
-  echo "  ${BIN:-./freebuff-proxy}"
+  echo "  1. 1-Click Client Setup:   cd $CONFIG_DIR && ${BIN:-./freebuff-proxy} -setup"
+  echo "  2. Start the proxy server: cd $CONFIG_DIR && ${BIN:-./freebuff-proxy}"
 fi
 echo ""
-c "Then check it:"
+c "Test the proxy:"
 echo "  curl http://localhost:3457/healthz"
 echo "  curl http://localhost:3457/v1/models"
+echo "  curl -s -X POST http://localhost:3457/v1/chat/completions \\"
+echo "    -H 'Content-Type: application/json' \\"
+echo "    -d '{\"model\":\"deepseek/deepseek-v4-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello\"}],\"stream\":false}'"
+echo ""
 if [ "$BRIDGE" = "1" ]; then
+  c "Bridge mode - send your FreeBuff token in the Authorization header:"
+  echo "  curl -s -X POST http://localhost:3457/v1/chat/completions \\"
+  echo "    -H 'Authorization: Bearer <your-freebuff-token>' \\"
+  echo "    -H 'Content-Type: application/json' \\"
+  echo "    -d '{\"model\":\"deepseek/deepseek-v4-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello\"}],\"stream\":false}'"
   echo ""
-  c "Bridge mode - chat with your own token (no proxy token stored):"
-  echo '  curl -N http://localhost:3457/v1/chat/completions -H "Content-Type: application/json" \'
-  echo '    -H "Authorization: Bearer <your-freebuff-token>" \'
-  echo '    -d '\''{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":true}'\'''
 fi
-echo ""
-warn "What to expect: healthz and /v1/models returning 200 means your setup is CORRECT."
-warn "A chat call may still fail with 403 free_mode_cli_required - that is upstream's"
-warn "CLI-only gate on the free tier, not your installation. A 502 wrapping 401/404"
-warn "'Invalid API key' means the token itself is dead. See the README smoke-test table."
-echo ""
-c "See the README for the full guide and 9router wiring."
+ok "Quick Integration: Point your AI tools (Continue, Cursor, OpenCode, Aider, 9router) to http://localhost:3457/v1"
