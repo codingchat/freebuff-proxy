@@ -217,14 +217,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			"request body must be a valid JSON object", "invalid_request_error", "invalid_json", 0)
 		return
 	}
-	model, _ := raw["model"].(string)
-	if model == "" {
+	rawModel, _ := raw["model"].(string)
+	if rawModel == "" {
 		s.writeJSONError(w, http.StatusBadRequest,
 			"missing required field \"model\"; available: "+strings.Join(s.reg.Models(), ", "),
 			"invalid_request_error", "model_not_found", 0)
 		return
 	}
-	model = s.reg.ResolveModel(model)
+	model := s.reg.ResolveModel(rawModel)
+	agentID, _ := s.reg.AgentForModel(model)
+	reasoningEffort := convert.ExtractReasoningEffort(raw)
 	stream := false
 	if v, ok := raw["stream"].(bool); ok {
 		stream = v
@@ -237,8 +239,20 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	s.logger.Debug("chat request", "model", model, "stream", stream, "remote", remoteHost(r))
 
+	reqAttrs := []any{
+		"model", model,
+		"agent", agentID,
+		"stream", stream,
+		"remote", remoteHost(r),
+	}
+	if rawModel != model {
+		reqAttrs = append(reqAttrs, "raw_model", rawModel)
+	}
+	if reasoningEffort != "" {
+		reqAttrs = append(reqAttrs, "reasoning_effort", reasoningEffort)
+	}
+	s.logger.Info("chat request", reqAttrs...)
 	// Bridge mode (no AUTH_TOKENS): the client's Authorization header IS the
 	// upstream token. No token → 401 before touching the pool.
 	var up io.ReadCloser
@@ -279,23 +293,44 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = up.Close() }()
 
-	s.logger.Debug("chat upstream ok",
-		"token", tokenLabel(lease), "model", model, "stream", stream)
+	s.logger.Info("chat routing",
+		"token", tokenLabel(lease),
+		"model", model,
+		"agent", lease.AgentID,
+		"instance_id", lease.SessionInstanceID,
+		"tier", lease.TierAccess,
+		"country", lease.TierCountry,
+	)
 
 	if stream {
 		stats := &relayStats{}
 		s.relayStream(ctx, w, up, stats)
-		s.logger.Info("chat done",
-			"model", model, "stream", true,
+		doneAttrs := []any{
+			"model", model,
+			"agent", lease.AgentID,
+			"stream", true,
 			"ms", time.Since(start).Milliseconds(),
-			"chunks", stats.chunks, "bytes", stats.bytes)
+			"chunks", stats.chunks,
+			"bytes", stats.bytes,
+		}
+		if reasoningEffort != "" {
+			doneAttrs = append(doneAttrs, "reasoning_effort", reasoningEffort)
+		}
+		s.logger.Info("chat done", doneAttrs...)
 	} else {
 		stats := &relayStats{}
 		s.relayJSON(ctx, w, up, stats)
-		s.logger.Info("chat done",
-			"model", model, "stream", false,
+		doneAttrs := []any{
+			"model", model,
+			"agent", lease.AgentID,
+			"stream", false,
 			"ms", time.Since(start).Milliseconds(),
-			"bytes", stats.bytes)
+			"bytes", stats.bytes,
+		}
+		if reasoningEffort != "" {
+			doneAttrs = append(doneAttrs, "reasoning_effort", reasoningEffort)
+		}
+		s.logger.Info("chat done", doneAttrs...)
 	}
 }
 

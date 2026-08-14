@@ -719,3 +719,62 @@ func TestNormalizeRequestInjectsEndTurnTool(t *testing.T) {
 		t.Errorf("hasCustom = %v, hasEndTurn = %v", hasCustom, hasEndTurn)
 	}
 }
+
+func TestExtractReasoningEffort(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload map[string]any
+		want    string
+	}{
+		{
+			name:    "direct reasoning_effort",
+			payload: map[string]any{"reasoning_effort": "max"},
+			want:    "max",
+		},
+		{
+			name:    "nested reasoning.effort",
+			payload: map[string]any{"reasoning": map[string]any{"effort": "high"}},
+			want:    "high",
+		},
+		{
+			name:    "nested thinking.type",
+			payload: map[string]any{"thinking": map[string]any{"type": "enabled"}},
+			want:    "enabled",
+		},
+		{
+			name:    "empty payload",
+			payload: nil,
+			want:    "",
+		},
+		{
+			name:    "no effort fields",
+			payload: map[string]any{"model": "deepseek-v4-flash"},
+			want:    "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExtractReasoningEffort(tc.payload); got != tc.want {
+				t.Errorf("ExtractReasoningEffort() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeRequestReasoningEffort(t *testing.T) {
+	// Nested reasoning: { "effort": "max" } normalizes to reasoning_effort: "max"
+	body := map[string]any{
+		"model":     "deepseek/deepseek-v4-flash",
+		"messages":  []any{map[string]any{"role": "user", "content": "hello"}},
+		"reasoning": map[string]any{"effort": "max"},
+	}
+	out, err := NormalizeRequest(mustJSON(t, body))
+	if err != nil {
+		t.Fatalf("NormalizeRequest: %v", err)
+	}
+	got := decode(t, out)
+	if gotEff, ok := got["reasoning_effort"].(string); !ok || gotEff != "max" {
+		t.Errorf("reasoning_effort = %v, want \"max\"", got["reasoning_effort"])
+	}
+}

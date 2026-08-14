@@ -68,6 +68,28 @@ func randHex(n int) string {
 	return fmt.Sprintf("%x%x", time.Now().UnixNano(), fallbackCounter.Add(1))
 }
 
+// ExtractReasoningEffort extracts the requested thinking/reasoning effort from
+// OpenAI reasoning_effort, Codex/Anthropic reasoning.effort, or thinking flags.
+func ExtractReasoningEffort(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	if v, ok := payload["reasoning_effort"].(string); ok && v != "" {
+		return strings.ToLower(strings.TrimSpace(v))
+	}
+	if rObj, ok := payload["reasoning"].(map[string]any); ok {
+		if v, ok := rObj["effort"].(string); ok && v != "" {
+			return strings.ToLower(strings.TrimSpace(v))
+		}
+	}
+	if tObj, ok := payload["thinking"].(map[string]any); ok {
+		if v, ok := tObj["type"].(string); ok {
+			return strings.ToLower(strings.TrimSpace(v))
+		}
+	}
+	return ""
+}
+
 // NormalizeRequest sanitizes a client OpenAI chat-completions request body:
 //
 //   - keeps ONLY the whitelisted upstream keys (plus messages and model);
@@ -76,6 +98,7 @@ func randHex(n int) string {
 //   - converts message role "developer" to "system"
 //   - normalizes tool JSON schemas (bare $ref/$defs resolution, nullable
 //     anyOf/oneOf simplification, type/enum/const cleanup, depth cap 12)
+//   - extracts and normalizes reasoning effort from alternate structures
 //
 // The returned bytes are compact JSON. Errors only occur on invalid JSON or
 // a non-object body.
@@ -95,6 +118,11 @@ func NormalizeRequest(body []byte) ([]byte, error) {
 		}
 		if upstreamKeys[key] && value != nil {
 			out[key] = value
+		}
+	}
+	if _, hasEffort := out["reasoning_effort"]; !hasEffort {
+		if eff := ExtractReasoningEffort(payload); eff != "" && eff != "none" && eff != "disabled" {
+			out["reasoning_effort"] = eff
 		}
 	}
 	normalizeRoles(out)
