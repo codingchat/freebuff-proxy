@@ -93,7 +93,7 @@ curl http://127.0.0.1:3457/healthz
       "models": {
         "deepseek-flash": {
           "id": "deepseek/deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash",
+          "name": "DeepSeek V4 Flash (1M ctx)",
           "variants": {
             "low": { "reasoningEffort": "low" },
             "high": { "reasoningEffort": "high" },
@@ -102,7 +102,11 @@ curl http://127.0.0.1:3457/healthz
         },
         "mimo": {
           "id": "mimo/mimo-v2.5",
-          "name": "MiMo 2.5"
+          "name": "MiMo 2.5 (1M ctx, Multimodal)",
+          "variants": {
+            "none": { "reasoningEffort": "none" },
+            "high": { "reasoningEffort": "high" }
+          }
         }
       }
     }
