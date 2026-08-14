@@ -214,6 +214,28 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			continue
 		}
 
+		instanceID, err := tok.session.EnsureSessionForModel(ctx, model)
+		if err != nil {
+			if errors.Is(err, upstream.ErrAuthRejected) {
+				tok.runs.Cooldown(runs.DefaultCooldown)
+				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
+			}
+			var wr *session.WaitingRoomError
+			if errors.As(err, &wr) {
+				waiting = append(waiting, wr)
+			}
+			if rle := asRateLimit(err); rle != nil {
+				tok.runs.CooldownRateLimit(rle)
+				rateLimited = append(rateLimited, rle)
+			}
+			if be := asBan(err); be != nil {
+				tok.runs.CooldownBan(be)
+				banned = append(banned, be)
+			}
+			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+
 		run, err := tok.runs.Acquire(ctx, agentID)
 		if err != nil {
 			if errors.Is(err, upstream.ErrAuthRejected) {
@@ -231,29 +253,6 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
-
-		instanceID, err := tok.session.EnsureSessionForModel(ctx, model)
-		if err != nil {
-			// Release the run lease we just acquired — otherwise the
-			// inflight counter never returns to zero and the run can
-			// never be FINISHed on rotation (draining-list leak).
-			tok.runs.Release(run)
-			var wr *session.WaitingRoomError
-			if errors.As(err, &wr) {
-				waiting = append(waiting, wr)
-			}
-			if rle := asRateLimit(err); rle != nil {
-				tok.runs.CooldownRateLimit(rle)
-				rateLimited = append(rateLimited, rle)
-			}
-			if be := asBan(err); be != nil {
-				tok.runs.CooldownBan(be)
-				banned = append(banned, be)
-			}
-			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
-			continue
-		}
-
 		ss := tok.session.Snapshot()
 		p.logger.Debug("pool: lease acquired", "token", idx+1, "model", model, "agent", agentID, "instance_id", instanceID,
 			"tier", ss.TierAccess, "country", ss.TierCountry)
@@ -324,7 +323,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		return nil, p.bridgeDailyLimitError(entry)
 	}
 
-	run, err := entry.runs.Acquire(ctx, agentID)
+	instanceID, err := entry.session.EnsureSessionForModel(ctx, model)
 	if err != nil {
 		if errors.Is(err, upstream.ErrAuthRejected) {
 			entry.runs.Cooldown(runs.DefaultCooldown)
@@ -338,13 +337,12 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		}
 		return nil, err
 	}
-
-	instanceID, err := entry.session.EnsureSessionForModel(ctx, model)
+	run, err := entry.runs.Acquire(ctx, agentID)
 	if err != nil {
-		// Release the run lease we just acquired — otherwise the inflight
-		// counter never returns to zero and the run can never be FINISHed
-		// on rotation (draining-list leak).
-		entry.runs.Release(run)
+		if errors.Is(err, upstream.ErrAuthRejected) {
+			entry.runs.Cooldown(runs.DefaultCooldown)
+			p.logger.Debug("pool: bridge entry cooling down", "duration", runs.DefaultCooldown.String())
+		}
 		if rle := asRateLimit(err); rle != nil {
 			entry.runs.CooldownRateLimit(rle)
 		}

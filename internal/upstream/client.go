@@ -166,6 +166,7 @@ type SessionState struct {
 	Limit              float64
 	RecentCount        float64
 	ResetAt            time.Time
+	ResumesAt          time.Time
 	RetryAfterMs       int64
 	AvailableHours     string
 	Message            string
@@ -507,6 +508,7 @@ func (c *Client) sessionCall(req *http.Request) (*SessionState, error) {
 		Limit                  float64  `json:"limit"`
 		RecentCount            float64  `json:"recentCount"`
 		ResetAt                any      `json:"resetAt"`
+		ResumesAt              any      `json:"resumes_at"`
 		RetryAfterMs           int64    `json:"retryAfterMs"`
 		AvailableHours         string   `json:"availableHours"`
 		Message                string   `json:"message"`
@@ -547,6 +549,9 @@ func (c *Client) sessionCall(req *http.Request) (*SessionState, error) {
 		}
 		if state.ResetAt, err = parseFlexTime(raw.ResetAt); err != nil {
 			state.ResetAt = time.Time{}
+		}
+		if state.ResumesAt, err = parseFlexTime(raw.ResumesAt); err != nil {
+			state.ResumesAt = time.Time{}
 		}
 		return state, nil
 	}

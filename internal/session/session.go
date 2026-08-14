@@ -100,13 +100,13 @@ func (m *Manager) EnsureSessionForModel(ctx context.Context, model string) (stri
 		if s != nil && !m.refreshing {
 			switch s.status {
 			case "active":
-				if time.Now().Before(s.expiresAt.Add(-expiryMargin)) {
+				if (model == "" || s.model == "" || s.model == model) && time.Now().Before(s.expiresAt.Add(-expiryMargin)) {
 					instance := s.instanceID
 					m.mu.Unlock()
 					slog.Debug("session reused", "instance_id", instance, "model", s.model, "expires_at", s.expiresAt.Format(time.RFC3339))
 					return instance, nil
 				}
-				// Freshness exceeded — fall through to refresh.
+				// Freshness exceeded or model mismatch — fall through to refresh.
 			case "disabled":
 				m.mu.Unlock()
 				return "", nil
@@ -268,7 +268,7 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string) error {
 			m.mu.Unlock()
 			slog.Debug("session recreated", "reason", status, "instance_id", st.InstanceID)
 		case "banned":
-			return fmt.Errorf("session: account banned upstream")
+			return &upstream.BanError{ResumesAt: st.ResumesAt, Body: st.Message}
 		case "country_blocked":
 			return fmt.Errorf("session: country blocked upstream")
 		case "rate_limited", "ip_capped", "spend_limited":
