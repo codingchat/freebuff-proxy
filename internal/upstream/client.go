@@ -956,8 +956,6 @@ func drainBody(r io.Reader) string {
 	return string(data)
 }
 
-func drainCaptured(r *http.Response) string { return drainBody(r.Body) }
-
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
