@@ -7,8 +7,11 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/freebuff-proxy ./c
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata \
-    && addgroup -S app \
-    && adduser -S -G app app
+    && addgroup -S -g 1000 app \
+    && adduser -S -u 1000 -G app app \
+    && mkdir -p /app/dump /app/logs \
+    && chown -R app:app /app
+WORKDIR /app
 COPY --from=build /out/freebuff-proxy /usr/local/bin/freebuff-proxy
 USER app
 EXPOSE 3457
