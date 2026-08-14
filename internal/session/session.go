@@ -33,7 +33,7 @@ const (
 	// maxOuterIterations bounds EnsureSession's refresh attempts per call so
 	// a pathological upstream (always-expired or never-advancing queue)
 	// cannot spin forever.
-	maxOuterIterations = 5
+	maxOuterIterations = 10
 	// defaultFallbackModel is the guaranteed-available model used when a
 	// requested model is temporarily unavailable upstream.
 	defaultFallbackModel = "deepseek/deepseek-v4-flash"
