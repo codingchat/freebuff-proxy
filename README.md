@@ -93,7 +93,12 @@ curl http://127.0.0.1:3457/healthz
       "models": {
         "deepseek-flash": {
           "id": "deepseek/deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash (1M ctx)",
+          "name": "DeepSeek V4 Flash",
+          "reasoning": true,
+          "tool_call": true,
+          "cost": { "input": 0, "output": 0 },
+          "limit": { "context": 1000000, "output": 384000 },
+          "modalities": { "input": ["text"], "output": ["text"] },
           "variants": {
             "low": { "reasoningEffort": "low" },
             "high": { "reasoningEffort": "high" },
@@ -102,7 +107,15 @@ curl http://127.0.0.1:3457/healthz
         },
         "mimo": {
           "id": "mimo/mimo-v2.5",
-          "name": "MiMo 2.5 (1M ctx, Multimodal)",
+          "name": "MiMo 2.5",
+          "reasoning": true,
+          "tool_call": true,
+          "cost": { "input": 0, "output": 0 },
+          "limit": { "context": 1000000, "output": 128000 },
+          "modalities": {
+            "input": ["text", "image", "video", "audio"],
+            "output": ["text"]
+          },
           "variants": {
             "none": { "reasoningEffort": "none" },
             "high": { "reasoningEffort": "high" }
