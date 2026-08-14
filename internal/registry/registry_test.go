@@ -32,6 +32,9 @@ func fileSource(t *testing.T, path string) string {
 var expectedFallback = map[string]string{
 	"deepseek/deepseek-v4-pro":         "base2-free",
 	"deepseek/deepseek-v4-flash":       "base2-free",
+	"deepseek/deepseek-v4-flash-max":   "base2-free-deepseek-flash-max",
+	"deepseek/deepseek-v4-pro-max":     "base2-free-deepseek-pro-max",
+	"openai/gpt-5.6-luna-max":          "base2-free-luna-max",
 	"minimax/minimax-m3":               "base2-free",
 	"openai/gpt-5.6-luna":              "base2-free",
 	"mimo/mimo-v2.5":                   "base2-free",
