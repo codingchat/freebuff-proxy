@@ -100,9 +100,10 @@ func ExtractReasoningEffort(payload map[string]any) string {
 //     anyOf/oneOf simplification, type/enum/const cleanup, depth cap 12)
 //   - extracts and normalizes reasoning effort from alternate structures
 //
-// The returned bytes are compact JSON. Errors only occur on invalid JSON or
-// a non-object body.
-func NormalizeRequest(body []byte, modelOverride ...string) ([]byte, error) {
+// modelOverride, when non-empty, replaces the client's model in the
+// forwarded body (used for alias resolution). The returned bytes are compact
+// JSON. Errors only occur on invalid JSON or a non-object body.
+func NormalizeRequest(body []byte, modelOverride string) ([]byte, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
@@ -120,8 +121,8 @@ func NormalizeRequest(body []byte, modelOverride ...string) ([]byte, error) {
 			out[key] = value
 		}
 	}
-	if len(modelOverride) > 0 && modelOverride[0] != "" {
-		out["model"] = modelOverride[0]
+	if modelOverride != "" {
+		out["model"] = modelOverride
 	}
 	if _, hasEffort := out["reasoning_effort"]; !hasEffort {
 		if eff := ExtractReasoningEffort(payload); eff != "" && eff != "none" && eff != "disabled" {

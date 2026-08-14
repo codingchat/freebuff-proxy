@@ -293,45 +293,47 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = up.Close() }()
 	defer s.pool.LeaseRelease(lease)
 
-	s.logger.Info("chat routing",
+	routingAttrs := []any{
 		"token", tokenLabel(lease),
 		"model", model,
 		"agent", lease.AgentID,
 		"instance_id", lease.SessionInstanceID,
 		"tier", lease.TierAccess,
 		"country", lease.TierCountry,
-	)
+	}
+	if reasoningEffort != "" {
+		routingAttrs = append(routingAttrs, "reasoning_effort", reasoningEffort)
+	}
+	s.logger.Info("chat routing", routingAttrs...)
 
 	if stream {
 		stats := &relayStats{}
 		s.relayStream(ctx, w, up, stats)
-		doneAttrs := []any{
-			"model", model,
-			"agent", lease.AgentID,
-			"stream", true,
-			"ms", time.Since(start).Milliseconds(),
-			"chunks", stats.chunks,
-			"bytes", stats.bytes,
-		}
-		if reasoningEffort != "" {
-			doneAttrs = append(doneAttrs, "reasoning_effort", reasoningEffort)
-		}
-		s.logger.Info("chat done", doneAttrs...)
+		s.logger.Info("chat done", chatDoneAttrs(model, lease.AgentID, true, time.Since(start).Milliseconds(), stats.chunks, stats.bytes, reasoningEffort)...)
 	} else {
 		stats := &relayStats{}
 		s.relayJSON(ctx, w, up, stats)
-		doneAttrs := []any{
-			"model", model,
-			"agent", lease.AgentID,
-			"stream", false,
-			"ms", time.Since(start).Milliseconds(),
-			"bytes", stats.bytes,
-		}
-		if reasoningEffort != "" {
-			doneAttrs = append(doneAttrs, "reasoning_effort", reasoningEffort)
-		}
-		s.logger.Info("chat done", doneAttrs...)
+		s.logger.Info("chat done", chatDoneAttrs(model, lease.AgentID, false, time.Since(start).Milliseconds(), 0, stats.bytes, reasoningEffort)...)
 	}
+}
+
+// chatDoneAttrs builds the structured log attributes for a completed chat,
+// including reasoning effort when the client requested it.
+func chatDoneAttrs(model, agent string, stream bool, ms int64, chunks, bytes int, reasoningEffort string) []any {
+	attrs := []any{
+		"model", model,
+		"agent", agent,
+		"stream", stream,
+		"ms", ms,
+		"bytes", bytes,
+	}
+	if stream {
+		attrs = append(attrs, "chunks", chunks)
+	}
+	if reasoningEffort != "" {
+		attrs = append(attrs, "reasoning_effort", reasoningEffort)
+	}
+	return attrs
 }
 
 // chatAttempt runs the retry-once recovery loop for one chat request: chat

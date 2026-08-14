@@ -77,15 +77,38 @@ curl http://127.0.0.1:3457/healthz
 
 ## Configuration Reference
 
+Full option list (all keys can be set via environment variables or a `.env` file; precedence: built-in defaults < JSON `-config` < `./.env` < environment):
+
 | Environment Variable | Default | Description |
 |---|---|---|
-| `LISTEN_ADDR` | `:3457` | Port and host address to bind |
-| `AUTH_TOKENS` | `""` | Comma-separated list of upstream tokens (empty = bridge mode) |
-| `SAFE_MODE` | `true` | Enables conservative message limits and request jitter |
-| `MAX_MESSAGES_PER_DAY` | `150` | Daily request ceiling per token |
-| `SOCKS5_PROXY` | `""` | Outbound proxy for upstream requests |
-| `TLS_FINGERPRINT` | `auto` | TLS profile: `auto`, `chrome126`, `firefox128`, `safari18` |
-| `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `LISTEN_ADDR` | `127.0.0.1:3457` | Host and port to bind (loopback; set `:3457` in containers) |
+| `UPSTREAM_BASE_URL` | `https://codebuff.com` | Upstream API endpoint |
+| `AUTH_TOKENS` | `""` | Comma-separated upstream tokens (empty = bridge mode) |
+| `API_KEYS` | `""` | Comma-separated client keys required for `/v1/*` (empty = open) |
+| `ROTATION_INTERVAL` | `6h` | Agent-run rotation interval |
+| `REQUEST_TIMEOUT` | `15m` | Upstream request timeout |
+| `SESSION_CALL_TIMEOUT` | `30s` | Session call timeout |
+| `HTTP_PROXY` / `SOCKS5_PROXY` | `""` | Outbound proxy for upstream requests |
+| `SOCKS5_PROXIES` | `""` | Per-token SOCKS5 proxies (comma-separated) |
+| `PROXY_ROTATION` | `per-token` | `per-token`, `round-robin`, or `random` |
+| `COST_MODE` | `free` | `free` (free-tier) or paid billing mode |
+| `TLS_FINGERPRINT` | `auto` | TLS profile: `auto`, `chrome126`, `firefox128`, `safari18`, `edge126` |
+| `REGISTRY_REFRESH` | `6h` | Model catalog refresh interval |
+| `DEBUG_DUMP` | `false` | Persist redacted traffic dumps to `./dump/` |
+| `LOG_FILE` | `""` | Persist JSON logs to a file (e.g. `./logs/proxy.log`) |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `MAX_MESSAGES_PER_DAY` | `0` | Daily request ceiling per token (`0` = unlimited; `SAFE_MODE` sets 150) |
+| `IDLE_ROTATION_TIMEOUT` | `0` | Finish runs after this idle period (`0` = disabled; `SAFE_MODE` sets 30m) |
+| `SAFE_MODE` | `false` | Enables conservative limits (message cap, idle rotation, jitter) |
+| `REQUEST_JITTER` | `0s` | Random request delay jitter (`SAFE_MODE` sets 2s) |
+| `MODEL_ALIASES` | `""` | Map aliases to real model IDs, e.g. `gpt-4o:deepseek/deepseek-v4-flash,glm:z-ai/glm-5.2` |
+| `CLI_VERSION` | `0.10.7` | Upstream CLI version string for the envelope |
+
+### Guides
+
+- [Getting Started](docs/guides/getting-started.md) — 5-minute setup walkthrough
+- [Client Integration](docs/guides/client-integration.md) — OpenCode, 9router, Continue, Cursor, aider, OpenAI SDKs
+- [9router Integration](docs/guides/9router-integration.md) — router dashboard setup in bridge mode
 
 ---
 

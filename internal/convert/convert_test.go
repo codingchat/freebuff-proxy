@@ -77,7 +77,7 @@ func TestNormalizeRequestWhitelist(t *testing.T) {
 		"function_call": "auto",
 		"bogus":         "x",
 	}
-	out, err := NormalizeRequest(mustJSON(t, body))
+	out, err := NormalizeRequest(mustJSON(t, body), "")
 	if err != nil {
 		t.Fatalf("NormalizeRequest: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestNormalizeRequestWhitelist(t *testing.T) {
 	}
 
 	// Null-valued whitelisted keys are dropped (meaningless upstream).
-	out, err = NormalizeRequest([]byte(`{"model":"m","messages":[],"temperature":null}`))
+	out, err = NormalizeRequest([]byte(`{"model":"m","messages":[],"temperature":null}`), "")
 	if err != nil {
 		t.Fatalf("NormalizeRequest: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestNormalizeRequestDeveloperToSystem(t *testing.T) {
 			map[string]any{"role": "system", "content": "sys"},
 		},
 	}
-	out, err := NormalizeRequest(mustJSON(t, body))
+	out, err := NormalizeRequest(mustJSON(t, body), "")
 	if err != nil {
 		t.Fatalf("NormalizeRequest: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestNormalizeRequestInvalidBody(t *testing.T) {
 		"empty":      ``,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := NormalizeRequest([]byte(body)); err == nil {
+			if _, err := NormalizeRequest([]byte(body), ""); err == nil {
 				t.Fatalf("expected error for body %q", body)
 			}
 		})
@@ -297,7 +297,7 @@ func TestNormalizeRequestToolSchemas(t *testing.T) {
 					"function": map[string]any{"name": "f", "parameters": tc.params},
 				}},
 			}
-			out, err := NormalizeRequest(mustJSON(t, body))
+			out, err := NormalizeRequest(mustJSON(t, body), "")
 			if err != nil {
 				t.Fatalf("NormalizeRequest: %v", err)
 			}
@@ -333,7 +333,7 @@ func TestNormalizeRequestSchemaDepthCap(t *testing.T) {
 			"function": map[string]any{"name": "f", "parameters": deep},
 		}},
 	}
-	out, err := NormalizeRequest(mustJSON(t, body))
+	out, err := NormalizeRequest(mustJSON(t, body), "")
 	if err != nil {
 		t.Fatalf("NormalizeRequest: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestNormalizeRequestSchemaDepthCap(t *testing.T) {
 		"type":     "function",
 		"function": map[string]any{"name": "f", "parameters": short},
 	}}
-	out, err = NormalizeRequest(mustJSON(t, body))
+	out, err = NormalizeRequest(mustJSON(t, body), "")
 	if err != nil {
 		t.Fatalf("NormalizeRequest: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestNormalizeRequestNestedDefinitionsMerge(t *testing.T) {
 			"function": map[string]any{"name": "f", "parameters": params},
 		}},
 	}
-	out, err := NormalizeRequest(mustJSON(t, body))
+	out, err := NormalizeRequest(mustJSON(t, body), "")
 	if err != nil {
 		t.Fatalf("NormalizeRequest: %v", err)
 	}
@@ -692,7 +692,7 @@ func TestNormalizeRequestInjectsEndTurnTool(t *testing.T) {
 		},
 	}
 
-	out, err := NormalizeRequest(mustJSON(t, body))
+	out, err := NormalizeRequest(mustJSON(t, body), "")
 	if err != nil {
 		t.Fatalf("NormalizeRequest: %v", err)
 	}
@@ -769,7 +769,7 @@ func TestNormalizeRequestReasoningEffort(t *testing.T) {
 		"messages":  []any{map[string]any{"role": "user", "content": "hello"}},
 		"reasoning": map[string]any{"effort": "max"},
 	}
-	out, err := NormalizeRequest(mustJSON(t, body))
+	out, err := NormalizeRequest(mustJSON(t, body), "")
 	if err != nil {
 		t.Fatalf("NormalizeRequest: %v", err)
 	}
