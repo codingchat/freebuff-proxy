@@ -1,4 +1,4 @@
-# fr33bu77-pr0xy (Universal AI Gateway & Token Pool)
+# fr33bu77-pr0xy (AI Gateway & Token Pool)
 
 [![CI](https://img.shields.io/github/actions/workflow/status/trefeon/freebuff-proxy/ci.yml)](https://github.com/trefeon/freebuff-proxy/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/trefeon/freebuff-proxy)](https://github.com/trefeon/freebuff-proxy/releases)
@@ -6,9 +6,8 @@
 
 An OpenAI-compatible high-performance gateway and bridge for coding assistant backends. Connect any standard OpenAI client (Cursor, Continue, aider, OpenCode, 9router, OmniRouter, LiteLLM) to upstream AI agent models with built-in token pooling, session lifecycle management, and TLS stealth.
 
-> **Universal Coding Gateway Architecture.**
+> **Coding Gateway Architecture.**
 > The proxy replicates official CLI request envelopes (including system identity headers, metadata context, model-bound sessions, tool schema normalization, and browser JA3 TLS stealth). Direct OpenAI chat completions and SSE streaming are supported end-to-end.
-
 ---
 
 ## Features
