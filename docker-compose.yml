@@ -1,20 +1,12 @@
-# Example deployment for the FreeBuff proxy bridge.
-#
-# .env: copy .env.example to .env and set AUTH_TOKENS (a FreeBuff/Codebuff
-# token; comma-separated for multiple accounts). Empty AUTH_TOKENS starts
-# the proxy in bridge mode: clients send their own token per request.
-#
-# The container runs as a non-root user and the binary writes nothing to its
-# own filesystem by default. If you enable DEBUG_DUMP=true, uncomment the
-# volumes entry below to persist captured traffic in ./dump.
+# fp-bridge deployment configuration
 
 services:
-  freebuff-proxy:
+  fp-bridge:
     build: .
+    image: fp-bridge:latest
+    container_name: fp-bridge
     env_file: .env
     environment:
-      # The proxy defaults to loopback only; the container must listen on
-      # all interfaces to accept the published port.
       - LISTEN_ADDR=:3457
     ports:
       - "3457:3457"
@@ -24,7 +16,3 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
-    volumes:
-      - ./dump:/app/dump
-      - ./logs:/app/logs
