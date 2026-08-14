@@ -79,12 +79,95 @@ curl http://127.0.0.1:3457/healthz
 
 ## Client Integration Examples
 
-### OpenCode + 9Router Integration (`~/.config/opencode/opencode.jsonc`)
+### 1. OpenCode Direct Integration (`~/.config/opencode/opencode.jsonc`)
 
-When routing OpenCode through **9router** to access `fp-bridge`:
+Point OpenCode directly at `fp-bridge`:
 
 ```json
 {
+  "$schema": "https://opencode.ai/config.json",
+  "model": "fp-bridge/deepseek-flash",
+  "small_model": "fp-bridge/deepseek-flash",
+  "provider": {
+    "fp-bridge": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "FP Bridge",
+      "options": {
+        "baseURL": "http://127.0.0.1:3457/v1",
+        "apiKey": "not-needed"
+      },
+      "models": {
+        "deepseek-flash": {
+          "id": "deepseek/deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash",
+          "reasoning": true,
+          "tool_call": true,
+          "cost": { "input": 0, "output": 0 },
+          "limit": { "context": 1000000, "output": 384000 },
+          "modalities": { "input": ["text"], "output": ["text"] },
+          "variants": {
+            "low": { "reasoningEffort": "low" },
+            "high": { "reasoningEffort": "high" },
+            "max": { "reasoningEffort": "max" }
+          }
+        },
+        "deepseek-pro": {
+          "id": "deepseek/deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro",
+          "reasoning": true,
+          "tool_call": true,
+          "cost": { "input": 0, "output": 0 },
+          "limit": { "context": 1000000, "output": 384000 },
+          "modalities": { "input": ["text"], "output": ["text"] },
+          "variants": {
+            "low": { "reasoningEffort": "low" },
+            "high": { "reasoningEffort": "high" },
+            "max": { "reasoningEffort": "max" }
+          }
+        },
+        "mimo": {
+          "id": "mimo/mimo-v2.5",
+          "name": "MiMo 2.5",
+          "reasoning": true,
+          "tool_call": true,
+          "cost": { "input": 0, "output": 0 },
+          "limit": { "context": 1000000, "output": 128000 },
+          "modalities": {
+            "input": ["text", "image", "video", "audio"],
+            "output": ["text"]
+          },
+          "variants": {
+            "none": { "reasoningEffort": "none" },
+            "high": { "reasoningEffort": "high" }
+          }
+        },
+        "minimax-m3": {
+          "id": "minimax/minimax-m3",
+          "name": "MiniMax M3",
+          "reasoning": true,
+          "tool_call": true,
+          "cost": { "input": 0, "output": 0 },
+          "limit": { "context": 1000000, "output": 262144 },
+          "modalities": {
+            "input": ["text", "image", "video"],
+            "output": ["text"]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+### 2. OpenCode via 9Router (`~/.config/opencode/opencode.jsonc`)
+
+When routing through **9router** for multi-account load balancing:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
   "model": "9router/freebuff/deepseek/deepseek-v4-flash",
   "small_model": "9router/freebuff/deepseek/deepseek-v4-flash",
   "provider": {
@@ -92,7 +175,8 @@ When routing OpenCode through **9router** to access `fp-bridge`:
       "npm": "@ai-sdk/openai-compatible",
       "name": "9Router",
       "options": {
-        "baseURL": "http://127.0.0.1:20128/v1"
+        "baseURL": "http://127.0.0.1:20128/v1",
+        "apiKey": "your-9router-api-key"
       },
       "models": {
         "freebuff/deepseek/deepseek-v4-flash": {
@@ -131,15 +215,54 @@ When routing OpenCode through **9router** to access `fp-bridge`:
 }
 ```
 
-### 9router Provider Setup (Bridge Mode)
+---
+
+### 3. Continue (`~/.continue/config.json`)
+
+```json
+{
+  "models": [
+    {
+      "title": "DeepSeek V4 Flash",
+      "provider": "openai",
+      "model": "deepseek/deepseek-v4-flash",
+      "apiBase": "http://localhost:3457/v1",
+      "apiKey": "not-needed"
+    },
+    {
+      "title": "MiMo 2.5 (Multimodal)",
+      "provider": "openai",
+      "model": "mimo/mimo-v2.5",
+      "apiBase": "http://localhost:3457/v1",
+      "apiKey": "not-needed"
+    }
+  ]
+}
+```
+
+---
+
+### 4. Aider CLI
+
+```bash
+# Run with DeepSeek V4 Flash
+aider --openai-api-base http://127.0.0.1:3457/v1 \
+      --openai-api-key not-needed \
+      --model openai/deepseek/deepseek-v4-flash
+```
+
+---
+
+### 5. 9router / OmniRouter Dashboard Setup (Bridge Mode)
 
 1. In the **9router Dashboard** (`http://127.0.0.1:20128`):
    - Go to **Providers** $\rightarrow$ **Add Provider** $\rightarrow$ select **OpenAI Compatible**.
    - **Name**: `freebuff`
    - **Prefix**: `freebuff`
-   - **Base URL**: `http://127.0.0.1:3457/v1` (or your Docker host IP)
-   - **API Keys**: Add your upstream auth token(s) as keys (each key acts as a pooled upstream account in bridge mode).
-2. OpenCode connects to 9router at `http://127.0.0.1:20128/v1`, and 9router load-balances across tokens on `fp-bridge`.
+   - **Base URL**: `http://127.0.0.1:3457/v1` (or `http://host.docker.internal:3457/v1` if in Docker)
+   - **API Keys**: Add your upstream auth token(s) as keys (each key acts as a pooled upstream account).
+2. 9router handles round-robin and rate-limit fallover across all configured keys.
+
 ---
 
 ## Configuration Reference
