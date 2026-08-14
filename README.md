@@ -1,4 +1,4 @@
-# fb0-proxy (Unified AI Gateway & Token Pool)
+# fr33bu77-pr0xy (Universal AI Gateway & Token Pool)
 
 [![CI](https://img.shields.io/github/actions/workflow/status/trefeon/freebuff-proxy/ci.yml)](https://github.com/trefeon/freebuff-proxy/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/trefeon/freebuff-proxy)](https://github.com/trefeon/freebuff-proxy/releases)
@@ -29,7 +29,7 @@ An OpenAI-compatible high-performance gateway and bridge for coding assistant ba
 
 ```mermaid
 graph TD
-    Client[AI Client / Router<br/>OpenCode, 9router, Continue, Cursor] -->|POST /v1/chat/completions| Proxy[fb0-proxy<br/>localhost:3457]
+    Client[AI Client / Router<br/>OpenCode, 9router, Continue, Cursor] -->|POST /v1/chat/completions| Proxy[fr33bu77-pr0xy<br/>localhost:3457]
     Proxy -->|1. Session & Run Lifecycle| Pool[Token Pool & Session Cache]
     Proxy -->|2. Inject Envelope + Stealth| Upstream[Upstream Backend API]
     Upstream -->|3. SSE Stream| Proxy
@@ -81,17 +81,17 @@ curl http://127.0.0.1:3457/healthz
 
 ### 1. OpenCode Direct Integration (`~/.config/opencode/opencode.jsonc`)
 
-Point OpenCode directly at `fb0-proxy`:
+Point OpenCode directly at `fr33bu77`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "fb0/deepseek-flash",
-  "small_model": "fb0/deepseek-flash",
+  "model": "fr33bu77/deepseek-flash",
+  "small_model": "fr33bu77/deepseek-flash",
   "provider": {
-    "fb0": {
+    "fr33bu77": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "FB0 Gateway",
+      "name": "fr33bu77 Gateway",
       "options": {
         "baseURL": "http://127.0.0.1:3457/v1",
         "apiKey": "not-needed"
@@ -163,13 +163,13 @@ Point OpenCode directly at `fb0-proxy`:
 
 ### 2. OpenCode via 9Router (`~/.config/opencode/opencode.jsonc`)
 
-When routing through **9router** (using mux prefix `fb0`) for multi-account load balancing:
+When routing through **9router** (using leet prefix `fr33bu77`) for multi-account load balancing:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "9router/fb0/deepseek/deepseek-v4-flash",
-  "small_model": "9router/fb0/deepseek/deepseek-v4-flash",
+  "model": "9router/fr33bu77/deepseek/deepseek-v4-flash",
+  "small_model": "9router/fr33bu77/deepseek/deepseek-v4-flash",
   "provider": {
     "9router": {
       "npm": "@ai-sdk/openai-compatible",
@@ -179,9 +179,9 @@ When routing through **9router** (using mux prefix `fb0`) for multi-account load
         "apiKey": "your-9router-api-key"
       },
       "models": {
-        "fb0/deepseek/deepseek-v4-flash": {
-          "id": "fb0/deepseek/deepseek-v4-flash",
-          "name": "FB0 | DeepSeek V4 Flash",
+        "fr33bu77/deepseek/deepseek-v4-flash": {
+          "id": "fr33bu77/deepseek/deepseek-v4-flash",
+          "name": "fr33bu77 | DeepSeek V4 Flash",
           "reasoning": true,
           "tool_call": true,
           "cost": { "input": 0, "output": 0 },
@@ -193,9 +193,9 @@ When routing through **9router** (using mux prefix `fb0`) for multi-account load
             "max": { "reasoningEffort": "max" }
           }
         },
-        "fb0/mimo/mimo-v2.5": {
-          "id": "fb0/mimo/mimo-v2.5",
-          "name": "FB0 | MiMo 2.5",
+        "fr33bu77/mimo/mimo-v2.5": {
+          "id": "fr33bu77/mimo/mimo-v2.5",
+          "name": "fr33bu77 | MiMo 2.5",
           "reasoning": true,
           "tool_call": true,
           "cost": { "input": 0, "output": 0 },
@@ -257,11 +257,11 @@ aider --openai-api-base http://127.0.0.1:3457/v1 \
 
 1. In the **9router Dashboard** (`http://127.0.0.1:20128`):
    - Go to **Providers** $\rightarrow$ **Add Provider** $\rightarrow$ select **OpenAI Compatible**.
-   - **Name**: `fb0`
-   - **Prefix**: `fb0`
+   - **Name**: `fr33bu77`
+   - **Prefix**: `fr33bu77`
    - **Base URL**: `http://127.0.0.1:3457/v1` (or `http://host.docker.internal:3457/v1` if in Docker)
    - **API Keys**: Add your upstream auth token(s) as keys (each key acts as a pooled upstream account).
-2. 9router handles round-robin and rate-limit fallover across all configured keys under the `fb0/...` model prefix.
+2. 9router handles round-robin and rate-limit fallover across all configured keys under the `fr33bu77/...` model prefix.
 
 ---
 
