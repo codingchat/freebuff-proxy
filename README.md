@@ -79,21 +79,25 @@ curl http://127.0.0.1:3457/healthz
 
 ## Client Integration Examples
 
-### OpenCode (`~/.config/opencode/opencode.jsonc`)
+### OpenCode + 9Router Integration (`~/.config/opencode/opencode.jsonc`)
+
+When routing OpenCode through **9router** to access `fp-bridge`:
 
 ```json
 {
+  "model": "9router/freebuff/deepseek/deepseek-v4-flash",
+  "small_model": "9router/freebuff/deepseek/deepseek-v4-flash",
   "provider": {
-    "fp-bridge": {
+    "9router": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "FP Bridge",
+      "name": "9Router",
       "options": {
-        "baseURL": "http://127.0.0.1:3457/v1"
+        "baseURL": "http://127.0.0.1:20128/v1"
       },
       "models": {
-        "deepseek-flash": {
-          "id": "deepseek/deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash",
+        "freebuff/deepseek/deepseek-v4-flash": {
+          "id": "freebuff/deepseek/deepseek-v4-flash",
+          "name": "Freebuff | DeepSeek V4 Flash",
           "reasoning": true,
           "tool_call": true,
           "cost": { "input": 0, "output": 0 },
@@ -105,9 +109,9 @@ curl http://127.0.0.1:3457/healthz
             "max": { "reasoningEffort": "max" }
           }
         },
-        "mimo": {
-          "id": "mimo/mimo-v2.5",
-          "name": "MiMo 2.5",
+        "freebuff/mimo/mimo-v2.5": {
+          "id": "freebuff/mimo/mimo-v2.5",
+          "name": "Freebuff | MiMo 2.5",
           "reasoning": true,
           "tool_call": true,
           "cost": { "input": 0, "output": 0 },
@@ -127,13 +131,15 @@ curl http://127.0.0.1:3457/healthz
 }
 ```
 
-### 9router / OmniRouter (Bridge Mode)
+### 9router Provider Setup (Bridge Mode)
 
-1. Add a new **OpenAI-Compatible** provider in your router dashboard:
-   - **Base URL**: `http://127.0.0.1:3457/v1`
-   - **API Key**: `your-auth-token` (or add multiple tokens under separate keys for load balancing)
-2. All chat completion requests are relayed with zero token storage on the bridge.
-
+1. In the **9router Dashboard** (`http://127.0.0.1:20128`):
+   - Go to **Providers** $\rightarrow$ **Add Provider** $\rightarrow$ select **OpenAI Compatible**.
+   - **Name**: `freebuff`
+   - **Prefix**: `freebuff`
+   - **Base URL**: `http://127.0.0.1:3457/v1` (or your Docker host IP)
+   - **API Keys**: Add your upstream auth token(s) as keys (each key acts as a pooled upstream account in bridge mode).
+2. OpenCode connects to 9router at `http://127.0.0.1:20128/v1`, and 9router load-balances across tokens on `fp-bridge`.
 ---
 
 ## Configuration Reference
