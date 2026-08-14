@@ -568,6 +568,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body []byt
 		return nil, fmt.Errorf("upstream: build %s %s: %w", method, path, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("x-codebuff-api-key", c.token)
 	req.Header.Set("Content-Type", "application/json")
 	if c.stealthProfile != nil {
 		connProf := stealth.GetProfileForConnection(c.stealthProfile)
