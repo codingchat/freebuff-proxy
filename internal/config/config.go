@@ -73,7 +73,7 @@ type rawConfig struct {
 	DebugDump           bool     `json:"DEBUG_DUMP"`
 	LogFile             string   `json:"LOG_FILE"`
 	LogLevel            string   `json:"LOG_LEVEL"`
-	MaxMessagesPerDay   int      `json:"MAX_MESSAGES_PER_DAY"`
+	MaxMessagesPerDay   *int     `json:"MAX_MESSAGES_PER_DAY"`
 	IdleRotationTimeout string   `json:"IDLE_ROTATION_TIMEOUT"`
 	SafeMode            bool     `json:"SAFE_MODE"`
 	RequestJitter       string   `json:"REQUEST_JITTER"`
@@ -90,7 +90,7 @@ func defaultRawConfig() rawConfig {
 		SessionCallTimeout:  "30s",
 		RegistryRefresh:     "6h",
 		CostMode:            "free", // free-tier mode; omission routes requests as PAID and fresh free accounts get 402 "Out of credits" (upstream check: cost_mode !== 'free' → billing)
-		MaxMessagesPerDay:   0,      // 0 = unlimited
+		MaxMessagesPerDay:   nil,
 		IdleRotationTimeout: "0",    // 0 = disabled
 		SafeMode:            false,
 		RequestJitter:       "0s",
@@ -179,6 +179,13 @@ func Load(configPath string) (Config, error) {
 		return Config{}, err
 	}
 
+	maxMessagesPerDay := 0
+	if raw.MaxMessagesPerDay != nil {
+		maxMessagesPerDay = *raw.MaxMessagesPerDay
+	} else if raw.SafeMode {
+		maxMessagesPerDay = 150
+	}
+
 	cfg := Config{
 		ListenAddr:          strings.TrimSpace(raw.ListenAddr),
 		UpstreamBaseURL:     upstreamBaseURL,
@@ -197,7 +204,7 @@ func Load(configPath string) (Config, error) {
 		DebugDump:           raw.DebugDump,
 		LogFile:             strings.TrimSpace(raw.LogFile),
 		LogLevel:            strings.TrimSpace(raw.LogLevel),
-		MaxMessagesPerDay:   raw.MaxMessagesPerDay,
+		MaxMessagesPerDay:   maxMessagesPerDay,
 		IdleRotationTimeout: idleRotationTimeout,
 		SafeMode:            raw.SafeMode,
 		RequestJitter:       requestJitter,
@@ -222,9 +229,6 @@ func Load(configPath string) (Config, error) {
 	// SafeMode presets: when SAFE_MODE=true, apply recommended defaults
 	// for any zero-valued account-safety knob.
 	if cfg.SafeMode {
-		if cfg.MaxMessagesPerDay == 0 {
-			cfg.MaxMessagesPerDay = 150
-		}
 		if cfg.IdleRotationTimeout == 0 {
 			cfg.IdleRotationTimeout = 30 * time.Minute
 		}
@@ -489,14 +493,14 @@ func overrideBoolFrom(target *bool, get func(string) string, envName string) {
 
 // overrideInt sets target from MAX_MESSAGES_PER_DAY-style env vars; unset or
 // unparseable values leave the file/default value untouched.
-func overrideInt(target *int, envName string) {
+func overrideInt(target **int, envName string) {
 	overrideIntFrom(target, os.Getenv, envName)
 }
 
-func overrideIntFrom(target *int, get func(string) string, envName string) {
+func overrideIntFrom(target **int, get func(string) string, envName string) {
 	if value := strings.TrimSpace(get(envName)); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
-			*target = parsed
+			*target = &parsed
 		}
 	}
 }

@@ -77,23 +77,45 @@ func TestDefaults(t *testing.T) {
 }
 
 func TestSafeMode(t *testing.T) {
-	t.Setenv("AUTH_TOKENS", "tok-1")
-	t.Setenv("SAFE_MODE", "true")
+	t.Run("default SafeMode values", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("AUTH_TOKENS", "tok-1")
+		t.Setenv("SAFE_MODE", "true")
 
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
 
-	if cfg.MaxMessagesPerDay != 150 {
-		t.Errorf("MaxMessagesPerDay = %d, want 150 under SafeMode", cfg.MaxMessagesPerDay)
-	}
-	if cfg.IdleRotationTimeout != 30*time.Minute {
-		t.Errorf("IdleRotationTimeout = %v, want 30m under SafeMode", cfg.IdleRotationTimeout)
-	}
-	if cfg.RequestJitter != 2*time.Second {
-		t.Errorf("RequestJitter = %v, want 2s under SafeMode", cfg.RequestJitter)
-	}
+		if cfg.MaxMessagesPerDay != 150 {
+			t.Errorf("MaxMessagesPerDay = %d, want 150 under SafeMode", cfg.MaxMessagesPerDay)
+		}
+		if cfg.IdleRotationTimeout != 30*time.Minute {
+			t.Errorf("IdleRotationTimeout = %v, want 30m under SafeMode", cfg.IdleRotationTimeout)
+		}
+		if cfg.RequestJitter != 2*time.Second {
+			t.Errorf("RequestJitter = %v, want 2s under SafeMode", cfg.RequestJitter)
+		}
+	})
+
+	t.Run("explicit zero MaxMessagesPerDay under SafeMode", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("AUTH_TOKENS", "tok-1")
+		t.Setenv("SAFE_MODE", "true")
+		t.Setenv("MAX_MESSAGES_PER_DAY", "0")
+
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+
+		if cfg.MaxMessagesPerDay != 0 {
+			t.Errorf("MaxMessagesPerDay = %d, want 0 (explicit unlimited)", cfg.MaxMessagesPerDay)
+		}
+		if cfg.RequestJitter != 2*time.Second {
+			t.Errorf("RequestJitter = %v, want 2s under SafeMode", cfg.RequestJitter)
+		}
+	})
 }
 
 func TestValidationFixSuggestions(t *testing.T) {
