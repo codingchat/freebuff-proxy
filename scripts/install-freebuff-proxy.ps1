@@ -254,9 +254,9 @@ if (-not $NoEnv) {
       Write-Host "AUTH_TOKENS left empty. The proxy starts in bridge mode; clients must send their own token." -ForegroundColor Yellow
     }
   }
-  Set-EnvValue "MAX_MESSAGES_PER_DAY" "150"
+  Set-EnvValue "MAX_MESSAGES_PER_DAY" "600"
   Set-EnvValue "IDLE_ROTATION_TIMEOUT" "30m"
-  Write-Host "Safety defaults: MAX_MESSAGES_PER_DAY=150, IDLE_ROTATION_TIMEOUT=30m" -ForegroundColor Green
+  Write-Host "Safety defaults: MAX_MESSAGES_PER_DAY=600 (subagent-ready), IDLE_ROTATION_TIMEOUT=30m" -ForegroundColor Green
 }
 # --- 9. next steps & doctor check -------------------------------------------
 Write-Host ""

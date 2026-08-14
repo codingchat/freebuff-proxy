@@ -72,7 +72,7 @@ graph TD
 - Sends outbound traffic through `HTTP_PROXY`, `SOCKS5_PROXY`, or per-token `SOCKS5_PROXIES` with browser TLS fingerprinting (`TLS_FINGERPRINT=auto|chrome126|firefox128|safari18|edge126`) and automatic uTLS state re-synchronization.
 - Automatic transient retry: recovers seamlessly from transient TLS or dial handshake blips by retrying once on a fresh connection.
 - Persistent logging & debugging: persists structured JSON logs to `./logs/proxy.log` and raw redacted traffic payloads to `./dump/`.
-- Account-safety knobs: `SAFE_MODE=true` preset (auto TLS stealth, 150 msg/day cap, 30m idle rotation, 2s jitter).
+- Account-safety knobs: `SAFE_MODE=true` preset (auto TLS stealth, 600 msg/day subagent-ready cap, 30m idle rotation, 2s jitter).
 - Zero or more FreeBuff auth tokens. With none, the proxy runs in **bridge mode** — each client sends their own token (see [Bridge mode](#bridge-mode)).
 
 Four ways to install. If you are new, pick Option 1.
@@ -264,8 +264,19 @@ Every key is read from the environment and overrides the JSON config file passed
 | `LOG_FILE` | empty | Append logs to a file in addition to stderr. |
 | `LOG_LEVEL` | info | `debug`, `info`, `warn`, or `error`. `-v` implies debug; `LOG_LEVEL` wins. |
 | `TLS_FINGERPRINT` | empty | Outbound JA3 fingerprint: `chrome120`, `safari17`, `firefox120`, or `random`. |
-| `MAX_MESSAGES_PER_DAY` | `0` | Per-token rolling 24h message cap. At the cap the proxy answers `429 rate_limited` with `Retry-After` instead of hitting upstream, keeping the account far under FreeBuff's abuse thresholds (~500 msgs/24h). `0` = unlimited. |
+| `MAX_MESSAGES_PER_DAY` | `0` | Per-token rolling 24h message cap. At the cap the proxy answers `429 rate_limited` with `Retry-After` instead of hitting upstream, shielding your account from ban triggers. `0` = unlimited. |
 | `IDLE_ROTATION_TIMEOUT` | `0` | Pause background work after this long without traffic (e.g. `30m`): runs are FINISHed and maintenance stops until the next request, so the account is not kept artificially active 24/7. `0` = always maintain. |
+
+### Recommended `MAX_MESSAGES_PER_DAY` by Region
+
+Because subagent workflows (OpenCode, Cursor, Continue) generate 5–15 tool turns per prompt, configure your daily cap based on your region's upstream limit:
+
+| Region / Access Tier | Example Countries | Recommended `MAX_MESSAGES_PER_DAY` | Upstream Server Limit |
+|---|---|---|---|
+| **Limited Tier** | Indonesia (ID), Brazil (BR), India (IN), Vietnam (VN) | **`600`** (Default for installers) | 1,500 turns / day |
+| **Full Tier** | United States (US), European Union (EU), Japan (JP) | **`1200`** | 3,000 turns / day |
+| **Restricted Tier** | Singapore (SG), China (CN) | **`50`** | 80 turns / day ($0.50 cap) |
+| **Single-Prompt User** | Minimal use without subagents | **`150`** | 500 turns / day |
 
 ## Bridge mode
 
