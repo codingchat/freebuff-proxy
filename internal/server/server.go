@@ -718,6 +718,12 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.As(err, &rle):
 		status, code = http.StatusTooManyRequests, "rate_limited"
 		message, retryAfter = rle.Error(), rle.RetryAfter
+		if !rle.ResetAt.IsZero() && rle.ResetAt.After(time.Now()) {
+			retryAfter = time.Until(rle.ResetAt)
+		}
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
 	case errors.As(err, &wr):
 		status, code = http.StatusServiceUnavailable, "waiting_room_queued"
 		message, retryAfter = wr.Error(), wr.RetryAfter

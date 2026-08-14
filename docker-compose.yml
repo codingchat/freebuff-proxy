@@ -1,10 +1,10 @@
-# fp-bridge deployment configuration
+# freebuff-proxy deployment configuration
 
 services:
-  fp-bridge:
+  freebuff-proxy:
     build: .
-    image: fp-bridge:latest
-    container_name: fp-bridge
+    image: freebuff-proxy:latest
+    container_name: freebuff-proxy
     env_file: .env
     environment:
       - LISTEN_ADDR=:3457

@@ -804,30 +804,115 @@ func classifyError(status int, body string, hdr http.Header) error {
 	}
 }
 
-// parseRateLimit builds a RateLimitError from a 429 body, extracting
-// retryAfterMs/resetAt/limit/recentCount best-effort. Falls back to the
-// Retry-After header duration when the body has no JSON quota fields.
-func parseRateLimit(body string, headerRetryAfter time.Duration) error {
-	rle := &RateLimitError{Body: truncate(body, 200), RetryAfter: headerRetryAfter}
-	var parsed struct {
-		RetryAfterMs int64     `json:"retryAfterMs"`
-		Limit        float64   `json:"limit"`
-		RecentCount  float64   `json:"recentCount"`
-		ResetAt      time.Time `json:"resetAt"`
-		Status       string    `json:"status"`
-	}
-	if err := json.Unmarshal([]byte(body), &parsed); err == nil {
-		if parsed.RetryAfterMs > 0 {
-			rle.RetryAfter = time.Duration(parsed.RetryAfterMs) * time.Millisecond
+// NextPacificMidnight returns the upcoming 00:00 Pacific Time in UTC
+// (which is 07:00 UTC during PDT / 08:00 UTC during PST).
+func NextPacificMidnight() time.Time {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	now := time.Now()
+	if err != nil {
+		// Fallback: 07:00 UTC (PDT summer) or 08:00 UTC (PST winter)
+		t := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 7, 0, 0, 0, time.UTC)
+		if !t.After(now) {
+			t = t.Add(24 * time.Hour)
 		}
-		if !parsed.ResetAt.IsZero() {
-			rle.ResetAt = parsed.ResetAt
-			if rle.RetryAfter <= 0 && parsed.ResetAt.After(time.Now()) {
-				rle.RetryAfter = time.Until(parsed.ResetAt)
+		return t
+	}
+	nowLoc := now.In(loc)
+	nextDay := time.Date(nowLoc.Year(), nowLoc.Month(), nowLoc.Day()+1, 0, 0, 0, 0, loc)
+	return nextDay.UTC()
+}
+
+func getNumber(m map[string]any, keys ...string) (float64, bool) {
+	for _, k := range keys {
+		if v, ok := m[k]; ok && v != nil {
+			switch n := v.(type) {
+			case float64:
+				return n, true
+			case int:
+				return float64(n), true
+			case int64:
+				return float64(n), true
+			case string:
+				if f, err := strconv.ParseFloat(strings.TrimSpace(n), 64); err == nil {
+					return f, true
+				}
 			}
 		}
-		rle.Limit, rle.RecentCount = parsed.Limit, parsed.RecentCount
 	}
+	return 0, false
+}
+
+func getTime(m map[string]any, keys ...string) (time.Time, bool) {
+	for _, k := range keys {
+		if v, ok := m[k]; ok && v != nil {
+			switch val := v.(type) {
+			case string:
+				val = strings.TrimSpace(val)
+				if t, err := time.Parse(time.RFC3339Nano, val); err == nil {
+					return t, true
+				}
+				if t, err := time.Parse(time.RFC3339, val); err == nil {
+					return t, true
+				}
+			case float64:
+				if val > 1e11 { // milliseconds
+					return time.UnixMilli(int64(val)).UTC(), true
+				} else if val > 0 {
+					return time.Unix(int64(val), 0).UTC(), true
+				}
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+// parseRateLimit builds a RateLimitError from a 429 body, extracting
+// retryAfterMs/resetAt/limit/recentCount best-effort across multiple JSON schemas.
+// Falls back to the Retry-After header or automatically computes the upcoming
+// Pacific midnight (07:00 UTC) when no explicit timestamp is provided.
+func parseRateLimit(body string, headerRetryAfter time.Duration) error {
+	rle := &RateLimitError{Body: truncate(body, 200), RetryAfter: headerRetryAfter}
+
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(body), &raw); err == nil {
+		target := raw
+		if errObj, ok := raw["error"].(map[string]any); ok {
+			target = errObj
+		}
+
+		if ms, ok := getNumber(target, "retryAfterMs", "retry_after_ms"); ok && ms > 0 {
+			rle.RetryAfter = time.Duration(ms) * time.Millisecond
+		} else if sec, ok := getNumber(target, "retryAfter", "retry_after"); ok && sec > 0 {
+			rle.RetryAfter = time.Duration(sec * float64(time.Second))
+		}
+
+		if t, ok := getTime(target, "resetAt", "reset_at", "resets_at", "resumes_at", "reset"); ok && !t.IsZero() {
+			rle.ResetAt = t
+		}
+
+		if lim, ok := getNumber(target, "limit"); ok {
+			rle.Limit = lim
+		}
+		if cnt, ok := getNumber(target, "recentCount", "recent_count"); ok {
+			rle.RecentCount = cnt
+		}
+		if st, ok := target["status"].(string); ok {
+			rle.Status = st
+		}
+	}
+
+	if !rle.ResetAt.IsZero() && rle.ResetAt.After(time.Now()) {
+		if rle.RetryAfter <= 0 {
+			rle.RetryAfter = time.Until(rle.ResetAt)
+		}
+	} else if rle.RetryAfter <= 0 {
+		// When rate-limited without a specific retry delay or timestamp,
+		// auto-detect the next Pacific reset window (07:00 UTC).
+		nextReset := NextPacificMidnight()
+		rle.ResetAt = nextReset
+		rle.RetryAfter = time.Until(nextReset)
+	}
+
 	if rle.RetryAfter <= 0 {
 		rle.RetryAfter = 60 * time.Second
 	}

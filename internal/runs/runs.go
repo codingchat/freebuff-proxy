@@ -285,18 +285,17 @@ func (m *RunManager) CooldownRateLimit(rle *upstream.RateLimitError) {
 	if rle == nil {
 		return
 	}
-	d := rle.RetryAfter
-	if d <= 0 && !rle.ResetAt.IsZero() && rle.ResetAt.After(time.Now()) {
-		d = time.Until(rle.ResetAt)
-	}
-	if d <= 0 {
-		d = 60 * time.Second
-	}
 	m.mu.Lock()
-	m.cooldownUntil = time.Now().Add(d)
+	defer m.mu.Unlock()
+	if rle.RetryAfter > 0 {
+		m.cooldownUntil = time.Now().Add(rle.RetryAfter)
+	} else if !rle.ResetAt.IsZero() && rle.ResetAt.After(time.Now()) {
+		m.cooldownUntil = rle.ResetAt
+	} else {
+		m.cooldownUntil = upstream.NextPacificMidnight()
+	}
 	m.rateLimit = rle
 	m.ban = nil
-	m.mu.Unlock()
 }
 
 // RateLimitError returns the remembered rate-limit error while its

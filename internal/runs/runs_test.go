@@ -377,12 +377,19 @@ func TestRateLimitAndBanCooldowns(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mgr, _ := newTestManager(t, mock, time.Hour)
-
 	rle := &upstream.RateLimitError{Body: "rate limit", RetryAfter: 5 * time.Minute}
 	mgr.CooldownRateLimit(rle)
 
 	if mgr.RateLimitError() == nil {
 		t.Errorf("RateLimitError() = nil, want rate limit error")
+	}
+
+	// Cooldown expired in the past should automatically unlock (return nil)
+	mgr.mu.Lock()
+	mgr.cooldownUntil = time.Now().Add(-1 * time.Second)
+	mgr.mu.Unlock()
+	if mgr.RateLimitError() != nil {
+		t.Errorf("RateLimitError() != nil for expired cooldown, want automatic unlock")
 	}
 
 	be := &upstream.BanError{Body: "account banned", ResumesAt: time.Now().Add(10 * time.Minute)}
@@ -397,7 +404,6 @@ func TestRateLimitAndBanCooldowns(t *testing.T) {
 		t.Errorf("Snapshot.BanError = nil, want non-nil")
 	}
 }
-
 func TestInvalidateRun(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()

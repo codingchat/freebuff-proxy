@@ -538,11 +538,11 @@ fi
 # account-safety knobs
 if [ "$NO_ENV" = "0" ]; then
   if [ "$NO_PROMPT" = "1" ]; then
-    KNOB_MAX="600"; KNOB_IDLE="30m"
+    KNOB_MAX="0"; KNOB_IDLE="30m"
   else
     echo ""
     c "Account-safety knobs (recommended to keep your account alive):"
-    ask KNOB_MAX "Max messages per token per 24h (600 recommended for subagents)" "600"
+    ask KNOB_MAX "Max messages per token per 24h (0 = unlimited / recommended, 0-spam safe)" "0"
     ask KNOB_IDLE "Pause background work after idle (e.g. 30m, 0 = never)" "30m"
   fi
   [ -n "$KNOB_MAX" ] && { set_env "MAX_MESSAGES_PER_DAY" "$KNOB_MAX"; ok "MAX_MESSAGES_PER_DAY=$KNOB_MAX"; }

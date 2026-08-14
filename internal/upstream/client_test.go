@@ -548,6 +548,32 @@ func TestClassifyRateLimit(t *testing.T) {
 		t.Errorf("ResetAt = %v, want %v", rle.ResetAt, wantReset)
 	}
 
+	// Nested error payload with snake_case fields
+	bodyNested := `{"error":{"status":"rate_limited","reset_at":"2026-08-15T07:00:00Z","retry_after_ms":120000}}`
+	errNested := classifyError(429, bodyNested, http.Header{})
+	if !errors.Is(errNested, ErrRateLimited) {
+		t.Fatalf("nested: errors.Is(ErrRateLimited) = false, got %v", errNested)
+	}
+	var rleNested *RateLimitError
+	if !errors.As(errNested, &rleNested) {
+		t.Fatalf("nested: want *RateLimitError, got %v", errNested)
+	}
+	if rleNested.RetryAfter != 120*time.Second {
+		t.Errorf("RetryAfter = %s, want 120s", rleNested.RetryAfter)
+	}
+
+	// Generic 429 without explicit timestamp auto-detects upcoming Pacific midnight
+	errGeneric := classifyError(429, `{"status":"rate_limited"}`, http.Header{})
+	var rleGeneric *RateLimitError
+	if errors.As(errGeneric, &rleGeneric) {
+		if rleGeneric.ResetAt.IsZero() {
+			t.Errorf("expected auto-detected ResetAt, got zero")
+		}
+		if !rleGeneric.ResetAt.After(time.Now()) {
+			t.Errorf("expected ResetAt to be in the future, got %v", rleGeneric.ResetAt)
+		}
+	}
+
 	// Header fallback when body has no JSON quota fields.
 	err2 := classifyError(429, "opaque body", http.Header{"Retry-After": {"300"}})
 	if !errors.Is(err2, ErrRateLimited) {
@@ -559,6 +585,16 @@ func TestClassifyRateLimit(t *testing.T) {
 	}
 	if rle2.RetryAfter != 300*time.Second {
 		t.Errorf("RetryAfter = %s, want 300s (header fallback)", rle2.RetryAfter)
+	}
+}
+
+func TestNextPacificMidnight(t *testing.T) {
+	next := NextPacificMidnight()
+	if !next.After(time.Now()) {
+		t.Fatalf("NextPacificMidnight %v is not after now %v", next, time.Now())
+	}
+	if next.Location() != time.UTC {
+		t.Errorf("expected UTC location, got %v", next.Location())
 	}
 }
 

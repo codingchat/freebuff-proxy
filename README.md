@@ -97,12 +97,26 @@ Full option list (all keys can be set via environment variables or a `.env` file
 | `DEBUG_DUMP` | `false` | Persist redacted traffic dumps to `./dump/` |
 | `LOG_FILE` | `""` | Persist JSON logs to a file (e.g. `./logs/proxy.log`) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `MAX_MESSAGES_PER_DAY` | `0` | Daily request ceiling per token (`0` = unlimited; `SAFE_MODE` sets 150) |
+| `MAX_MESSAGES_PER_DAY` | `0` | Daily request ceiling per token (`0` = unlimited, recommended). Safe to set `0` because the proxy respects upstream `429` reset timestamps and locks tokens locally |
 | `IDLE_ROTATION_TIMEOUT` | `0` | Finish runs after this idle period (`0` = disabled; `SAFE_MODE` sets 30m) |
-| `SAFE_MODE` | `false` | Enables conservative limits (message cap, idle rotation, jitter) |
+| `SAFE_MODE` | `false` | Enables anti-ban protections (JA3 TLS stealth, header sanitization, request jitter) |
 | `REQUEST_JITTER` | `0s` | Random request delay jitter (`SAFE_MODE` sets 2s) |
 | `MODEL_ALIASES` | `""` | Map aliases to real model IDs, e.g. `gpt-4o:deepseek/deepseek-v4-flash,glm:z-ai/glm-5.2` |
 | `CLI_VERSION` | `0.10.7` | Upstream CLI version string for the envelope |
+
+### Safe Mode & Zero-Spam Quota Handling
+
+`SAFE_MODE=true` is strongly recommended for all setups. It enables essential anti-ban protections:
+- **JA3 TLS Stealth**: Mimics real browser handshakes (Chrome 120, Safari 17) via `uTLS` to prevent WAF / CDN bot detection.
+- **Proxy Header Sanitization**: Strips 26 proxy-identifying headers (`X-Forwarded-For`, `Via`, `CF-Connecting-IP`, etc.).
+- **Request Jitter**: Injects randomized 0–2s delay jitter to break robotic, machine-like cadence.
+
+**Why `MAX_MESSAGES_PER_DAY=0` (Unlimited) is Recommended:**
+- You can safely leave `MAX_MESSAGES_PER_DAY=0` to utilize 100% of your FreeBuff/Codebuff free-tier allowance.
+- **Zero-Spam Guarantee**: When an account reaches its daily quota or upstream capacity limit, Codebuff returns a `429` with a Pacific midnight reset timestamp (`resetAt: 07:00:00Z`).
+- The proxy parses this timestamp and **locks the token locally in memory**.
+- Any subsequent requests for that token return `429` locally in `<1ms` without sending any network traffic to Codebuff.
+- Upstream routers (e.g. 9router) receive standard `429` + `Retry-After` headers and automatically rotate to your next available account without failing user prompts.
 
 ### Guides
 
