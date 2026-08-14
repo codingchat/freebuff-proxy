@@ -2,9 +2,9 @@
 # gen-freebuff-token.sh - Generate a FreeBuff auth token via headless login flow
 #
 # Usage:
-#   ./gen-freebuff-token.sh              # generate token, print it, save credentials
-#   ./gen-freebuff-token.sh --print      # print token only
+#   ./gen-freebuff-token.sh              # generate token and print to screen (default: NOT saved)
 #   ./gen-freebuff-token.sh --clipboard  # copy to clipboard (xclip/pbcopy)
+#   ./gen-freebuff-token.sh --save       # save to ~/.config/manicode/credentials.json
 #   ./gen-freebuff-token.sh --append     # append to .env AUTH_TOKENS
 #   ./gen-freebuff-token.sh --env /path/.env  # target .env for --append
 #
@@ -18,12 +18,13 @@ set -euo pipefail
 BASE_URL="${FREEBUFF_BASE_URL:-https://www.codebuff.com}"
 TIMEOUT=300
 POLL_INTERVAL=5
-MODE="save"  # save | print | clipboard | append
+MODE="print"  # print (default) | save | clipboard | append
 ENV_FILE=""
 
 for arg in "$@"; do
   case "$arg" in
     --print)     MODE="print" ;;
+    --save)      MODE="save" ;;
     --clipboard) MODE="clipboard" ;;
     --append)    MODE="append" ;;
     --env)       shift; ENV_FILE="$1" ;;
@@ -136,11 +137,10 @@ ok "Login successful!"
 c "  Account: $USER_NAME ($USER_EMAIL)"
 echo "  Token:   $AUTH_TOKEN"
 
-# --- 5. save credentials locally ---------------------------------------------
-CONFIG_DIR="$HOME/.config/manicode"
-CRED_PATH="$CONFIG_DIR/credentials.json"
-
-if [ "$MODE" = "save" ] || [ "$MODE" = "append" ]; then
+# --- 5. save credentials locally (opt-in with --save) ------------------------
+if [ "$MODE" = "save" ]; then
+  CONFIG_DIR="$HOME/.config/manicode"
+  CRED_PATH="$CONFIG_DIR/credentials.json"
   mkdir -p "$CONFIG_DIR"
   cat > "$CRED_PATH" <<CRED
 {

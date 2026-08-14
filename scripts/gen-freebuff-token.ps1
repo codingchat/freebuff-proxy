@@ -1,12 +1,11 @@
 # gen-freebuff-token.ps1 - Generate a FreeBuff auth token via headless login flow
 #
 # Usage:
-#   .\gen-freebuff-token.ps1                  # generate token, print it, and save to credentials
-#   .\gen-freebuff-token.ps1 -Print           # print the token only (no file save)
-#   .\gen-freebuff-token.ps1 -ToClipboard     # copy to clipboard
-#   .\gen-freebuff-token.ps1 -Append           # append to .env AUTH_TOKENS (comma-separated)
+#   .\gen-freebuff-token.ps1                  # generate token and print to screen (default: NOT saved)
+#   .\gen-freebuff-token.ps1 -ToClipboard     # generate token and copy to clipboard
+#   .\gen-freebuff-token.ps1 -Save            # save to ~/.config/manicode/credentials.json
+#   .\gen-freebuff-token.ps1 -Append          # append to .env AUTH_TOKENS (comma-separated)
 #   .\gen-freebuff-token.ps1 -EnvFile D:\.env # target .env file for -Append
-#
 # Flow:
 #   1. POST /api/auth/cli/code  → gets loginUrl + fingerprintHash
 #   2. Opens browser for GitHub OAuth login
@@ -21,7 +20,7 @@
 # terms of service. Accounts may be suspended or banned. You accept this risk.
 
 param(
-    [switch]$Print,
+    [switch]$Save,
     [switch]$ToClipboard,
     [switch]$Append,
     [string]$EnvFile = "",
@@ -139,8 +138,8 @@ Write-Host "Login successful!" -ForegroundColor Green
 Write-Host "  Account: $userName ($userEmail)" -ForegroundColor Cyan
 Write-Host "  Token:   $authToken" -ForegroundColor White
 
-# --- 5. save credentials locally ---------------------------------------------
-if (-not $Print -and -not $ToClipboard) {
+# --- 5. save credentials locally (opt-in only with -Save) ---------------------
+if ($Save) {
     $configDir = Get-ConfigDir
     if (-not (Test-Path $configDir)) {
         New-Item -ItemType Directory -Path $configDir -Force | Out-Null

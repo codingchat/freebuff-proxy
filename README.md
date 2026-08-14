@@ -198,16 +198,18 @@ Use `gen-freebuff-token` to quickly generate tokens without installing the FreeB
 **Windows (PowerShell):**
 
 ```powershell
-.\scripts\gen-freebuff-token.ps1                # generate + save to credentials.json
+.\scripts\gen-freebuff-token.ps1                # generate and print token (not saved)
 .\scripts\gen-freebuff-token.ps1 -ToClipboard   # copy token to clipboard
+.\scripts\gen-freebuff-token.ps1 -Save          # save to credentials.json (opt-in)
 .\scripts\gen-freebuff-token.ps1 -Append         # append to .env AUTH_TOKENS
 ```
 
 **Linux / macOS (bash):**
 
 ```bash
-./scripts/gen-freebuff-token.sh              # generate + save
+./scripts/gen-freebuff-token.sh              # generate and print token (not saved)
 ./scripts/gen-freebuff-token.sh --clipboard  # copy to clipboard
+./scripts/gen-freebuff-token.sh --save       # save to credentials.json (opt-in)
 ./scripts/gen-freebuff-token.sh --append     # append to .env AUTH_TOKENS
 ```
 
