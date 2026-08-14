@@ -190,6 +190,29 @@ The FreeBuff token (`authToken`) is issued when you log in through the official 
 3. **Scripts:** `scripts/get-freebuff-token.sh` (bash) or `scripts/get-freebuff-token.ps1` (PowerShell) automate installing the CLI, completing the login, and writing `AUTH_TOKENS` into `.env` for you.
 
 Use the `authToken` value without any `Bearer ` prefix; the proxy adds it upstream automatically. For higher throughput, log in with several accounts and comma-separate the tokens: `AUTH_TOKENS=tok1,tok2`.
+
+### Generating tokens for multiple accounts
+
+Use `gen-freebuff-token` to quickly generate tokens without installing the FreeBuff CLI. Each run opens a browser for GitHub OAuth and returns a ready-to-use `authToken`. Generate as many as you need for token pooling.
+
+**Windows (PowerShell):**
+
+```powershell
+.\scripts\gen-freebuff-token.ps1                # generate + save to credentials.json
+.\scripts\gen-freebuff-token.ps1 -ToClipboard   # copy token to clipboard
+.\scripts\gen-freebuff-token.ps1 -Append         # append to .env AUTH_TOKENS
+```
+
+**Linux / macOS (bash):**
+
+```bash
+./scripts/gen-freebuff-token.sh              # generate + save
+./scripts/gen-freebuff-token.sh --clipboard  # copy to clipboard
+./scripts/gen-freebuff-token.sh --append     # append to .env AUTH_TOKENS
+```
+
+**Multi-account workflow:** Sign out of GitHub in your browser between runs, then log in with a different account each time. Each token gets its own unique fingerprint so they don't collide. Add all tokens to 9router or comma-separate them in `AUTH_TOKENS=tok1,tok2,tok3`.
+
 ## Quick start
 
 1. Copy the example config:
