@@ -91,7 +91,7 @@ func defaultRawConfig() rawConfig {
 		RegistryRefresh:     "6h",
 		CostMode:            "free", // free-tier mode; omission routes requests as PAID and fresh free accounts get 402 "Out of credits" (upstream check: cost_mode !== 'free' → billing)
 		MaxMessagesPerDay:   nil,
-		IdleRotationTimeout: "0",    // 0 = disabled
+		IdleRotationTimeout: "0", // 0 = disabled
 		SafeMode:            false,
 		RequestJitter:       "0s",
 		CLIVersion:          "0.10.7",
