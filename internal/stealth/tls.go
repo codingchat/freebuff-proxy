@@ -78,12 +78,15 @@ func Dialer(profile *Profile, baseDial func(ctx context.Context, network, addr s
 			return nil, fmt.Errorf("stealth: build handshake state failed: %w", err)
 		}
 		setALPN(uConn, []string{"http/1.1"})
+		if err := uConn.BuildHandshakeState(); err != nil {
+			_ = rawConn.Close()
+			return nil, fmt.Errorf("stealth: rebuild handshake state failed: %w", err)
+		}
 
 		if err := uConn.HandshakeContext(ctx); err != nil {
 			_ = rawConn.Close()
 			return nil, fmt.Errorf("stealth: tls handshake failed: %w", err)
 		}
-
 		return uConn, nil
 	}
 }

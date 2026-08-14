@@ -375,10 +375,10 @@ func (s *Server) chatAttempt(
 			return nil, nil, err
 		default:
 			release()
-			return nil, nil, err
-		}
-		if attempts > 1 {
-			return nil, nil, err
+			if attempts > 1 {
+				return nil, nil, err
+			}
+			s.logger.Debug("transient chat error, retrying once", "err", err)
 		}
 		lease, err = acquire(ctx, model)
 		if err != nil {
