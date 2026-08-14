@@ -817,8 +817,14 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 		}
 		if !parsed.ResetAt.IsZero() {
 			rle.ResetAt = parsed.ResetAt
+			if rle.RetryAfter <= 0 && parsed.ResetAt.After(time.Now()) {
+				rle.RetryAfter = time.Until(parsed.ResetAt)
+			}
 		}
 		rle.Limit, rle.RecentCount = parsed.Limit, parsed.RecentCount
+	}
+	if rle.RetryAfter <= 0 {
+		rle.RetryAfter = 60 * time.Second
 	}
 	return rle
 }

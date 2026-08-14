@@ -282,11 +282,18 @@ func (m *RunManager) CooldownUntil() time.Time {
 // so subsequent Acquires surface 429 + Retry-After instead of a generic
 // 502. Errors with RetryAfter <= 0 are ignored.
 func (m *RunManager) CooldownRateLimit(rle *upstream.RateLimitError) {
-	if rle == nil || rle.RetryAfter <= 0 {
+	if rle == nil {
 		return
 	}
+	d := rle.RetryAfter
+	if d <= 0 && !rle.ResetAt.IsZero() && rle.ResetAt.After(time.Now()) {
+		d = time.Until(rle.ResetAt)
+	}
+	if d <= 0 {
+		d = 60 * time.Second
+	}
 	m.mu.Lock()
-	m.cooldownUntil = time.Now().Add(rle.RetryAfter)
+	m.cooldownUntil = time.Now().Add(d)
 	m.rateLimit = rle
 	m.ban = nil
 	m.mu.Unlock()
