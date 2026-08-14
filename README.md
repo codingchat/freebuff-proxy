@@ -71,21 +71,23 @@ graph TD
 
 ## What it does
 
-- Serves `/v1/chat/completions`, `/v1/models`, and `/healthz` on `127.0.0.1:3457` by default.
+- Serves `/v1/chat/completions`, `/v1/models`, `/healthz`, and Prometheus `/metrics` on `127.0.0.1:3457` by default.
 - Auto-discovers CLI token: automatically reads `authToken` from `~/.config/manicode/credentials.json` on startup if `AUTH_TOKENS` is empty.
 - 1-click client setup: `./freebuff-proxy -setup` auto-configures Continue (VS Code), opencode, and aider with 1 command.
 - Self-diagnostic doctor: `./freebuff-proxy -doctor` tests config, network, tokens, and upstream reachability.
+- Dual upstream auth headers: attaches both `Authorization: Bearer <token>` and `x-codebuff-api-key: <token>` to match Codebuff's official client auth expectations.
 - Model-bound session management: tracks active model bindings, auto-recovers from `model_locked` (HTTP 409) on model switch via `DELETE` → re-`POST`, and falls back smoothly on `model_unavailable`.
-- 30-minute grace period draining: supports FreeBuff's `FREEBUFF_SESSION_GRACE_MS` window for active agent turns.
+- 1-hour session lifecycle with grace draining: automatically reuses active session instances up to 55 minutes, with server-side grace period support where `instanceId` stays valid for tool completions.
 - Active session heartbeat: automatically sends `x-freebuff-heartbeat: 1` every 45-60s to maintain upstream session slots.
 - Foreign toolset normalization: auto-injects `end_turn` tool definition to pass upstream agent validation when using Cursor, OpenCode, or Cline.
 - Pools tokens: `AUTH_TOKENS` accepts comma-separated values, round-robins across them, and cools a token down for 30 minutes after a 401.
-- Keeps free sessions alive: single-flight session create/poll/end, runs prewarmed at boot, rotated every `ROTATION_INTERVAL` (default 6h).
+- Single-flight session creates/polls: concurrent subagents share in-flight session refreshes without race conditions.
 - Refreshes the model catalog every 6h from the Codebuff sources (15 models at boot, served by `/v1/models`).
-- Sends outbound traffic through `HTTP_PROXY`, `SOCKS5_PROXY`, or per-token `SOCKS5_PROXIES` with browser TLS fingerprinting (`TLS_FINGERPRINT=auto|chrome126|firefox128|safari18|edge126`).
+- Sends outbound traffic through `HTTP_PROXY`, `SOCKS5_PROXY`, or per-token `SOCKS5_PROXIES` with browser TLS fingerprinting (`TLS_FINGERPRINT=auto|chrome126|firefox128|safari18|edge126`) and automatic uTLS state re-synchronization.
+- Automatic transient retry: recovers seamlessly from transient TLS or dial handshake blips by retrying once on a fresh connection.
+- Persistent logging & debugging: persists structured JSON logs to `./logs/proxy.log` and raw redacted traffic payloads to `./dump/`.
 - Account-safety knobs: `SAFE_MODE=true` preset (auto TLS stealth, 150 msg/day cap, 30m idle rotation, 2s jitter).
 - Zero or more FreeBuff auth tokens. With none, the proxy runs in **bridge mode** — each client sends their own token (see [Bridge mode](#bridge-mode)).
-## Install
 
 Four ways to install. If you are new, pick Option 1.
 
