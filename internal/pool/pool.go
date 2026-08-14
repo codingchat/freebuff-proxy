@@ -916,17 +916,27 @@ func (p *Pool) maintainTick(ctx context.Context) {
 // maintain work — rotate aged runs and advance queued sessions, bounded by
 // the same RequestTimeout ctx as the fixed-token loop.
 func (p *Pool) bridgeMaintain(ctx context.Context) {
+	var toEvict []*bridgeEntry
+	var toMaintain []*bridgeEntry
+
 	p.bridgeMu.Lock()
-	defer p.bridgeMu.Unlock()
 	now := time.Now()
 	for token, entry := range p.bridge {
 		if now.Sub(entry.lastUsed) > bridgeIdleEvict {
-			entry.runs.FinishAllRuns(context.Background())
+			toEvict = append(toEvict, entry)
 			delete(p.bridge, token)
 			p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, token)
 			p.logger.Debug("pool: bridge entry evicted (idle)", "bridge_entries", len(p.bridge))
-			continue
+		} else {
+			toMaintain = append(toMaintain, entry)
 		}
+	}
+	p.bridgeMu.Unlock()
+
+	for _, entry := range toEvict {
+		entry.runs.FinishAllRuns(context.Background())
+	}
+	for _, entry := range toMaintain {
 		mCtx, cancel := context.WithTimeout(ctx, p.cfg.RequestTimeout)
 		entry.runs.Maintain(mCtx)
 		snap := entry.session.Snapshot()

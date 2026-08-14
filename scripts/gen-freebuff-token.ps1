@@ -167,8 +167,7 @@ if ($ToClipboard) {
 
 if ($Append) {
     $targetEnv = if ($EnvFile) { $EnvFile } else {
-        $repoEnv = Join-Path (Split-Path $PSScriptRoot) ".env"
-        if (Test-Path $repoEnv) { $repoEnv } else { $repoEnv }
+        Join-Path (Split-Path $PSScriptRoot) ".env"
     }
     if (Test-Path $targetEnv) {
         $content = Get-Content $targetEnv -Raw

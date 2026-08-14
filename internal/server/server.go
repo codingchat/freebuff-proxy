@@ -231,8 +231,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if v, ok := raw["stream"].(bool); ok {
 		stream = v
 	}
-
-	normalized, err := convert.NormalizeRequest(body)
+	normalized, err := convert.NormalizeRequest(body, model)
 	if err != nil {
 		s.writeJSONError(w, http.StatusBadRequest,
 			"request body must be a valid JSON object: "+err.Error(), "invalid_request_error", "invalid_json", 0)
@@ -292,6 +291,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = up.Close() }()
+	defer s.pool.LeaseRelease(lease)
 
 	s.logger.Info("chat routing",
 		"token", tokenLabel(lease),
@@ -380,6 +380,7 @@ func (s *Server) chatAttempt(
 	for {
 		up, err = chat(ctx, lease, opts, normalized)
 		if err == nil {
+			released = true // Disarm deferred release: ownership transferred to caller
 			return up, lease, nil
 		}
 		attempts++

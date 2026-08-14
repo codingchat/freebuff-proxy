@@ -250,22 +250,22 @@ func TestWaitingRoom503ThenRetry(t *testing.T) {
 	mock.SessionSequence = []string{"queued", "active"}
 	mock.QueuePosition = 3
 	mock.QueueDepth = 7
-	mock.EstimatedWaitMs = 2000
+	mock.EstimatedWaitMs = 50
 	ts, _ := newTestServer(t, nil, mock)
 
 	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("first request status = %d, want 503: %s", resp.StatusCode, data)
 	}
-	if ra := resp.Header.Get("Retry-After"); ra != "2" {
-		t.Errorf("Retry-After = %q, want 2 (ceil of ~2s)", ra)
+	if ra := resp.Header.Get("Retry-After"); ra != "1" {
+		t.Errorf("Retry-After = %q, want 1 (ceil of ~50ms)", ra)
 	}
 	if !strings.Contains(string(data), "waiting_room_queued") {
 		t.Errorf("body missing waiting_room_queued: %s", data)
 	}
 
 	// Wait out the queue window, then the session must advance to active.
-	time.Sleep(2200 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	resp2, data2 := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
 	if resp2.StatusCode != http.StatusOK {
@@ -828,5 +828,55 @@ func TestBridgeModeChat401Cooldown(t *testing.T) {
 	}
 	if got := len(mock.RecordedChatHeaders); got != 1 {
 		t.Errorf("upstream chat calls = %d, want 1 (cooldown skipped upstream)", got)
+	}
+}
+
+func TestChatModelAliasesAndReasoningEffort(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+
+	ts, p := newTestServer(t, nil, mock)
+	_ = ts
+
+	reg := registry.New(&config.Config{
+		ModelAliases: map[string]string{
+			"gpt-4o": modelA,
+		},
+	}, nil)
+	reg.LoadFallback()
+
+	srv := server.New(&config.Config{
+		AuthTokens: []string{"tok-0"},
+		ModelAliases: map[string]string{
+			"gpt-4o": modelA,
+		},
+	}, p, reg, nil)
+	tsAlias := httptest.NewServer(srv.Handler())
+	t.Cleanup(tsAlias.Close)
+
+	bodyBytes, _ := json.Marshal(map[string]any{
+		"model":     "gpt-4o",
+		"messages":  []any{map[string]any{"role": "user", "content": "hi"}},
+		"reasoning": map[string]any{"effort": "max"},
+		"stream":    true,
+	})
+
+	resp, data := doJSON(t, http.MethodPost, tsAlias.URL+"/v1/chat/completions", bodyBytes, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, data)
+	}
+
+	if len(mock.RecordedChatBodies) == 0 {
+		t.Fatal("no chat requests recorded upstream")
+	}
+	var upstreamPayload map[string]any
+	if err := json.Unmarshal([]byte(mock.RecordedChatBodies[len(mock.RecordedChatBodies)-1]), &upstreamPayload); err != nil {
+		t.Fatalf("unmarshal upstream body: %v", err)
+	}
+	if gotModel := upstreamPayload["model"]; gotModel != modelA {
+		t.Errorf("upstream model = %v, want %v (resolved alias)", gotModel, modelA)
+	}
+	if gotEffort := upstreamPayload["reasoning_effort"]; gotEffort != "max" {
+		t.Errorf("upstream reasoning_effort = %v, want \"max\"", gotEffort)
 	}
 }

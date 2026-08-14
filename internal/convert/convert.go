@@ -102,7 +102,7 @@ func ExtractReasoningEffort(payload map[string]any) string {
 //
 // The returned bytes are compact JSON. Errors only occur on invalid JSON or
 // a non-object body.
-func NormalizeRequest(body []byte) ([]byte, error) {
+func NormalizeRequest(body []byte, modelOverride ...string) ([]byte, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
@@ -119,6 +119,9 @@ func NormalizeRequest(body []byte) ([]byte, error) {
 		if upstreamKeys[key] && value != nil {
 			out[key] = value
 		}
+	}
+	if len(modelOverride) > 0 && modelOverride[0] != "" {
+		out["model"] = modelOverride[0]
 	}
 	if _, hasEffort := out["reasoning_effort"]; !hasEffort {
 		if eff := ExtractReasoningEffort(payload); eff != "" && eff != "none" && eff != "disabled" {

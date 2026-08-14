@@ -21,16 +21,16 @@ POLL_INTERVAL=5
 MODE="print"  # print (default) | save | clipboard | append
 ENV_FILE=""
 
-for arg in "$@"; do
-  case "$arg" in
-    --print)     MODE="print" ;;
-    --save)      MODE="save" ;;
-    --clipboard) MODE="clipboard" ;;
-    --append)    MODE="append" ;;
-    --env)       shift; ENV_FILE="$1" ;;
-    --env=*)     ENV_FILE="${arg#--env=}" ;;
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --print)     MODE="print"; shift ;;
+    --save)      MODE="save"; shift ;;
+    --clipboard) MODE="clipboard"; shift ;;
+    --append)    MODE="append"; shift ;;
+    --env)       ENV_FILE="$2"; shift 2 ;;
+    --env=*)     ENV_FILE="${1#--env=}"; shift ;;
     -h|--help)   head -15 "$0"; exit 0 ;;
-    *)           echo "Unknown arg: $arg" >&2; exit 1 ;;
+    *)           echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
 
@@ -173,14 +173,16 @@ case "$MODE" in
     ok "  Copied to clipboard!"
     ;;
   append)
-    TARGET_ENV="${ENV_FILE:-$(dirname "$(dirname "$(readlink -f "$0")")")/.env}"
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    TARGET_ENV="${ENV_FILE:-$(dirname "$SCRIPT_DIR")/.env}"
     if [ -f "$TARGET_ENV" ]; then
       if grep -q '^AUTH_TOKENS=' "$TARGET_ENV"; then
         EXISTING=$(grep '^AUTH_TOKENS=' "$TARGET_ENV" | head -1 | cut -d= -f2-)
+        TMP_ENV="$(mktemp)"
         if [ -n "$EXISTING" ]; then
-          sed -i "s|^AUTH_TOKENS=.*|AUTH_TOKENS=${EXISTING},${AUTH_TOKEN}|" "$TARGET_ENV"
+          sed "s|^AUTH_TOKENS=.*|AUTH_TOKENS=${EXISTING},${AUTH_TOKEN}|" "$TARGET_ENV" > "$TMP_ENV" && mv "$TMP_ENV" "$TARGET_ENV"
         else
-          sed -i "s|^AUTH_TOKENS=.*|AUTH_TOKENS=${AUTH_TOKEN}|" "$TARGET_ENV"
+          sed "s|^AUTH_TOKENS=.*|AUTH_TOKENS=${AUTH_TOKEN}|" "$TARGET_ENV" > "$TMP_ENV" && mv "$TMP_ENV" "$TARGET_ENV"
         fi
       else
         echo "AUTH_TOKENS=$AUTH_TOKEN" >> "$TARGET_ENV"

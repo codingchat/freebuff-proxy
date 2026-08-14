@@ -397,3 +397,68 @@ func TestSnapshotModelAndExpiresAt(t *testing.T) {
 		t.Error("ExpiresAt should not be zero")
 	}
 }
+
+func TestHeartbeat(t *testing.T) {
+	t.Run("inactive session returns nil", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		mgr := newTestManager(t, mock)
+
+		if err := mgr.Heartbeat(context.Background()); err != nil {
+			t.Fatalf("Heartbeat inactive: %v", err)
+		}
+	})
+
+	t.Run("active session sends heartbeat header", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		mgr := newTestManager(t, mock)
+
+		_, err := mgr.EnsureSession(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		heartbeatSeen := false
+		mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("x-freebuff-heartbeat") == "1" {
+				heartbeatSeen = true
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-abc-123"}`)
+		}
+
+		if err := mgr.Heartbeat(context.Background()); err != nil {
+			t.Fatalf("Heartbeat: %v", err)
+		}
+		if !heartbeatSeen {
+			t.Error("x-freebuff-heartbeat header not sent upstream")
+		}
+		if snap := mgr.Snapshot(); snap.Status != "active" {
+			t.Errorf("status = %q, want active", snap.Status)
+		}
+	})
+
+	t.Run("ended session status invalidates state", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		mgr := newTestManager(t, mock)
+
+		_, err := mgr.EnsureSession(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"status":"ended","instanceId":"inst-abc-123"}`)
+		}
+
+		if err := mgr.Heartbeat(context.Background()); err != nil {
+			t.Fatalf("Heartbeat: %v", err)
+		}
+		if snap := mgr.Snapshot(); snap.Status != "" {
+			t.Errorf("status = %q, want empty after invalidation", snap.Status)
+		}
+	})
+}

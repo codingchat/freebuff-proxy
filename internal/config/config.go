@@ -514,7 +514,12 @@ func parseMap(value string) map[string]string {
 	}
 	pairs := splitList(value)
 	for _, p := range pairs {
-		parts := strings.SplitN(p, "=", 2)
+		var parts []string
+		if strings.Contains(p, "=") {
+			parts = strings.SplitN(p, "=", 2)
+		} else if strings.Contains(p, ":") {
+			parts = strings.SplitN(p, ":", 2)
+		}
 		if len(parts) == 2 {
 			k := strings.TrimSpace(parts[0])
 			v := strings.TrimSpace(parts[1])

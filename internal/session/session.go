@@ -396,9 +396,11 @@ func (m *Manager) Heartbeat(ctx context.Context) error {
 	}
 	if st.Status == "ended" || st.Status == "superseded" || st.Status == "none" {
 		m.mu.Lock()
-		m.state = nil
+		if m.state != nil && m.state.instanceID == instanceID {
+			m.state = nil
+			slog.Debug("session ended during heartbeat", "reason", st.Status, "instance_id", instanceID)
+		}
 		m.mu.Unlock()
-		slog.Debug("session ended during heartbeat", "reason", st.Status, "instance_id", instanceID)
 	}
 	return nil
 }

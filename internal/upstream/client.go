@@ -396,12 +396,12 @@ func (c *Client) EndSession(ctx context.Context, instanceID string) error {
 	}
 	defer releaseCancel(cancel)
 	defer func() { _ = resp.Body.Close() }()
-	drainBody(resp.Body)
+	bodyStr := drainBody(resp.Body)
 	if resp.StatusCode == 404 {
 		return nil // nothing to end
 	}
 	if resp.StatusCode >= 400 {
-		return classifyError(resp.StatusCode, drainCaptured(resp), resp.Header)
+		return classifyError(resp.StatusCode, bodyStr, resp.Header)
 	}
 	return nil
 }

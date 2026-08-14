@@ -14,8 +14,8 @@ import (
 var envKeys = []string{
 	"LISTEN_ADDR", "UPSTREAM_BASE_URL", "AUTH_TOKENS", "ROTATION_INTERVAL",
 	"REQUEST_TIMEOUT", "SESSION_CALL_TIMEOUT", "API_KEYS", "HTTP_PROXY",
-	"SOCKS5_PROXY", "COST_MODE", "TLS_FINGERPRINT", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE", "LOG_LEVEL",
-	"MAX_MESSAGES_PER_DAY", "IDLE_ROTATION_TIMEOUT", "SAFE_MODE", "REQUEST_JITTER", "CLI_VERSION", "AUTO_DISCOVER_TOKEN",
+	"SOCKS5_PROXY", "SOCKS5_PROXIES", "COST_MODE", "TLS_FINGERPRINT", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE", "LOG_LEVEL",
+	"MAX_MESSAGES_PER_DAY", "IDLE_ROTATION_TIMEOUT", "SAFE_MODE", "REQUEST_JITTER", "CLI_VERSION", "MODEL_ALIASES", "AUTO_DISCOVER_TOKEN",
 }
 
 func clearEnv(t *testing.T) {
@@ -648,4 +648,67 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestParseMap(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want map[string]string
+	}{
+		{
+			name: "empty",
+			raw:  "",
+			want: map[string]string{},
+		},
+		{
+			name: "single pair",
+			raw:  "gpt-4o:deepseek/deepseek-v4-flash",
+			want: map[string]string{"gpt-4o": "deepseek/deepseek-v4-flash"},
+		},
+		{
+			name: "multiple pairs with spaces and newlines",
+			raw:  " gpt-4o : deepseek/deepseek-v4-flash , \n glm: z-ai/glm-5.2 \n",
+			want: map[string]string{
+				"gpt-4o": "deepseek/deepseek-v4-flash",
+				"glm":    "z-ai/glm-5.2",
+			},
+		},
+		{
+			name: "malformed pair skipped",
+			raw:  "valid:model,novalue,also:ok",
+			want: map[string]string{"valid": "model", "also": "ok"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseMap(tc.raw)
+			if len(got) != len(tc.want) {
+				t.Fatalf("parseMap(%q) len = %d, want %d", tc.raw, len(got), len(tc.want))
+			}
+			for k, wantVal := range tc.want {
+				if got[k] != wantVal {
+					t.Errorf("got[%q] = %q, want %q", k, got[k], wantVal)
+				}
+			}
+		})
+	}
+}
+
+func TestModelAliasesConfig(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AUTH_TOKENS", "tok-1")
+	t.Setenv("MODEL_ALIASES", "gpt-4o:deepseek/deepseek-v4-flash,glm:z-ai/glm-5.2")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.ModelAliases) != 2 {
+		t.Fatalf("ModelAliases len = %d, want 2", len(cfg.ModelAliases))
+	}
+	if cfg.ModelAliases["gpt-4o"] != "deepseek/deepseek-v4-flash" {
+		t.Errorf("ModelAliases[gpt-4o] = %q, want deepseek/deepseek-v4-flash", cfg.ModelAliases["gpt-4o"])
+	}
 }
