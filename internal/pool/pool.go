@@ -232,7 +232,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			continue
 		}
 
-		instanceID, err := tok.session.EnsureSession(ctx)
+		instanceID, err := tok.session.EnsureSessionForModel(ctx, model)
 		if err != nil {
 			// Release the run lease we just acquired — otherwise the
 			// inflight counter never returns to zero and the run can
@@ -339,7 +339,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		return nil, err
 	}
 
-	instanceID, err := entry.session.EnsureSession(ctx)
+	instanceID, err := entry.session.EnsureSessionForModel(ctx, model)
 	if err != nil {
 		// Release the run lease we just acquired — otherwise the inflight
 		// counter never returns to zero and the run can never be FINISHed
@@ -894,12 +894,16 @@ func (p *Pool) maintainTick(ctx context.Context) {
 	for i, tok := range p.toks {
 		mCtx, cancel := context.WithTimeout(ctx, p.cfg.RequestTimeout)
 		tok.runs.Maintain(mCtx)
-		// Advance queued sessions only (GET poll — zero quota cost). Session
-		// creation stays lazy on first request: a scheduled POST here would
-		// burn one of the ~6 daily admissions every hour of uptime.
-		if snap := tok.session.Snapshot(); snap.Status == "queued" {
+		// Advance queued sessions (GET poll) and send heartbeats for active sessions.
+		snap := tok.session.Snapshot()
+		switch snap.Status {
+		case "queued":
 			if _, err := tok.session.EnsureSession(mCtx); err != nil {
 				p.logger.Debug("pool: maintain session not ready", "token", i+1, "err", err)
+			}
+		case "active":
+			if err := tok.session.Heartbeat(mCtx); err != nil {
+				p.logger.Debug("pool: maintain session heartbeat failed", "token", i+1, "err", err)
 			}
 		}
 		cancel()
@@ -927,9 +931,15 @@ func (p *Pool) bridgeMaintain(ctx context.Context) {
 		}
 		mCtx, cancel := context.WithTimeout(ctx, p.cfg.RequestTimeout)
 		entry.runs.Maintain(mCtx)
-		if snap := entry.session.Snapshot(); snap.Status == "queued" {
+		snap := entry.session.Snapshot()
+		switch snap.Status {
+		case "queued":
 			if _, err := entry.session.EnsureSession(mCtx); err != nil {
 				p.logger.Debug("pool: bridge maintain session not ready", "err", err)
+			}
+		case "active":
+			if err := entry.session.Heartbeat(mCtx); err != nil {
+				p.logger.Debug("pool: bridge maintain session heartbeat failed", "err", err)
 			}
 		}
 		cancel()
