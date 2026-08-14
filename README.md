@@ -1,13 +1,13 @@
-# fp-bridge (Free-Agent AI Proxy Gateway)
+# fb0-proxy (Unified AI Gateway & Token Pool)
 
 [![CI](https://img.shields.io/github/actions/workflow/status/trefeon/freebuff-proxy/ci.yml)](https://github.com/trefeon/freebuff-proxy/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/trefeon/freebuff-proxy)](https://github.com/trefeon/freebuff-proxy/releases)
 [![License](https://img.shields.io/github/license/trefeon/freebuff-proxy)](https://github.com/trefeon/freebuff-proxy/blob/main/LICENSE)
 
-An OpenAI-compatible high-performance gateway and bridge for coding assistant backends. Connect any standard OpenAI client (Cursor, Continue, aider, OpenCode, 9router, OmniRouter, LiteLLM) to upstream free AI agent models with built-in token pooling, session lifecycle management, and TLS stealth.
+An OpenAI-compatible high-performance gateway and bridge for coding assistant backends. Connect any standard OpenAI client (Cursor, Continue, aider, OpenCode, 9router, OmniRouter, LiteLLM) to upstream AI agent models with built-in token pooling, session lifecycle management, and TLS stealth.
 
 > **Universal Coding Gateway Architecture.**
-> The proxy replicates the official CLI request envelope (including system identity headers, metadata context, model-bound sessions, tool schema normalization, and browser JA3 TLS stealth). Direct OpenAI chat completions and SSE streaming are supported end-to-end.
+> The proxy replicates official CLI request envelopes (including system identity headers, metadata context, model-bound sessions, tool schema normalization, and browser JA3 TLS stealth). Direct OpenAI chat completions and SSE streaming are supported end-to-end.
 
 ---
 
@@ -29,7 +29,7 @@ An OpenAI-compatible high-performance gateway and bridge for coding assistant ba
 
 ```mermaid
 graph TD
-    Client[AI Client / Router<br/>OpenCode, 9router, Continue, Cursor] -->|POST /v1/chat/completions| Proxy[fp-bridge<br/>localhost:3457]
+    Client[AI Client / Router<br/>OpenCode, 9router, Continue, Cursor] -->|POST /v1/chat/completions| Proxy[fb0-proxy<br/>localhost:3457]
     Proxy -->|1. Session & Run Lifecycle| Pool[Token Pool & Session Cache]
     Proxy -->|2. Inject Envelope + Stealth| Upstream[Upstream Backend API]
     Upstream -->|3. SSE Stream| Proxy
@@ -50,19 +50,19 @@ cp .env.example .env
 
 ### 2. Obtain an Auth Token
 
-Generate a token using the headless authentication helper (opens a browser login, prints the token without saving):
+Generate an authentication token using the headless helper (opens a browser OAuth login, prints the token to terminal without saving):
 
 **Windows (PowerShell):**
 ```powershell
-.\scripts\gen-freebuff-token.ps1 -ToClipboard
+.\scripts\gen-token.ps1 -ToClipboard
 ```
 
 **Linux / macOS (bash):**
 ```bash
-./scripts/gen-freebuff-token.sh --clipboard
+./scripts/gen-token.sh --clipboard
 ```
 
-Paste the token into `.env` under `AUTH_TOKENS=...` (or add it directly to your router as a bearer token).
+Paste the token into `.env` under `AUTH_TOKENS=...` (or add it directly to your router as a bearer key).
 
 ### 3. Run with Docker Compose
 
@@ -81,17 +81,17 @@ curl http://127.0.0.1:3457/healthz
 
 ### 1. OpenCode Direct Integration (`~/.config/opencode/opencode.jsonc`)
 
-Point OpenCode directly at `fp-bridge`:
+Point OpenCode directly at `fb0-proxy`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "fp-bridge/deepseek-flash",
-  "small_model": "fp-bridge/deepseek-flash",
+  "model": "fb0/deepseek-flash",
+  "small_model": "fb0/deepseek-flash",
   "provider": {
-    "fp-bridge": {
+    "fb0": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "FP Bridge",
+      "name": "FB0 Gateway",
       "options": {
         "baseURL": "http://127.0.0.1:3457/v1",
         "apiKey": "not-needed"
@@ -163,13 +163,13 @@ Point OpenCode directly at `fp-bridge`:
 
 ### 2. OpenCode via 9Router (`~/.config/opencode/opencode.jsonc`)
 
-When routing through **9router** for multi-account load balancing:
+When routing through **9router** (using mux prefix `fb0`) for multi-account load balancing:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "9router/freebuff/deepseek/deepseek-v4-flash",
-  "small_model": "9router/freebuff/deepseek/deepseek-v4-flash",
+  "model": "9router/fb0/deepseek/deepseek-v4-flash",
+  "small_model": "9router/fb0/deepseek/deepseek-v4-flash",
   "provider": {
     "9router": {
       "npm": "@ai-sdk/openai-compatible",
@@ -179,9 +179,9 @@ When routing through **9router** for multi-account load balancing:
         "apiKey": "your-9router-api-key"
       },
       "models": {
-        "freebuff/deepseek/deepseek-v4-flash": {
-          "id": "freebuff/deepseek/deepseek-v4-flash",
-          "name": "Freebuff | DeepSeek V4 Flash",
+        "fb0/deepseek/deepseek-v4-flash": {
+          "id": "fb0/deepseek/deepseek-v4-flash",
+          "name": "FB0 | DeepSeek V4 Flash",
           "reasoning": true,
           "tool_call": true,
           "cost": { "input": 0, "output": 0 },
@@ -193,9 +193,9 @@ When routing through **9router** for multi-account load balancing:
             "max": { "reasoningEffort": "max" }
           }
         },
-        "freebuff/mimo/mimo-v2.5": {
-          "id": "freebuff/mimo/mimo-v2.5",
-          "name": "Freebuff | MiMo 2.5",
+        "fb0/mimo/mimo-v2.5": {
+          "id": "fb0/mimo/mimo-v2.5",
+          "name": "FB0 | MiMo 2.5",
           "reasoning": true,
           "tool_call": true,
           "cost": { "input": 0, "output": 0 },
@@ -257,11 +257,11 @@ aider --openai-api-base http://127.0.0.1:3457/v1 \
 
 1. In the **9router Dashboard** (`http://127.0.0.1:20128`):
    - Go to **Providers** $\rightarrow$ **Add Provider** $\rightarrow$ select **OpenAI Compatible**.
-   - **Name**: `freebuff`
-   - **Prefix**: `freebuff`
+   - **Name**: `fb0`
+   - **Prefix**: `fb0`
    - **Base URL**: `http://127.0.0.1:3457/v1` (or `http://host.docker.internal:3457/v1` if in Docker)
    - **API Keys**: Add your upstream auth token(s) as keys (each key acts as a pooled upstream account).
-2. 9router handles round-robin and rate-limit fallover across all configured keys.
+2. 9router handles round-robin and rate-limit fallover across all configured keys under the `fb0/...` model prefix.
 
 ---
 
