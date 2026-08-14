@@ -4,8 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/trefeon/freebuff-proxy)](https://github.com/trefeon/freebuff-proxy/releases)
 [![License](https://img.shields.io/github/license/trefeon/freebuff-proxy)](https://github.com/trefeon/freebuff-proxy/blob/main/LICENSE)
 
-An OpenAI-compatible high-performance gateway and bridge for coding assistant backends. Connect any standard OpenAI client (Cursor, Continue, aider, OpenCode, 9router, OmniRouter, LiteLLM) to upstream AI agent models with built-in token pooling, session lifecycle management, and TLS stealth.
-
+An OpenAI-compatible high-performance gateway and bridge for coding assistant backends. Connect any OpenAI-compatible client or router (OpenCode, 9router, Continue, Cursor, aider, OmniRouter, LiteLLM) to upstream AI agent models with built-in token pooling, session lifecycle management, and TLS stealth.
 > **Coding Gateway Architecture.**
 > The proxy replicates official CLI request envelopes (including system identity headers, metadata context, model-bound sessions, tool schema normalization, and browser JA3 TLS stealth). Direct OpenAI chat completions and SSE streaming are supported end-to-end.
 ---
@@ -28,7 +27,7 @@ An OpenAI-compatible high-performance gateway and bridge for coding assistant ba
 
 ```mermaid
 graph TD
-    Client[AI Client / Router<br/>OpenCode, 9router, Continue, Cursor] -->|POST /v1/chat/completions| Proxy[fr33bu77-pr0xy<br/>localhost:3457]
+    Client[AI Client / Router<br/>OpenCode · 9router · Continue · Cursor · aider] -->|POST /v1/chat/completions| Proxy[fr33bu77-pr0xy<br/>localhost:3457]
     Proxy -->|1. Session & Run Lifecycle| Pool[Token Pool & Session Cache]
     Proxy -->|2. Inject Envelope + Stealth| Upstream[Upstream Backend API]
     Upstream -->|3. SSE Stream| Proxy
