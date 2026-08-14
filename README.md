@@ -81,17 +81,17 @@ curl http://127.0.0.1:3457/healthz
 
 ### 1. OpenCode Direct Integration (`~/.config/opencode/opencode.jsonc`)
 
-Point OpenCode directly at `fr33bu77`:
+Point OpenCode directly at `freebuff-proxy`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "fr33bu77/deepseek-flash",
-  "small_model": "fr33bu77/deepseek-flash",
+  "model": "freebuff/deepseek-flash",
+  "small_model": "freebuff/deepseek-flash",
   "provider": {
-    "fr33bu77": {
+    "freebuff": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "fr33bu77 Gateway",
+      "name": "Freebuff Gateway",
       "options": {
         "baseURL": "http://127.0.0.1:3457/v1",
         "apiKey": "not-needed"
@@ -163,13 +163,13 @@ Point OpenCode directly at `fr33bu77`:
 
 ### 2. OpenCode via 9Router (`~/.config/opencode/opencode.jsonc`)
 
-When routing through **9router** (using leet prefix `fr33bu77`) for multi-account load balancing:
+When routing through **9router** for multi-account load balancing:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "9router/fr33bu77/deepseek/deepseek-v4-flash",
-  "small_model": "9router/fr33bu77/deepseek/deepseek-v4-flash",
+  "model": "9router/freebuff/deepseek/deepseek-v4-flash",
+  "small_model": "9router/freebuff/deepseek/deepseek-v4-flash",
   "provider": {
     "9router": {
       "npm": "@ai-sdk/openai-compatible",
@@ -179,9 +179,9 @@ When routing through **9router** (using leet prefix `fr33bu77`) for multi-accoun
         "apiKey": "your-9router-api-key"
       },
       "models": {
-        "fr33bu77/deepseek/deepseek-v4-flash": {
-          "id": "fr33bu77/deepseek/deepseek-v4-flash",
-          "name": "fr33bu77 | DeepSeek V4 Flash",
+        "freebuff/deepseek/deepseek-v4-flash": {
+          "id": "freebuff/deepseek/deepseek-v4-flash",
+          "name": "Freebuff | DeepSeek V4 Flash",
           "reasoning": true,
           "tool_call": true,
           "cost": { "input": 0, "output": 0 },
@@ -193,9 +193,9 @@ When routing through **9router** (using leet prefix `fr33bu77`) for multi-accoun
             "max": { "reasoningEffort": "max" }
           }
         },
-        "fr33bu77/mimo/mimo-v2.5": {
-          "id": "fr33bu77/mimo/mimo-v2.5",
-          "name": "fr33bu77 | MiMo 2.5",
+        "freebuff/mimo/mimo-v2.5": {
+          "id": "freebuff/mimo/mimo-v2.5",
+          "name": "Freebuff | MiMo 2.5",
           "reasoning": true,
           "tool_call": true,
           "cost": { "input": 0, "output": 0 },
@@ -223,14 +223,14 @@ When routing through **9router** (using leet prefix `fr33bu77`) for multi-accoun
 {
   "models": [
     {
-      "title": "DeepSeek V4 Flash",
+      "title": "Freebuff DeepSeek V4 Flash",
       "provider": "openai",
       "model": "deepseek/deepseek-v4-flash",
       "apiBase": "http://localhost:3457/v1",
       "apiKey": "not-needed"
     },
     {
-      "title": "MiMo 2.5 (Multimodal)",
+      "title": "Freebuff MiMo 2.5 (Multimodal)",
       "provider": "openai",
       "model": "mimo/mimo-v2.5",
       "apiBase": "http://localhost:3457/v1",
@@ -257,11 +257,11 @@ aider --openai-api-base http://127.0.0.1:3457/v1 \
 
 1. In the **9router Dashboard** (`http://127.0.0.1:20128`):
    - Go to **Providers** $\rightarrow$ **Add Provider** $\rightarrow$ select **OpenAI Compatible**.
-   - **Name**: `fr33bu77`
-   - **Prefix**: `fr33bu77`
+   - **Name**: `freebuff`
+   - **Prefix**: `freebuff`
    - **Base URL**: `http://127.0.0.1:3457/v1` (or `http://host.docker.internal:3457/v1` if in Docker)
    - **API Keys**: Add your upstream auth token(s) as keys (each key acts as a pooled upstream account).
-2. 9router handles round-robin and rate-limit fallover across all configured keys under the `fr33bu77/...` model prefix.
+2. 9router handles round-robin and rate-limit fallover across all configured keys under the `freebuff/...` model prefix.
 
 ---
 
