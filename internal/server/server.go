@@ -632,6 +632,8 @@ func defaultHintForCode(code, message string) string {
 		return "Upstream free tier gate requires official CLI traffic envelope. See FAQ: https://github.com/trefeon/freebuff-proxy#faq"
 	case code == "account_banned" || strings.Contains(lowerMsg, "banned"):
 		return "Account suspended upstream. Token is dead; create a fresh account with an established GitHub login."
+	case code == "country_blocked" || strings.Contains(lowerMsg, "country blocked") || strings.Contains(lowerMsg, "country_blocked"):
+		return "Your egress IP is in an unsupported region. Route traffic through an allowed country (e.g. US/EU/ID/SG) or configure SOCKS5_PROXY in .env."
 	case code == "upstream_auth_rejected" || code == "invalid_api_key" || strings.Contains(lowerMsg, "invalid api key"):
 		return "Token invalid or expired. Get a fresh token by running freebuff or scripts/get-freebuff-token.sh"
 	case code == "rate_limited":
