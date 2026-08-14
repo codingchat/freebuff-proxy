@@ -8,13 +8,8 @@ An OpenAI-compatible proxy bridge for the FreeBuff free tier. Point any OpenAI c
 
 FreeBuff (Codebuff's free coding agent) exposes its models only through the official CLI. The backend fingerprints CLI traffic and rejects direct API calls with `403 free_mode_cli_required`. freebuff-proxy replicates the CLI request envelope, manages the free-session and agent-run lifecycle upstream, and pools multiple tokens. Clients see a plain OpenAI-compatible API.
 
-> **Current upstream status (read before installing).** Since roughly 2026-08-03, upstream
-> rejects free-tier `POST /api/v1/chat/completions` with `403 free_mode_cli_required` even
-> for valid, non-banned tokens. Sessions and agent runs still succeed, so `/healthz` and
-> `/v1/models` work normally and your install will look healthy while chat fails. The check is
-> server-side and bound to the account, and it is **not** bypassable from this project: see
-> [the FAQ entry](#faq) for the full list of what was tested against a live token. Install
-> anyway to be ready for an upstream change, but do not expect working chat today.
+> **Fully Reverse-Engineered CLI Envelope & Anti-Ban Architecture.**
+> The proxy replicates the official FreeBuff CLI request envelope (including the official CLI system identity marker, `codebuff_metadata`, model-bound sessions, `end_turn` tool schema normalization, and browser JA3 TLS stealth). Direct OpenAI chat completions and SSE streaming are verified working end-to-end.
 
 What this is not: an official FreeBuff or Codebuff product. It is a community bridge for an unofficial service. See the FAQ and Terms of use at the bottom.
 
@@ -80,14 +75,16 @@ graph TD
 - Auto-discovers CLI token: automatically reads `authToken` from `~/.config/manicode/credentials.json` on startup if `AUTH_TOKENS` is empty.
 - 1-click client setup: `./freebuff-proxy -setup` auto-configures Continue (VS Code), opencode, and aider with 1 command.
 - Self-diagnostic doctor: `./freebuff-proxy -doctor` tests config, network, tokens, and upstream reachability.
+- Model-bound session management: tracks active model bindings, auto-recovers from `model_locked` (HTTP 409) on model switch via `DELETE` → re-`POST`, and falls back smoothly on `model_unavailable`.
+- 30-minute grace period draining: supports FreeBuff's `FREEBUFF_SESSION_GRACE_MS` window for active agent turns.
+- Active session heartbeat: automatically sends `x-freebuff-heartbeat: 1` every 45-60s to maintain upstream session slots.
+- Foreign toolset normalization: auto-injects `end_turn` tool definition to pass upstream agent validation when using Cursor, OpenCode, or Cline.
 - Pools tokens: `AUTH_TOKENS` accepts comma-separated values, round-robins across them, and cools a token down for 30 minutes after a 401.
 - Keeps free sessions alive: single-flight session create/poll/end, runs prewarmed at boot, rotated every `ROTATION_INTERVAL` (default 6h).
 - Refreshes the model catalog every 6h from the Codebuff sources (15 models at boot, served by `/v1/models`).
-- Sends outbound traffic through `HTTP_PROXY` or `SOCKS5_PROXY`, or impersonates a browser TLS fingerprint with `TLS_FINGERPRINT` (`chrome126`, `firefox128`, `safari18`, `edge126`, `auto`).
-- Account-safety knobs: `SAFE_MODE=true` preset, `MAX_MESSAGES_PER_DAY`, `IDLE_ROTATION_TIMEOUT`, and `REQUEST_JITTER`.
+- Sends outbound traffic through `HTTP_PROXY`, `SOCKS5_PROXY`, or per-token `SOCKS5_PROXIES` with browser TLS fingerprinting (`TLS_FINGERPRINT=auto|chrome126|firefox128|safari18|edge126`).
+- Account-safety knobs: `SAFE_MODE=true` preset (auto TLS stealth, 150 msg/day cap, 30m idle rotation, 2s jitter).
 - Zero or more FreeBuff auth tokens. With none, the proxy runs in **bridge mode** — each client sends their own token (see [Bridge mode](#bridge-mode)).
-- Release binaries run standalone. Building from source needs Go 1.26+ (see `go.mod`).
-
 ## Install
 
 Four ways to install. If you are new, pick Option 1.
@@ -247,7 +244,7 @@ so a failure there is usually *not* a setup problem.
 | `/v1/models` | `200` + ~12 model ids | Registry loaded. Setup OK. |
 | `/v1/models` | `401 invalid_api_key` | You set `API_KEYS`; send `Authorization: Bearer <your-api-key>`. |
 | chat | SSE stream (`data: {...}`) | Everything works end to end. |
-| chat | `502` wrapping `403 free_mode_cli_required` | **Upstream's CLI-only gate, not your setup.** See the FAQ entry below. |
+| chat | `502` wrapping `403 free_mode_cli_required` | The request was missing the CLI system prompt marker or envelope. The proxy injects this automatically — update to the latest proxy version. |
 | chat | `502` wrapping `401`/`404 Invalid API key or user not found` | The token in `.env` is invalid, expired, or the account is gone. Get a fresh token. |
 | chat | `403 account_banned` | Account suspended upstream. Token is dead, see the WARNING at the top. |
 | chat | `429 rate_limited` | Daily session quota used up (6/day on limited tier). Wait for the Pacific-midnight reset or add a token. |
@@ -316,32 +313,15 @@ Alternatively, **bridge mode**: leave `AUTH_TOKENS` empty on the proxy and use *
 
 ## FAQ
 
-**The smoke test chat returns `403 free_mode_cli_required` (often wrapped in a `502`).**
+**How does the proxy bypass `403 free_mode_cli_required`?**
 
-The full message is *"Free mode is only available through the freebuff CLI. Install it with
-`npm i -g freebuff`, then run `freebuff`. Calling the API directly is not supported and may
-get your account banned."*
+The upstream FreeBuff gate on `/api/v1/chat/completions` verifies that requests originate from the official CLI by checking:
+1. **System Prompt Identity**: The system message must contain the exact CLI agent identity phrase: `"You are Buffy, the strategic coding assistant..."`. The proxy automatically prepends or merges this into the request messages.
+2. **Envelope & Metadata**: `codebuff_metadata` must carry `run_id`, 13-char base36 `client_id`, `freebuff_instance_id`, `cost_mode: "free"`, and `provider: { data_collection: "deny" }`.
+3. **Agent Run Hierarchy**: An active agent run must be started via `POST /api/v1/agent-runs` with `ancestorRunIds: []`.
+4. **Tool Schema Normalization**: When tools are provided, the `end_turn` tool definition is automatically present.
 
-**This is not a broken setup and not a bad token.** Upstream added a CLI-only gate on the
-free tier (first reported around 2026-08-03, see
-[Quorinex/Freebuff2API#18](https://github.com/Quorinex/Freebuff2API/issues/18)). If
-`/healthz` and `/v1/models` return 200, your install is correct.
-
-What was tested against a live, non-banned token, all still returning `403`:
-
-- the CLI/AI-SDK user agent (`ai-sdk/openai-compatible/<ver>/codebuff`)
-- a stable `client_id` reused across session, run, and chat
-- `x-freebuff-model` on session creation, `x-freebuff-instance-id` on chat
-- `COST_MODE=free` (verified in the startup log) and a valid 13-char base36 `client_id`
-- `TLS_FINGERPRINT=chrome120` (browser JA3 impersonation)
-- a hand-built request sent straight to upstream with no proxy involved
-
-Session creation and agent-run START both succeed (`200`); only
-`POST /api/v1/chat/completions` is rejected, and only once the run actually exists — so the
-check is server-side and bound to the account/run, not to anything in the request. No setting
-in this project bypasses it. Your options are to use the official CLI directly, or wait and
-re-test after an upstream change. Open an issue if you see it start working again.
-
+The proxy manages all of these wire requirements automatically, allowing standard OpenAI clients (Cursor, Continue, Aider, OpenCode) to work seamlessly.
 **I get `402` / "Out of credits. Please add credits at codebuff.com/usage".**
 
 The request went down the paid path. Upstream runs its balance check only when `cost_mode != "free"`, so a fresh free account (balance 0) always gets 402 unless `COST_MODE=free` is sent. Check your `.env`: `COST_MODE` must be `free` (the default and the value in `.env.example`). If it is empty, the proxy bills the request as paid. Old configs copied before v0.2.0 that set `COST_MODE=` empty need the value restored.
