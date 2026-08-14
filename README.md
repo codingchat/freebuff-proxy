@@ -241,7 +241,16 @@ When routing through **9router** for multi-account load balancing:
 
 ---
 
-### 4. Aider CLI
+### 4. Cursor Integration
+
+In Cursor (**Settings** $\rightarrow$ **Models** $\rightarrow$ **OpenAI API Key**):
+1. **OpenAI Base URL**: `http://localhost:3457/v1`
+2. **API Key**: `not-needed`
+3. Add model: `deepseek/deepseek-v4-flash` or `mimo/mimo-v2.5`
+
+---
+
+### 5. Aider CLI
 
 ```bash
 # Run with DeepSeek V4 Flash
@@ -252,7 +261,7 @@ aider --openai-api-base http://127.0.0.1:3457/v1 \
 
 ---
 
-### 5. 9router / OmniRouter Dashboard Setup (Bridge Mode)
+### 6. 9router / OmniRouter Dashboard Setup (Bridge Mode)
 
 1. In the **9router Dashboard** (`http://127.0.0.1:20128`):
    - Go to **Providers** $\rightarrow$ **Add Provider** $\rightarrow$ select **OpenAI Compatible**.
@@ -261,8 +270,6 @@ aider --openai-api-base http://127.0.0.1:3457/v1 \
    - **Base URL**: `http://127.0.0.1:3457/v1` (or `http://host.docker.internal:3457/v1` if in Docker)
    - **API Keys**: Add your upstream auth token(s) as keys (each key acts as a pooled upstream account).
 2. 9router handles round-robin and rate-limit fallover across all configured keys under the `freebuff/...` model prefix.
-
----
 
 ## Configuration Reference
 
