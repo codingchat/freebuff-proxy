@@ -235,22 +235,6 @@ func TestDashboardConfigOpenWhenUnset(t *testing.T) {
 	}
 }
 
-// htmx polls get 401 + HX-Redirect on an expired/missing session, not a 302
-// that would swap a login fragment into the dashboard.
-func TestDashboardHXAuthRedirect(t *testing.T) {
-	ts := dashboardServer(t, "secret", nil)
-	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	ts.Config.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("hx status = %d, want 401", rec.Code)
-	}
-	if got := rec.Header().Get("HX-Redirect"); got != "/admin/login" {
-		t.Fatalf("HX-Redirect = %q, want /admin/login", got)
-	}
-}
-
 func TestDashboardLoginRateLimit(t *testing.T) {
 	ts := dashboardServer(t, "secret", nil)
 	for range lockoutBound + 1 {

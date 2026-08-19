@@ -696,9 +696,8 @@ func TestConfigPageCRLFVerbatim(t *testing.T) {
 	}
 }
 
-// TestRenderConfigResultFragment pins the htmx fragment path: an HX-Request
-// render returns the bare result <p>, not a full page; a plain request
-// returns the layout shell.
+// TestRenderConfigResultFragment pins the JSON result response: a config
+// save result renders as a bare JSON object, not a full page.
 func TestRenderConfigResultFragment(t *testing.T) {
 	cfg := &config.Config{UpstreamBaseURL: "https://www.codebuff.com"}
 	reg := registry.New(cfg, nil)
@@ -732,8 +731,8 @@ func TestRenderConfigResultFragment(t *testing.T) {
 	}
 }
 
-// TestRenderSmokeResultFragment pins the smoke-result htmx fragment: the
-// model/token/ms summary and the bounded preview render without a layout.
+// TestRenderSmokeResultFragment pins the smoke-result JSON response: the
+// model/token/ms summary and the bounded preview render as JSON.
 func TestRenderSmokeResultFragment(t *testing.T) {
 	cfg := &config.Config{UpstreamBaseURL: "https://www.codebuff.com"}
 	reg := registry.New(cfg, nil)

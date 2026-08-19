@@ -198,8 +198,7 @@ func (a *adminAuth) loginFailState(ip string) (attempts int, locked bool) {
 // dashboardAuth guards the browser UI. With ADMIN_TOKEN unset the dashboard
 // is open (legacy behavior, matching /admin/reload; main.go warns at startup).
 // Otherwise the request must carry a valid fb_admin cookie; missing/invalid
-// sessions are redirected to the login page. htmx polls get 401 + HX-Redirect
-// so the login page replaces the swapped region instead of a bare fragment.
+// sessions are redirected to the login page.
 func (s *Server) dashboardAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg := s.cfg.Load()
@@ -209,11 +208,6 @@ func (s *Server) dashboardAuth(next http.Handler) http.Handler {
 		}
 		if c, err := r.Cookie(adminCookieName); err == nil && s.adminAuth.valid(c.Value) {
 			next.ServeHTTP(w, r)
-			return
-		}
-		if r.Header.Get("HX-Request") == "true" {
-			w.Header().Set("HX-Redirect", "/admin/login")
-			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		http.Redirect(w, r, "/admin/login", http.StatusFound)
@@ -629,7 +623,7 @@ func (s *Server) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Read the completion state under the lock: concurrent status polls
-	// (second tab, htmx retry) must not both proceed to addTokenPersist —
+	// (second tab) must not both proceed to addTokenPersist —
 	// the completing flag is set before the network poll so exactly one
 	// goroutine owns the add.
 	s.loginMu.Lock()

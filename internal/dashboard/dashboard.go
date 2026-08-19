@@ -31,11 +31,6 @@ import (
 //go:embed all:dist
 var files embed.FS
 
-// AssetsFS exposes the vendored static assets for the server to mount under /admin/assets/.
-func AssetsFS() embed.FS {
-	return files
-}
-
 // DistFS returns the embedded dist filesystem for SPA serving.
 func DistFS() fs.FS {
 	if sub, err := fs.Sub(files, "dist"); err == nil {
@@ -214,32 +209,11 @@ func (d *Dashboard) dataFor(name string, r *http.Request) any {
 		return d.tracesData()
 	case "setup":
 		return d.setupData()
-	case "playground":
-		return d.playgroundData()
 	case "metrics":
 		return d.metricsData()
 	default:
 		return nil
 	}
-}
-
-// --- playground ---
-
-type playgroundData struct {
-	Models    []string `json:"models"`
-	Model     string   `json:"model"`
-	HasModels bool     `json:"has_models"`
-	Mode      string   `json:"mode"`
-}
-
-func (d *Dashboard) playgroundData() playgroundData {
-	models := d.reg.Models()
-	pd := playgroundData{Models: models, Mode: d.cfg().EffectiveMode()}
-	pd.HasModels = len(models) > 0
-	if pd.HasModels {
-		pd.Model = pickDefaultModel(models)
-	}
-	return pd
 }
 
 // --- logs ---

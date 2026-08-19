@@ -64,7 +64,7 @@ type Server struct {
 	// Counts feed freebuff_proxy_log_events_total on /metrics.
 	logs *logring.Handler
 
-	// dash is the embedded admin UI (htmx + vendored assets).
+	// dash is the embedded admin UI (Svelte SPA + vendored assets).
 	dash *dashboard.Dashboard
 	// adminAuth guards the dashboard: a stateless HMAC-signed session cookie
 	// issued against ADMIN_TOKEN, plus a per-IP login rate limiter.
