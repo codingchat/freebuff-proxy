@@ -17,7 +17,7 @@ What does this change do and why? Link any related issue.
 - [ ] Tests pass: `go test ./...` (CI also runs `-race`)
 - [ ] Tests added/updated for the change
 - [ ] Public docs updated if behavior or config changed (`README.md`,
-      `docs/guides/`)
+      `docs/`)
 - [ ] No secrets: no real tokens, `.env`, or `config.json` content
 
 ## Notes

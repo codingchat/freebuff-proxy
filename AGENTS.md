@@ -8,7 +8,8 @@ protocol: it owns a pool of FreeBuff auth tokens and serves `/v1/chat/completion
 and relaying chat streams upstream. A Svelte 5 SPA dashboard (login, token
 management, config editor, diagnostics, playground) is embedded via `go:embed`
 in `internal/dashboard` and served under `/admin`. Reverse-engineering notes on
-the upstream CLI live in `reference/` (see invariants below).
+the upstream CLI are distilled in `devdocs/guides/freebuff-cli-internals.md` (the
+vendored `reference/` clones were removed 2026-08-20 after the RE completed).
 
 ## Package map
 
@@ -72,12 +73,16 @@ model header — never add one).
 - **Port-parity with `reference/proxy-freebuff/lib/registry.js`**: Go's registry
   intentionally mirrors its quirks. Never "fix" the JS behavior into Go without
   re-verifying against a live capture.
-- **Anti-ban checklist**: `docs/guides/freebuff-cli-internals.md` §10 is the
+- **Anti-ban checklist**: `devdocs/guides/freebuff-cli-internals.md` §10 is the
   contract the gateway must replicate (session headers per method, no heartbeat,
   no chat model header, fresh random `client_id` per call, honest FINISH, grace
   ride). Changes to the wire client must be checked against it.
-- **`reference/` is read-only RE source** — a vendored upstream clone. Never
-  edit it, never build from it, never treat it as an edit target.
+- **`reference/` removed 2026-08-20** — the gitignored vendored clones (774MB:
+  `CodebuffAI/codebuff`, `proxy-freebuff`, 9router, community proxies) were
+  deleted after the RE completed; that knowledge is distilled in `devdocs/`
+  (local-only) and promulgated in `docs/`, and pinned in
+  `internal/registry/testdata/upstream/`. Re-clone the public
+  repos if a cited line number needs re-verification.
 - **File-size budget**: 1400 lines per non-test `.go` file, enforced in CI
   (`.github/workflows/ci.yml`). `internal/convert/convert.go`,
   `internal/pool/pool.go`, and `internal/runs/runs.go` are tracked exceptions
@@ -86,12 +91,29 @@ model header — never add one).
 
 ## Doc pointers
 
-- `docs/guides/freebuff-cli-internals.md` — upstream CLI wire protocol RE (session,
-  chat, quota/spend, anti-ban).
-- `docs/guides/model-translation-layer.md` — model id mapping, effort ladders,
+- `devdocs/guides/freebuff-cli-internals.md` — upstream CLI wire protocol RE (session,
+  chat, quota/spend, anti-ban) — local-only, never committed.
+- `docs/model-translation-layer.md` — model id mapping, effort ladders,
   translation decisions.
-- `docs/guides/9router-integration.md` — multi-key 9router fallback/priority.
-- `docs/guides/getting-started.md` — build, run, configure.
+- `docs/9router-integration.md` — multi-key 9router fallback/priority.
+- `docs/getting-started.md` — build, run, configure.
+
+## Repo policy — public repo
+
+- This repository is **public**. Only public-facing content may ever be committed.
+- Local/dev-only material stays **gitignored and uncommitted**, never `git add -f`:
+  RE study and reverse-engineering notes, dev study docs, research/product/plan
+  docs (`docs/` outside the public top-level pages), handoff notes (`HANDOFF.md`,
+  `*.handoff.md`),
+  dev tooling (`.codegraph/`, `uicheck/`), worktrees (`.worktrees/`), and
+  reference clones (`reference/`).
+- Only `docs/` top-level `.md` pages are committed documentation; the private RE
+  notes live in `devdocs/` (gitignored) — never commit them.
+- NEVER commit secrets: `.env*` (except `.env.example`), `config*.json` (except
+  `config.example.json`), `*.pem`/`*.key`, or `.freebuff-session-state.json`
+  (SHA-256 token keys + instance state).
+- When dev knowledge matures into something public-safe, promote it as a new
+  public `docs/` page deliberately — never by lifting private notes wholesale.
 
 ## Workflow
 

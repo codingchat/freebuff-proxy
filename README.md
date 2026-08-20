@@ -12,7 +12,7 @@ Your coding tools expect an OpenAI-style endpoint (`/v1/chat/completions`). The 
 - **Pools**: routes requests across multiple tokens (hot-session-first with round-robin start and failover), so a busy client or router rides out per-account quotas instead of failing.
 - **Stealths**: makes egress look like a real browser (TLS fingerprints, header sanitization, request jitter) so upstream abuse detection is less likely to flag your account (see the ToS warning below).
 
-> **⚠️ Terms-of-service risk.** Using your FreeBuff token through this proxy conflicts with FreeBuff/Codebuff terms of service; upstream abuse detection can suspend or permanently ban accounts. Use `SAFE_MODE=true`, keep usage modest, and do not run unattended 24/7. See [Getting Started](docs/guides/getting-started.md).
+> **⚠️ Terms-of-service risk.** Using your FreeBuff token through this proxy conflicts with FreeBuff/Codebuff terms of service; upstream abuse detection can suspend or permanently ban accounts. Use `SAFE_MODE=true`, keep usage modest, and do not run unattended 24/7. See [Getting Started](docs/getting-started.md).
 
 > **⚠️ Honest expectations.** FreeBuff's servers are strict, and this proxy **reduces** ban risk; it does not eliminate it. Nothing here can guarantee your account is never flagged or banned. Upstream detection is documented in the open-source FreeBuff client: per-request IP scoring (VPN/proxy/Tor/hosting egress → limited tier or terminal `country_blocked`), per-account trust levels with sticky caps (third-party-client flag, shared signup network, shared mailbox), daily spend ceilings ($0.50/day for restricted cohorts), and mass sweeps against known farm shapes (6,699 of 7,129 disposable-email accounts were already banned when the blocklist was compiled). This project is a local adapter that exposes FreeBuff's models as an OpenAI-compatible API for other coding agents (OpenCode, pi, hermes, openclaw, or any client that supports a custom endpoint). Your auth tokens are handled automatically by the gateway, which reimplements the official CLI's wire protocol (~99% parity); it is not the official client, and upstream changes can break it until adapted. Keep usage modest and follow the hygiene rules below; further improvements to session handling and ban avoidance are planned.
 
@@ -52,7 +52,7 @@ If you are a beginner, you don't need to write code or compile anything:
    - **Base URL**: `http://localhost:3457/v1`
    - **API Key**: `not-needed`
    - **Model**: `deepseek/deepseek-v4-flash` (full-tier only; limited-tier accounts are coerced to `mimo/mimo-v2.5`)
-   *(See [Client Integration Guide](docs/guides/client-integration.md) for 1-click config snippets)*.
+   *(See [Client Integration Guide](docs/client-integration.md) for 1-click config snippets)*.
 
 **Before you start, the rules (what you should / shouldn't do):**
 
@@ -67,10 +67,10 @@ If you are a beginner, you don't need to write code or compile anything:
 | Keep the pool **draining one key at a time** | **Don't hammer many tokens from one public IP** (`ip_capped`) |
 
 
-**Access Tiers.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all models available. Non-Tier-1 country IPs get `accessTier: "limited"` and all model requests are coerced server-side to `mimo/mimo-v2.5`. VPN/datacenter IPs are flagged via MaxMind/Spur ASN detection (`ipPrivacySignals: ["vpn"]`) and placed in a restricted cohort ($0.50/day ceiling). Workarounds for limited-tier users: route through a Tailscale/WireGuard exit node in a Tier-1 country, or pool 4-5 tokens for ~12-15 sessions/day (3/day base each; the 0.0.150 trust-level ladder can raise a token up to 7/day). Egress is **direct-only** — there is no HTTP/SOCKS proxy support (the upstream transport forces `transport.Proxy = nil`); for VPS/LAN boxes needing residential egress, run a WireGuard/Tailscale tunnel to a residential exit node so the box's own routing exits residential (issue #140 P0). See [Getting Started](docs/guides/getting-started.md) for details.
+**Access Tiers.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all models available. Non-Tier-1 country IPs get `accessTier: "limited"` and all model requests are coerced server-side to `mimo/mimo-v2.5`. VPN/datacenter IPs are flagged via MaxMind/Spur ASN detection (`ipPrivacySignals: ["vpn"]`) and placed in a restricted cohort ($0.50/day ceiling). Workarounds for limited-tier users: route through a Tailscale/WireGuard exit node in a Tier-1 country, or pool 4-5 tokens for ~12-15 sessions/day (3/day base each; the 0.0.150 trust-level ladder can raise a token up to 7/day). Egress is **direct-only** — there is no HTTP/SOCKS proxy support (the upstream transport forces `transport.Proxy = nil`); for VPS/LAN boxes needing residential egress, run a WireGuard/Tailscale tunnel to a residential exit node so the box's own routing exits residential (issue #140 P0). See [Getting Started](docs/getting-started.md) for details.
 Full detail in [Key Hygiene & Ban Avoidance](#key-hygiene--ban-avoidance).
 
-For a guided walkthrough, read [Getting Started](docs/guides/getting-started.md) (5 minutes).
+For a guided walkthrough, read [Getting Started](docs/getting-started.md) (5 minutes).
 
 ## Requirements
 
@@ -391,7 +391,7 @@ The proxy ships with a built-in modern SPA web dashboard: single binary, no exte
 - **Logs**: real-time in-memory log stream with level filtering (`INFO`, `DEBUG`, `WARN`, `ERROR`), search filtering, and structured field tags.
 - **Metrics**: tabular stat cards with SVG sparklines and direct link to the raw `/metrics` Prometheus feed.
 
-See [Dashboard Guide](docs/guides/dashboard.md) for access, Docker caveats, and hardening.
+See [Dashboard Guide](docs/dashboard.md) for access, Docker caveats, and hardening.
 
 ---
 
@@ -404,12 +404,12 @@ See [Dashboard Guide](docs/guides/dashboard.md) for access, Docker caveats, and 
 
 ## Guides
 
-- [Getting Started](docs/guides/getting-started.md): 5-minute setup walkthrough
-- [Client Integration](docs/guides/client-integration.md): OpenCode, pi, 9router, LiteLLM, OpenAI SDKs
-- [9router Integration](docs/guides/9router-integration.md): router dashboard setup in bridge mode
-- [Dashboard Guide](docs/guides/dashboard.md): the admin web UI: access, pages, Docker caveats, hardening
-- [Manual Testing](docs/guides/testing.md): verify the proxy on Linux or Windows by hand, step by step
-- [Version Stability & Ban Findings](docs/guides/version-stability-and-ban-findings.md): **read before upgrading** — why v0.11.2 bridge is the proven-stable deployment and how `PREFER_MAX_MODELS` on newer versions caused instant account bans
+- [Getting Started](docs/getting-started.md): 5-minute setup walkthrough
+- [Client Integration](docs/client-integration.md): OpenCode, pi, 9router, LiteLLM, OpenAI SDKs
+- [9router Integration](docs/9router-integration.md): router dashboard setup in bridge mode
+- [Dashboard Guide](docs/dashboard.md): the admin web UI: access, pages, Docker caveats, hardening
+- [Manual Testing](docs/testing.md): verify the proxy on Linux or Windows by hand, step by step
+- [Version Stability & Ban Findings](docs/version-stability-and-ban-findings.md): **read before upgrading** — why v0.11.2 bridge is the proven-stable deployment and how `PREFER_MAX_MODELS` on newer versions caused instant account bans
 
 ---
 

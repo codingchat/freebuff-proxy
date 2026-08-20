@@ -10,8 +10,8 @@ That is expected, not a sign of neglect.
 
 - Read the [README](README.md): it explains what the proxy does, how it is
   configured, and the terms-of-service risk.
-- Public documentation lives in `README.md` and `docs/guides/`. Anything
-  under the rest of `docs/` is local-only and gitignored; keep new docs in
+- Public documentation lives in `README.md` and `docs/`. Anything
+  under `devdocs/` is local-only and gitignored; keep new docs in
   the public places.
 - Planning something large? Open an issue and discuss it first. Because the
   upstream protocol is undocumented, some ideas are not feasible, and others
@@ -55,7 +55,7 @@ and use GitHub's private vulnerability reporting.
   - `go vet ./...` is clean
   - `go test ./...` passes (CI runs the same with `-race`)
   - Tests are added/updated when behavior changes
-  - Public docs (`README.md`, `docs/guides/`) are updated when config or
+  - Public docs (`README.md`, `docs/`) are updated when config or
     behavior changes
 - **No secrets.** Never commit real FreeBuff tokens, `.env` files, or
   `config.json` contents. These are gitignored, so keep them that way.

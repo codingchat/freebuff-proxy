@@ -44,7 +44,8 @@ Desktop.ini
 .DS_Store
 
 # ── local-only docs (gitignored, not repo content); public guides stay ──
+devdocs/
 docs/*
-!docs/guides/
+!docs/*.md
 HANDOFF.md
 *.handoff.md

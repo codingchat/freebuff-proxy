@@ -63,13 +63,12 @@ node_modules/
 HANDOFF.md
 *.handoff.md
 
-# ── dev docs (local only, not repo content); guides/ is public ──
-docs/*
-!docs/guides/
+# ── dev docs & study (local only, not repo content) ──
+devdocs/
 
-# ── dev study docs (local only — reverse-engineering notes, NOT public) ──
-docs/guides/freebuff-cli-internals.md
-docs/guides/anti-ban-gap-analysis.md
+# ── docs/ is public: only top-level .md files are committed ──
+docs/*
+!docs/*.md
 
 # ── proxy session persistence (SHA-256 token keys + instance state) ──
 .freebuff-session-state.json
