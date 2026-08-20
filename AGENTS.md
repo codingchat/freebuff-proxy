@@ -95,8 +95,6 @@ model header — never add one).
 
 - `devdocs/guides/freebuff-cli-internals.md` — upstream CLI wire protocol RE (session,
   chat, quota/spend, anti-ban) — local-only, never committed.
-- `docs/model-translation-layer.md` — model id mapping, effort ladders,
-  translation decisions.
 - `docs/9router-integration.md` — multi-key 9router fallback/priority.
 - `docs/getting-started.md` — build, run, configure.
 

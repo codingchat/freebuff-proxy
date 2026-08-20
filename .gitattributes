@@ -6,3 +6,25 @@
 
 # PowerShell scripts: LF-safe with pwsh/VS Code; explicit for self-documentation
 *.ps1 text eol=lf
+
+# dev-only content — never ship in source archives (defense-in-depth; files are untracked/removed)
+devdocs/ export-ignore
+reference/ export-ignore
+.worktrees/ export-ignore
+.superpowers/ export-ignore
+.codegraph/ export-ignore
+uicheck/ export-ignore
+scripts/token_ref/ export-ignore
+docs/guides/ export-ignore
+docs/research/ export-ignore
+docs/product/ export-ignore
+docs/delivery/ export-ignore
+docs/security/ export-ignore
+HANDOFF.md export-ignore
+*.handoff.md export-ignore
+.env export-ignore
+config.json export-ignore
+config.*.json export-ignore
+*.pem export-ignore
+*.key export-ignore
+*.session-state.json export-ignore

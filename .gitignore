@@ -51,6 +51,7 @@ Desktop.ini
 # ── dev tooling & verification (local only, not published) ──
 .codegraph/
 uicheck/
+scripts/token_ref/
 frontend/verify-ui.mjs
 
 # ── misc ──
