@@ -31,6 +31,16 @@ import (
 // x-api-key (requireAuth accepts it) and may send anthropic-version; the
 // proxy is liberal and does not validate the version header.
 
+// registerAnthropicRoutes wires the Anthropic-compatible surface
+// (/v1/messages, /v1/messages/count_tokens) onto the mux. The
+// OpenAI-compatible surface registers separately (registerOpenAIRoutes,
+// openai.go); shared routes (healthz/metrics/admin) live in server.go's
+// Handler.
+func (s *Server) registerAnthropicRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /v1/messages", s.requireAuth(s.handleMessages))
+	mux.HandleFunc("POST /v1/messages/count_tokens", s.requireAuth(s.handleMessagesCountTokens))
+}
+
 // handleMessages is the Anthropic /v1/messages entry point: convert the
 // request to chat params, then route through chatCore with an Anthropic
 // wire relay.

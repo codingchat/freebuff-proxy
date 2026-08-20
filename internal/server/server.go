@@ -158,13 +158,8 @@ func New(cfg *config.Config, p *pool.Pool, reg *registry.Registry, logger *slog.
 // mismatches and unknown paths get the ServeMux's automatic 405/404.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChat))
-	mux.HandleFunc("POST /v1/responses", s.requireAuth(s.handleResponses))
-	mux.HandleFunc("POST /v1/messages", s.requireAuth(s.handleMessages))
-	mux.HandleFunc("POST /v1/messages/count_tokens", s.requireAuth(s.handleMessagesCountTokens))
-	mux.HandleFunc("POST /v1/embeddings", s.requireAuth(s.handleEmbeddings))
-	mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleModels))
-	mux.HandleFunc("GET /v1/models/{model...}", s.requireAuth(s.handleModelRetrieve))
+	s.registerOpenAIRoutes(mux)
+	s.registerAnthropicRoutes(mux)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	if s.cfg.Load().DashboardEnabled {
