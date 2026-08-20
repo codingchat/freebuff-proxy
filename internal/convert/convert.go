@@ -2062,6 +2062,229 @@ func parseToolCallRaw(raw string) *toolCall {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// Streaming XML tool-call extraction (parity with the non-streaming
+// accumulator's extractXMLToolCalls at Finish).
+//
+// Models such as MiMo/Hermes/Qwen emit tool calls as XML/JSON text blocks
+// inline in delta.content (<tool_call>, <codebuff_tool_call>,
+// <function_call>, <|tool_call_start|>, or fenced JSON) instead of native
+// delta.tool_calls. The accumulator can parse a complete response at Finish;
+// streaming relays need everything incrementally because a block may span
+// many SSE fragments and text BEFORE a block must be relayed immediately.
+// ---------------------------------------------------------------------------
+
+// maxStreamXMLBuffer bounds how much content one candidate tool-call block
+// may buffer before it is flushed as plain text — false-positive recovery for
+// prose that merely mentions an opener tag. A var so tests can shrink it.
+var maxStreamXMLBuffer = 64 * 1024
+
+var (
+	xmlStreamPipeOpenRe  = regexp.MustCompile(`<\|?tool[_\-]?call[_\-]?start\|?>`)
+	xmlStreamPipeCloseRe = regexp.MustCompile(`<\|?tool[_\-]?call[_\-]?end\|?>`)
+)
+
+// xmlStreamShape identifies which block form an open candidate belongs to.
+type xmlStreamShape int
+
+const (
+	xmlShapeNone xmlStreamShape = iota
+	xmlShapeToolCall
+	xmlShapeCodebuff
+	xmlShapeFunctionCall
+	xmlShapePipe
+	xmlShapeFence
+)
+
+// xmlStreamClosers maps literal block shapes to their closing tag.
+var xmlStreamClosers = map[xmlStreamShape]string{
+	xmlShapeToolCall:     "</tool_call>",
+	xmlShapeCodebuff:     "</codebuff_tool_call>",
+	xmlShapeFunctionCall: "</function_call>",
+}
+
+// XMLToolCallExtractor incrementally converts XML-based tool calls embedded
+// in streamed content into native toolCall values. One instance per stream;
+// not safe for concurrent use.
+//
+// Lifecycle: Feed(contentFragment) for every content delta in order; Flush()
+// once at stream end (before the terminal frame). Feed returns the text that
+// is safe to relay immediately (everything before the earliest candidate
+// opener, plus any false-positive block that failed to parse) and any
+// completed tool calls. Text inside a candidate block is withheld until the
+// block closes or the buffer bound is exceeded.
+type XMLToolCallExtractor struct {
+	buffered   string
+	shape      xmlStreamShape
+	fenceBrace int // xmlShapeFence: index in buffered just past the opening '{'
+}
+
+// Feed processes one content fragment. It returns the fragment's safe text
+// (possibly shorter than the input while a candidate block is open) and any
+// tool calls that completed within it.
+func (x *XMLToolCallExtractor) Feed(fragment string) (string, []*toolCall) {
+	if x.buffered == "" && x.findOpener(fragment) < 0 {
+		return fragment, nil
+	}
+	var text strings.Builder
+	var calls []*toolCall
+	rest := fragment
+	for {
+		if x.buffered != "" {
+			// A candidate block is open: absorb the whole fragment (or the
+			// remainder after a block just closed) before looking for its
+			// closer — the closer may land in any later fragment.
+			x.buffered += rest
+			rest = ""
+		} else {
+			idx := x.findOpener(rest)
+			if idx < 0 {
+				text.WriteString(rest)
+				return text.String(), calls
+			}
+			text.WriteString(rest[:idx])
+			x.buffered = rest[idx:]
+			rest = ""
+		}
+		if end := x.closerEnd(); end >= 0 {
+			block := x.buffered[:end]
+			remainder := x.buffered[end:]
+			x.buffered = ""
+			x.shape = xmlShapeNone
+			_, parsed := extractXMLToolCalls(block)
+			if len(parsed) > 0 {
+				calls = append(calls, parsed...)
+			} else {
+				text.WriteString(block) // false positive: keep as plain text
+			}
+			rest = remainder
+			continue
+		}
+		if len(x.buffered) > maxStreamXMLBuffer {
+			text.WriteString(x.buffered)
+			x.buffered = ""
+			x.shape = xmlShapeNone
+			return text.String(), calls
+		}
+		return text.String(), calls
+	}
+}
+
+// Flush releases any still-open candidate block at stream end: complete but
+// unclosed blocks are still parsed; the remainder is returned as text with
+// dangling tool tags scrubbed (mirroring the accumulator's Finish).
+func (x *XMLToolCallExtractor) Flush() (string, []*toolCall) {
+	if x.buffered == "" {
+		return "", nil
+	}
+	buffered := x.buffered
+	x.buffered = ""
+	x.shape = xmlShapeNone
+	cleaned, calls := extractXMLToolCalls(buffered)
+	if len(calls) > 0 {
+		return cleaned, calls
+	}
+	return danglingToolTagsRe.ReplaceAllString(buffered, ""), nil
+}
+
+// findOpener returns the index of the earliest candidate block opener in s,
+// or -1. For fenced blocks the opener only counts once a '{' (after optional
+// json/tool_call tag and whitespace) is visible in the same fragment.
+func (x *XMLToolCallExtractor) findOpener(s string) int {
+	best := -1
+	// Literal openers.
+	for shape, open := range map[xmlStreamShape]string{
+		xmlShapeToolCall:     "<tool_call>",
+		xmlShapeCodebuff:     "<codebuff_tool_call>",
+		xmlShapeFunctionCall: "<function_call>",
+	} {
+		if i := strings.Index(s, open); i >= 0 && (best < 0 || i < best) {
+			best = i
+			x.shape = shape
+		}
+	}
+	// Pipe form: <|tool_call_start|> / <tool_call_start>.
+	if loc := xmlStreamPipeOpenRe.FindStringIndex(s); loc != nil && (best < 0 || loc[0] < best) {
+		best = loc[0]
+		x.shape = xmlShapePipe
+	}
+	// Fenced JSON: ```json {"name"... (opener only counts with a visible '{').
+	// Only the earliest qualifying fence can win; a fence that loses to an
+	// earlier literal must not clobber the chosen shape.
+	for from := 0; from < len(s); {
+		i := strings.Index(s[from:], "```")
+		if i < 0 {
+			break
+		}
+		i += from
+		if brace := xmlStreamFenceBrace(s, i+3); brace >= 0 {
+			if best < 0 || i < best {
+				best = i
+				x.shape = xmlShapeFence
+				x.fenceBrace = brace + 1
+			}
+			break // later fences are later still; the earliest one decided
+		}
+		from = i + 3
+	}
+	return best
+}
+
+// xmlStreamFenceBrace returns the index of the '{' that follows a fence
+// opener token (optional json/tool_call tag + whitespace), or -1 when the
+// fragment ends before a '{' is visible. A plain code fence (```go, ```py)
+// never counts as a candidate opener.
+func xmlStreamFenceBrace(s string, from int) int {
+	if from >= len(s) {
+		return -1
+	}
+	pos := from
+	for pos < len(s) && (s[pos] == '-' || s[pos] == '_' || s[pos] >= 'a' && s[pos] <= 'z' || s[pos] >= 'A' && s[pos] <= 'Z') {
+		pos++ // optional language tag (json, tool_call, tool-call, …)
+	}
+	for pos < len(s) && (s[pos] == ' ' || s[pos] == '\t' || s[pos] == '\r' || s[pos] == '\n') {
+		pos++
+	}
+	if pos < len(s) && s[pos] == '{' {
+		return pos
+	}
+	return -1
+}
+
+// closerEnd returns the index just past the open candidate's closing tag in
+// buffered, or -1 while the block is still open.
+func (x *XMLToolCallExtractor) closerEnd() int {
+	switch x.shape {
+	case xmlShapeToolCall, xmlShapeCodebuff, xmlShapeFunctionCall:
+		if i := strings.Index(x.buffered, xmlStreamClosers[x.shape]); i >= 0 {
+			return i + len(xmlStreamClosers[x.shape])
+		}
+	case xmlShapePipe:
+		if loc := xmlStreamPipeCloseRe.FindStringIndex(x.buffered); loc != nil {
+			return loc[1]
+		}
+	case xmlShapeFence:
+		if i := strings.Index(x.buffered[x.fenceBrace:], "```"); i >= 0 {
+			return x.fenceBrace + i + 3
+		}
+	}
+	return -1
+}
+
+// ToolCallDeltaFragment renders one extracted tool call as a native OpenAI
+// streaming delta fragment, ready to append to delta["tool_calls"].
+func ToolCallDeltaFragment(index int, tc *toolCall) map[string]any {
+	return map[string]any{
+		"index": index,
+		"id":    tc.ID,
+		"type":  tc.Type,
+		"function": map[string]any{
+			"name":      tc.Function.Name,
+			"arguments": tc.Function.Arguments,
+		},
+	}
+}
+
 // Finish returns the assembled chat.completion response as compact JSON:
 // content and reasoning_content are concatenated across chunks, tool_calls
 // are stitched by index and sorted, finish_reason is the last non-empty one

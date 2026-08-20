@@ -739,6 +739,15 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 		toolCalls:    make(map[int]*anthropicToolState),
 		finishReason: "end_turn",
 	}
+	// Streaming XML tool-call extraction: MiMo/Hermes/Qwen/CodeBuff models
+	// emit <tool_call>/<codebuff_tool_call>/<function_call> blocks inline in
+	// delta.content; the extractor converts them to native tool-call
+	// fragments the existing accumulateAnthropicChunk translates into
+	// tool_use blocks. One instance per stream; xmlCallIndex keeps the
+	// synthetic fragment indexes sequential so they cannot collide with
+	// upstream indexes.
+	xmlExtractor := &convert.XMLToolCallExtractor{}
+	xmlCallIndex := 0
 	send := func(ev map[string]any) {
 		b, _ := json.Marshal(ev)
 		_, _ = io.WriteString(w, "event: "+stringValue(ev["type"])+"\n")
@@ -768,11 +777,13 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 			if lc.err != nil {
 				if ctx.Err() == nil {
 					s.logger.Warn("anthropic upstream stream error", "err", lc.err)
+					s.flushAnthropicXMLToolCalls(send, st, xmlExtractor, &xmlCallIndex)
 					s.finalizeAnthropicStream(send, st)
 				}
 				return
 			}
 			if lc.done {
+				s.flushAnthropicXMLToolCalls(send, st, xmlExtractor, &xmlCallIndex)
 				s.finalizeAnthropicStream(send, st)
 				return
 			}
@@ -801,6 +812,8 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 					stats.usageTokens = usageTotalTokens(um) // #122 spend ledger
 				}
 			}
+			// Rewrite XML tool calls out of content before translation.
+			feedAnthropicXMLToolCalls(xmlExtractor, chunk, &xmlCallIndex)
 			s.accumulateAnthropicChunk(send, st, chunk)
 		}
 	}
