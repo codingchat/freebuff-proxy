@@ -32,14 +32,11 @@ jobs:
         run: |
           # 1400-line budget. Tracked exceptions (shrink via follow-up splits):
           # internal/convert/convert.go (monolith-refactor R8, blocked on PR #141),
-          # internal/pool/pool.go (documented follow-up), and
-          # internal/runs/runs.go (documented follow-up split task).
-          # find -exec sh -c returns the LAST sh's exit status; with `set -e`
-          # a clean tree (all files under budget, [ ... ] exits 1) would fail
-          # the assignment, so `|| true` is required to collect the list.
+          # internal/pool/pool.go was removed from exceptions after the
+          # split into acquire.go / bridge.go / snapshot.go (all under 1400).
+
           bad=$(find internal cmd -name '*.go' ! -name '*_test.go' \
             ! -path 'internal/convert/convert.go' \
-            ! -path 'internal/pool/pool.go' \
             ! -path 'internal/runs/runs.go' \
             -exec sh -c 'for f; do [ "$(wc -l < "$f")" -gt 1400 ] && echo "$f $(wc -l < "$f")"; done' sh {} + || true)
           if [ -n "$bad" ]; then echo "Files over 1400 lines:"; echo "$bad"; exit 1; fi
