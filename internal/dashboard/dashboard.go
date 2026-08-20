@@ -350,11 +350,11 @@ func (d *Dashboard) metricsData() metricsData {
 // computeTrend compares the sum of the last 10 samples to the previous 10.
 // useRequests selects the Requests column (true) or Retries (false).
 func computeTrend(hist []metricSample, useRequests bool) metricTrend {
+	const window = 10
 	n := len(hist)
-	if n < 11 {
+	if n < 2*window {
 		return metricTrend{Direction: "flat"}
 	}
-	const window = 10
 	recent := hist[n-window:]
 	previous := hist[n-2*window : n-window]
 
