@@ -800,6 +800,49 @@ func TestModelsEndpoint(t *testing.T) {
 	}
 }
 
+// TestMaxVariantsBlocked pins issue #153: the -max ids are excluded from the
+// ServedModels gate, so they are neither listed on /v1/models nor servable —
+// upstream's session admission resolves them to mimo/mimo-v2.5 anyway.
+func TestMaxVariantsBlocked(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ts, _ := newTestServer(t, nil, mock)
+
+	// /v1/models must not advertise any -max id.
+	resp, data := doJSON(t, http.MethodGet, ts.URL+"/v1/models", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("models status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	var out struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("models is not JSON: %v: %s", err, data)
+	}
+	for _, m := range out.Data {
+		if strings.HasSuffix(m.ID, "-max") {
+			t.Errorf("/v1/models leaked blocked -max id %q", m.ID)
+		}
+	}
+
+	// Chat requests for a -max id are rejected before touching upstream.
+	for _, model := range []string{
+		"deepseek/deepseek-v4-flash-max",
+		"deepseek/deepseek-v4-pro-max",
+		"openai/gpt-5.6-luna-max",
+	} {
+		resp, data = doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(model), nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("chat %s status = %d, want 404: %s", model, resp.StatusCode, data)
+		}
+	}
+	if len(mock.RecordedChatHeaders) != 0 {
+		t.Error("upstream chat recorded for a blocked -max model, want none")
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	mock0 := testutil.NewMock()
 	defer mock0.Close()

@@ -63,21 +63,20 @@ const fetchTimeout = 30 * time.Second
 // than this fails the fetch, which keeps the previous registry state.
 const maxFetchBytes = 2 << 20
 
-// ServedModels is the hardcoded set of model ids this gateway serves
-// (mirrors the model set 9router's free-pool "smart_toy" component offers).
-// Used as a code-level gate so the proxy never serves or advertises a model
-// the account cannot use, regardless of MODELS_ALLOW configuration. The -max
-// variants are included so provisioned accounts can request them directly
-// by id.
+// ServedModels is the hardcoded set of model ids this gateway serves (mirrors
+// the model set 9router's free-pool "smart_toy" component offers). Used as a
+// code-level gate so the proxy never serves or advertises a model the account
+// cannot use, regardless of MODELS_ALLOW configuration. The -max variants are
+// deliberately EXCLUDED (issue #153): upstream's session admission resolves
+// any id outside SUPPORTED_FREEBUFF_MODELS to the always-available fallback
+// mimo/mimo-v2.5 (FALLBACK_FREEBUFF_MODEL_ID), so a -max request would be
+// served by a different model while advertising a name it does not honor.
 var ServedModels = map[string]bool{
 	"deepseek/deepseek-v4-flash":      true,
 	"deepseek/deepseek-v4-pro":        true,
-	"deepseek/deepseek-v4-flash-max":  true,
-	"deepseek/deepseek-v4-pro-max":    true,
 	"mimo/mimo-v2.5":                  true,
 	"minimax/minimax-m3":              true,
 	"openai/gpt-5.6-luna":             true,
-	"openai/gpt-5.6-luna-max":         true,
 	"z-ai/glm-5.2":                    true,
 	"anthropic/claude-fable-5":        true,
 	"crof/kimi-k3-eco":                true,
