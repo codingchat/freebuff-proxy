@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,10 +17,10 @@ import (
 var envKeys = []string{
 	"LISTEN_ADDR", "UPSTREAM_BASE_URL", "AUTH_TOKENS", "ROTATION_INTERVAL",
 	"REQUEST_TIMEOUT", "SESSION_CALL_TIMEOUT", "API_KEYS", "COST_MODE", "ACTING_USER_ID", "USER_ID",
-	"TLS_FINGERPRINT", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE", "LOG_LEVEL", "LOG_FORMAT", "LOG_ACCESS", "LOG_RING_SIZE",
+	"TLS_FINGERPRINT", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE", "LOG_LEVEL", "LOG_FORMAT", "LOG_ACCESS",
 	"MAX_MESSAGES_PER_DAY", "IDLE_ROTATION_TIMEOUT", "SAFE_MODE",
 	"MODELS_HIDE_UNAVAILABLE", "MODELS_ALLOW", "CORS_ALLOWED_ORIGIN", "REQUEST_JITTER", "CLI_VERSION", "MODEL_ALIASES",
-	"AUTO_DISCOVER_TOKEN", "TRANSIENT_RETRIES", "ADMIN_TOKEN",
+	"AUTO_DISCOVER_TOKEN", "TRANSIENT_RETRIES",
 	"SESSION_PERSIST", "SESSION_STATE_FILE",
 	"HTTP2_UPSTREAM",
 	"MAX_SPEND_PER_DAY", "SESSION_RE_ADMIT_LEAD", "SESSION_PROBE_CACHE_TTL",
@@ -217,83 +216,6 @@ func TestTransientRetries(t *testing.T) {
 		t.Fatalf("Load (negative): err = %v, want error mentioning TRANSIENT_RETRIES", err)
 	}
 	t.Setenv("TRANSIENT_RETRIES", "")
-}
-
-// TestLogRingSize pins the T19 LOG_RING_SIZE knob: default 500 when unset,
-// an empty value keeps the default, explicit values must stay within
-// 50..5000 (below the floor / above the cap fail validation), and the JSON
-// and .env sources both apply.
-func TestLogRingSize(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("AUTH_TOKENS", "tok")
-
-	// default: 500 when unset
-	if cfg, err := Load(""); err != nil {
-		t.Fatalf("Load (default): %v", err)
-	} else if cfg.LogRingSize != 500 {
-		t.Errorf("LogRingSize default = %d, want 500", cfg.LogRingSize)
-	}
-
-	// explicit empty value keeps the default
-	t.Setenv("LOG_RING_SIZE", "")
-	if cfg, err := Load(""); err != nil {
-		t.Fatalf("Load (empty): %v", err)
-	} else if cfg.LogRingSize != 500 {
-		t.Errorf("LogRingSize (empty) = %d, want 500", cfg.LogRingSize)
-	}
-
-	// env source: a valid value loads
-	t.Setenv("LOG_RING_SIZE", "2000")
-	if cfg, err := Load(""); err != nil {
-		t.Fatalf("Load (env 2000): %v", err)
-	} else if cfg.LogRingSize != 2000 {
-		t.Errorf("LogRingSize (env) = %d, want 2000", cfg.LogRingSize)
-	}
-
-	// boundary values are accepted
-	for _, v := range []string{"50", "5000"} {
-		t.Setenv("LOG_RING_SIZE", v)
-		n, _ := strconv.Atoi(v)
-		if cfg, err := Load(""); err != nil {
-			t.Fatalf("Load (LOG_RING_SIZE=%s): %v", v, err)
-		} else if cfg.LogRingSize != n {
-			t.Errorf("LogRingSize (LOG_RING_SIZE=%s) = %d, want %d", v, cfg.LogRingSize, n)
-		}
-	}
-
-	// below the floor fails validation
-	t.Setenv("LOG_RING_SIZE", "49")
-	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "LOG_RING_SIZE") {
-		t.Fatalf("Load (49): err = %v, want validation error mentioning LOG_RING_SIZE", err)
-	}
-
-	// above the cap fails validation
-	t.Setenv("LOG_RING_SIZE", "5001")
-	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "LOG_RING_SIZE") {
-		t.Fatalf("Load (5001): err = %v, want validation error mentioning LOG_RING_SIZE", err)
-	}
-	t.Setenv("LOG_RING_SIZE", "")
-
-	// JSON file source
-	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"LOG_RING_SIZE": 750}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if cfg, err := Load(path); err != nil {
-		t.Fatalf("Load (file): %v", err)
-	} else if cfg.LogRingSize != 750 {
-		t.Errorf("LogRingSize (file) = %d, want 750", cfg.LogRingSize)
-	}
-
-	// .env source (applyDotenv)
-	if err := os.WriteFile(".env", []byte("AUTH_TOKENS=tok\nLOG_RING_SIZE=900\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if cfg, err := Load(""); err != nil {
-		t.Fatalf("Load (.env): %v", err)
-	} else if cfg.LogRingSize != 900 {
-		t.Errorf("LogRingSize (.env) = %d, want 900", cfg.LogRingSize)
-	}
 }
 
 func TestSafeMode(t *testing.T) {
@@ -954,36 +876,6 @@ func TestDotenvJSONWins(t *testing.T) {
 	}
 }
 
-// TestDotenvEmptyAuthTokensClearsJSON is the regression for the dashboard
-// mode switch: it persists exactly "AUTH_TOKENS=" into .env, which must
-// clear tokens that came from a -config JSON file — otherwise the reload
-// keeps the old tokens, BridgeMode() stays false, and the dashboard pill
-// still shows the old mode after "Switch to bridge mode".
-func TestDotenvEmptyAuthTokensClearsJSON(t *testing.T) {
-	clearEnv(t)
-
-	if err := os.WriteFile(".env", []byte("AUTH_TOKENS=\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile("cfg.json", []byte(`{"AUTH_TOKENS":["from-json"]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load("cfg.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.AuthTokens) != 0 {
-		t.Errorf("AuthTokens = %v, want empty (empty .env AUTH_TOKENS clears JSON tokens)", cfg.AuthTokens)
-	}
-	if !cfg.BridgeMode() {
-		t.Error("BridgeMode() = false, want true after explicit empty AUTH_TOKENS")
-	}
-	if cfg.DiscoveredSource != "" {
-		t.Errorf("DiscoveredSource = %q, want empty (auto-discovery must stay suppressed)", cfg.DiscoveredSource)
-	}
-}
-
 // TestEnvEmptyAuthTokensBridgeMode verifies that an explicitly-empty
 // AUTH_TOKENS in the real environment (the shape systemd/Docker unit files
 // use to force bridge mode) records presence: cfg.AuthTokens stays empty,
@@ -1041,51 +933,6 @@ func TestEnvAuthTokensSetsTokens(t *testing.T) {
 	}
 	if cfg.BridgeMode() {
 		t.Error("BridgeMode() = true, want false with AUTH_TOKENS=a,b")
-	}
-}
-
-// TestAdminToken verifies ADMIN_TOKEN loads from env, JSON config, and .env
-// with the standard precedence (env > .env > JSON).
-func TestAdminToken(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("ADMIN_TOKEN", "from-env")
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load (env): %v", err)
-	}
-	if cfg.AdminToken != "from-env" {
-		t.Errorf("AdminToken = %q, want from-env (env)", cfg.AdminToken)
-	}
-
-	// JSON file value loses to the environment.
-	if err := os.WriteFile("cfg.json", []byte(`{"ADMIN_TOKEN":"from-json"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err = Load("cfg.json")
-	if err != nil {
-		t.Fatalf("Load (json): %v", err)
-	}
-	if cfg.AdminToken != "from-env" {
-		t.Errorf("AdminToken = %q, want from-env (env beats JSON)", cfg.AdminToken)
-	}
-
-	// dotenv value applies when the environment is empty, and wins over JSON.
-	clearEnv(t)
-	if err := os.WriteFile(".env", []byte("ADMIN_TOKEN=from-dotenv\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// clearEnv chdirs to a fresh temp dir, so the cfg.json written above is
-	// no longer in the working directory; re-write it next to .env.
-	if err := os.WriteFile("cfg.json", []byte(`{"ADMIN_TOKEN":"from-json"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err = Load("cfg.json")
-	if err != nil {
-		t.Fatalf("Load (dotenv): %v", err)
-	}
-	if cfg.AdminToken != "from-dotenv" {
-		t.Errorf("AdminToken = %q, want from-dotenv (.env beats JSON)", cfg.AdminToken)
 	}
 }
 

@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/logring"
 	"freebuff-proxy/internal/pool"
 	"freebuff-proxy/internal/registry"
 	"freebuff-proxy/internal/server"
@@ -31,8 +30,8 @@ import (
 )
 
 // newTestServerWithLogger builds the full stack like newTestServer but with
-// a custom logger (logring-wrapped) so tests can assert on trace entries.
-func newTestServerWithLogger(t *testing.T, apiKeys []string, logger *slog.Logger, ring *logring.Handler, mocks ...*testutil.MockUpstream) (*httptest.Server, *pool.Pool) {
+// a custom logger so tests can assert on trace entries.
+func newTestServerWithLogger(t *testing.T, apiKeys []string, logger *slog.Logger, mocks ...*testutil.MockUpstream) (*httptest.Server, *pool.Pool) {
 	t.Helper()
 	cfg := &config.Config{
 		AuthTokens:         make([]string, len(mocks)),
@@ -43,7 +42,6 @@ func newTestServerWithLogger(t *testing.T, apiKeys []string, logger *slog.Logger
 		UpstreamBaseURL:    "https://www.codebuff.com",
 		APIKeys:            apiKeys,
 		LogAccess:          true,
-		DashboardEnabled:   true,
 	}
 	clients := make([]*upstream.Client, 0, len(mocks))
 	sessions := make([]*session.Manager, 0, len(mocks))
@@ -64,7 +62,7 @@ func newTestServerWithLogger(t *testing.T, apiKeys []string, logger *slog.Logger
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.New(cfg, p, reg, logger, ring, "")
+	srv := server.New(cfg, p, reg, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, p
@@ -125,23 +123,6 @@ func TestCORSConfiguredOrigin(t *testing.T) {
 	}
 	if got := resp2.Header.Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
 		t.Errorf("GET Access-Control-Allow-Origin = %q, want configured origin", got)
-	}
-}
-
-func TestCORSPreflightNotAppliedToAdmin(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	ts, _ := newTestServer(t, nil, mock)
-
-	// Admin routes are intentionally outside the CORS surface (cookie
-	// auth); an OPTIONS there must not gain allow headers.
-	resp, _ := doJSON(t, http.MethodOptions, ts.URL+"/admin/login", nil,
-		map[string]string{"Origin": "https://evil.example.com"})
-	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
-		t.Errorf("admin OPTIONS got Access-Control-Allow-Origin %q, want none", got)
-	}
-	if resp.StatusCode == http.StatusNoContent {
-		t.Error("admin OPTIONS answered 204; want the mux's 405/404 (CORS must not intercept admin)")
 	}
 }
 
@@ -1035,63 +1016,106 @@ func TestTracePhasesRecorded(t *testing.T) {
 	defer mock.Close()
 	mock.ChatBody = responsesChunks()
 	var sink bytes.Buffer
-	ring := logring.NewHandler(slog.NewTextHandler(&sink, nil), 200)
-	ts, _ := newTestServerWithLogger(t, nil, slog.New(ring), ring, mock)
+	logger := slog.New(slog.NewTextHandler(&sink, nil))
+	ts, _ := newTestServerWithLogger(t, nil, logger, mock)
 
 	_, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
 	if !strings.Contains(string(data), "Hello") {
 		t.Fatalf("chat stream unexpected: %s", truncate(string(data), 200))
 	}
-	entries := ring.Recent(50)
-	var trace *logring.Entry
-	for i := range entries {
-		if entries[i].Message == "chat trace" {
-			trace = &entries[i]
-			break
+	var traceLine string
+	for _, line := range strings.Split(sink.String(), "\n") {
+		if lineMsg(line) == "chat trace" {
+			traceLine = line
 		}
 	}
-	if trace == nil {
-		t.Fatal("no 'chat trace' entry in the log ring")
+	if traceLine == "" {
+		t.Fatal("no 'chat trace' log line")
 	}
-	joined := strings.Join(trace.Fields, " ")
 	for _, phase := range []string{"acquire_ms", "upstream_ttfb_ms", "total_ms"} {
 		re := regexp.MustCompile(phase + `=\d+`)
-		if !re.MatchString(joined) {
-			t.Errorf("trace fields missing %s: %s", phase, joined)
+		if !re.MatchString(traceLine) {
+			t.Errorf("trace fields missing %s: %s", phase, traceLine)
 		}
 	}
-	if !strings.Contains(joined, "status=ok") {
-		t.Errorf("trace missing status=ok: %s", joined)
+	if !strings.Contains(traceLine, "status=ok") {
+		t.Errorf("trace missing status=ok: %s", traceLine)
 	}
 }
 
 // --- D1 correlation ids + T2/T3/T8/T12/T13 ---
 
-// entryField extracts a "key=value" field from a logring entry, or "".
-func entryField(e logring.Entry, key string) string {
-	for _, f := range e.Fields {
-		if v, ok := strings.CutPrefix(f, key+"="); ok {
-			return v
-		}
+// lineMsg extracts the msg field from a slog text-handler line ("" when the
+// line has no message). The value may be quoted (msg="chat trace") or bare
+// (msg=access), matching slog.TextHandler's quoting rules.
+func lineMsg(line string) string {
+	const prefix = "msg="
+	idx := strings.Index(line, prefix)
+	if idx < 0 {
+		return ""
 	}
-	return ""
+	rest := line[idx+len(prefix):]
+	if strings.HasPrefix(rest, `"`) {
+		if end := strings.IndexByte(rest[1:], '"'); end >= 0 {
+			return rest[1 : 1+end]
+		}
+		return rest[1:]
+	}
+	if end := strings.IndexByte(rest, ' '); end >= 0 {
+		return rest[:end]
+	}
+	return rest
 }
 
-// debugRing builds a logring-wrapped Debug-level logger so tests can assert
-// on Debug lines (upstream do/retry, runs lifecycle, transient retry).
-func debugRing(t *testing.T) (*bytes.Buffer, *logring.Handler, *slog.Logger) {
+// lineField extracts the value of a " key=value" attribute from a slog
+// text-handler line, or "" when absent. Values that need quoting (spaces,
+// commas, ...) arrive JSON-quoted and are unquoted here.
+func lineField(line, key string) string {
+	needle := " " + key + "="
+	idx := strings.Index(line, needle)
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len(needle):]
+	if strings.HasPrefix(rest, `"`) {
+		if end := strings.IndexByte(rest[1:], '"'); end >= 0 {
+			return rest[1 : 1+end]
+		}
+		return rest[1:]
+	}
+	if end := strings.IndexByte(rest, ' '); end >= 0 {
+		return rest[:end]
+	}
+	return rest
+}
+
+// findLines returns every log line whose msg field equals msg, in buffer
+// order (oldest first).
+func findLines(buf *bytes.Buffer, msg string) []string {
+	var out []string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if lineMsg(line) == msg {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// debugRing builds a Debug-level logger writing to a text sink so tests can
+// assert on Debug lines (upstream do/retry, runs lifecycle, transient retry).
+func debugRing(t *testing.T) (*bytes.Buffer, *slog.Logger) {
 	t.Helper()
 	var sink bytes.Buffer
-	ring := logring.NewHandler(slog.NewTextHandler(&sink, &slog.HandlerOptions{Level: slog.LevelDebug}), 400)
-	logger := slog.New(ring)
+	handler := slog.NewTextHandler(&sink, &slog.HandlerOptions{Level: slog.LevelDebug})
+	logger := slog.New(handler)
 	// runs.go and upstream/client.go log via the package-level default
 	// logger (slog.Debug), mirroring production where main.go calls
-	// slog.SetDefault. Route the default at the ring so those lines are
+	// slog.SetDefault. Route the default at the sink so those lines are
 	// assertable, and restore on test end.
 	oldDefault := slog.Default()
 	slog.SetDefault(logger)
 	t.Cleanup(func() { slog.SetDefault(oldDefault) })
-	return &sink, ring, logger
+	return &sink, logger
 }
 
 // TestRequestCorrelationIDs verifies D1 (T2): one request with
@@ -1103,29 +1127,23 @@ func TestRequestCorrelationIDs(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.ChatBody = responsesChunks()
-	_, ring, logger := debugRing(t)
-	ts, _ := newTestServerWithLogger(t, nil, logger, ring, mock)
+	buf, logger := debugRing(t)
+	ts, _ := newTestServerWithLogger(t, nil, logger, mock)
 
 	_, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA),
 		map[string]string{"X-Request-Id": "abc"})
 	if !strings.Contains(string(data), "Hello") {
 		t.Fatalf("chat stream unexpected: %s", truncate(string(data), 200))
 	}
-	entries := ring.Recent(100)
-	byMsg := map[string]*logring.Entry{}
-	for i := range entries {
-		e := &entries[i]
-		switch e.Message {
-		case "access", "chat routing", "chat done", "chat trace":
-			byMsg[e.Message] = e
-		}
-	}
+	byMsg := map[string]string{}
 	for _, want := range []string{"access", "chat routing", "chat done", "chat trace"} {
-		if byMsg[want] == nil {
-			t.Fatalf("missing %q entry in the log ring", want)
+		lines := findLines(buf, want)
+		if len(lines) == 0 {
+			t.Fatalf("missing %q log line", want)
 		}
+		byMsg[want] = lines[len(lines)-1]
 	}
-	reqID := entryField(*byMsg["access"], "req_id")
+	reqID := lineField(byMsg["access"], "req_id")
 	if reqID == "" {
 		t.Fatal("access entry missing req_id")
 	}
@@ -1134,12 +1152,12 @@ func TestRequestCorrelationIDs(t *testing.T) {
 		t.Errorf("access req_id = %q, want UUIDv4 shape", reqID)
 	}
 	for _, m := range []string{"chat routing", "chat done", "chat trace"} {
-		if got := entryField(*byMsg[m], "req_id"); got != reqID {
+		if got := lineField(byMsg[m], "req_id"); got != reqID {
 			t.Errorf("%s req_id = %q, want the access req_id %q", m, got, reqID)
 		}
 	}
 	for _, m := range []string{"access", "chat trace"} {
-		if got := entryField(*byMsg[m], "client_request_id"); got != "abc" {
+		if got := lineField(byMsg[m], "client_request_id"); got != "abc" {
 			t.Errorf("%s client_request_id = %q, want abc", m, got)
 		}
 	}
@@ -1150,27 +1168,29 @@ func TestRequestCorrelationIDs(t *testing.T) {
 	if !strings.Contains(string(data2), "Hello") {
 		t.Fatalf("second chat stream unexpected: %s", truncate(string(data2), 200))
 	}
-	entries2 := ring.Recent(200)
-	var access2, trace2 *logring.Entry
-	for i := range entries2 {
-		e := &entries2[i]
-		if e.Message == "access" && entryField(*e, "req_id") != reqID && access2 == nil {
-			access2 = e
-		}
-		if e.Message == "chat trace" && entryField(*e, "req_id") != reqID && trace2 == nil {
-			trace2 = e
+	var access2, trace2 string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		switch lineMsg(line) {
+		case "access":
+			if lineField(line, "req_id") != reqID && access2 == "" {
+				access2 = line
+			}
+		case "chat trace":
+			if lineField(line, "req_id") != reqID && trace2 == "" {
+				trace2 = line
+			}
 		}
 	}
-	if access2 == nil {
+	if access2 == "" {
 		t.Fatal("no access entry for the second request")
 	}
-	if got := entryField(*access2, "client_request_id"); got != "" {
+	if got := lineField(access2, "client_request_id"); got != "" {
 		t.Errorf("header-less request access client_request_id = %q, want absent", got)
 	}
-	if trace2 == nil {
+	if trace2 == "" {
 		t.Fatal("no chat trace entry for the second request")
 	}
-	if got := entryField(*trace2, "client_request_id"); got != "" {
+	if got := lineField(trace2, "client_request_id"); got != "" {
 		t.Errorf("header-less request trace client_request_id = %q, want absent", got)
 	}
 }
@@ -1198,8 +1218,8 @@ func TestTransientRetrySkippedOnCanceledContext(t *testing.T) {
 		case <-time.After(30 * time.Second):
 		}
 	}
-	_, ring, logger := debugRing(t)
-	ts, _ := newTestServerWithLogger(t, nil, logger, ring, mock)
+	buf, logger := debugRing(t)
+	ts, _ := newTestServerWithLogger(t, nil, logger, mock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1225,18 +1245,13 @@ func TestTransientRetrySkippedOnCanceledContext(t *testing.T) {
 
 	// Wait for the handler to finish logging the canceled request.
 	eventually(t, "request canceled by client entry", func() bool {
-		for _, e := range ring.Recent(400) {
-			if e.Message == "request canceled by client" {
-				return true
-			}
-		}
-		return false
+		return strings.Contains(buf.String(), "request canceled by client")
 	})
-	for _, e := range ring.Recent(400) {
-		if strings.Contains(e.Message, "transient chat error") {
-			t.Errorf("canceled request logged a retry announcement: %s", e.Message)
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "transient chat error") {
+			t.Errorf("canceled request logged a retry announcement: %s", line)
 		}
-		if e.Message == "chat retry succeeded" {
+		if lineMsg(line) == "chat retry succeeded" {
 			t.Error("canceled request logged chat retry succeeded")
 		}
 	}
@@ -1266,8 +1281,8 @@ func TestChatRetryTelemetry(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, responsesChunks())
 	}
-	_, ring, logger := debugRing(t)
-	ts, _ := newTestServerWithLogger(t, nil, logger, ring, mock)
+	buf, logger := debugRing(t)
+	ts, _ := newTestServerWithLogger(t, nil, logger, mock)
 
 	_, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA),
 		map[string]string{"X-Request-Id": "req-1"})
@@ -1278,57 +1293,63 @@ func TestChatRetryTelemetry(t *testing.T) {
 		t.Fatalf("upstream chat attempts = %d, want 2", got)
 	}
 
-	var transient, retriedOK, trace, ok1, ok2 *logring.Entry
-	recent := ring.Recent(400)
-	for i := range recent {
-		e := &recent[i]
-		switch e.Message {
+	var transient, retriedOK, trace, ok1, ok2 string
+	lines := strings.Split(buf.String(), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		switch lineMsg(line) {
 		case "transient chat error, retrying once":
-			transient = e
+			if transient == "" {
+				transient = line
+			}
 		case "chat retry succeeded":
-			retriedOK = e
+			if retriedOK == "" {
+				retriedOK = line
+			}
 		case "chat trace":
-			trace = e
+			if trace == "" {
+				trace = line
+			}
 		case "upstream ok", "upstream response":
 			// Session/run management calls also log these; only the
 			// two /api/v1/chat/completions attempts carry the chat req_id.
 			// T5: the failed attempt logs "upstream response", the
 			// successful retry logs "upstream ok".
-			if entryField(*e, "path") != "/api/v1/chat/completions" {
+			if lineField(line, "path") != "/api/v1/chat/completions" {
 				continue
 			}
-			if ok1 == nil {
-				ok1 = e
-			} else if ok2 == nil {
-				ok2 = e
+			if ok1 == "" {
+				ok1 = line
+			} else if ok2 == "" {
+				ok2 = line
 			}
 		}
 	}
-	if transient == nil {
+	if transient == "" {
 		t.Fatal("no 'transient chat error, retrying once' entry")
 	}
-	if got := entryField(*transient, "attempt"); got != "1" {
+	if got := lineField(transient, "attempt"); got != "1" {
 		t.Errorf("transient entry attempt = %q, want 1", got)
 	}
-	if entryField(*transient, "reason") == "" {
+	if lineField(transient, "reason") == "" {
 		t.Error("transient entry missing reason")
 	}
-	if entryField(*transient, "backoff_ms") == "" {
+	if lineField(transient, "backoff_ms") == "" {
 		t.Error("transient entry missing backoff_ms")
 	}
-	if retriedOK == nil {
+	if retriedOK == "" {
 		t.Fatal("no 'chat retry succeeded' entry")
 	}
-	if got := entryField(*retriedOK, "attempts"); got != "2" {
+	if got := lineField(retriedOK, "attempts"); got != "2" {
 		t.Errorf("retry succeeded attempts = %q, want 2", got)
 	}
-	if entryField(*retriedOK, "ms") == "" {
+	if lineField(retriedOK, "ms") == "" {
 		t.Error("retry succeeded missing ms")
 	}
-	if trace == nil {
+	if trace == "" {
 		t.Fatal("no chat trace entry")
 	}
-	reqID := entryField(*trace, "req_id")
+	reqID := lineField(trace, "req_id")
 	if reqID == "" {
 		t.Fatal("chat trace missing req_id")
 	}
@@ -1338,28 +1359,28 @@ func TestChatRetryTelemetry(t *testing.T) {
 		{"statuses_seen", "500,200"},
 		{"client_request_id", "req-1"},
 	} {
-		if got := entryField(*trace, f.key); got != f.want {
+		if got := lineField(trace, f.key); got != f.want {
 			t.Errorf("chat trace %s = %q, want %q", f.key, got, f.want)
 		}
 	}
-	if got := entryField(*trace, "backoff_ms"); got == "" {
+	if got := lineField(trace, "backoff_ms"); got == "" {
 		t.Error("chat trace missing backoff_ms")
 	}
 	// D1: the same req_id must appear on both upstream attempt lines, and
 	// on the server-side retry lines.
-	if ok1 == nil || ok2 == nil {
+	if ok1 == "" || ok2 == "" {
 		t.Fatal("expected two upstream attempt entries (one per chat attempt)")
 	}
-	if got := entryField(*ok1, "req_id"); got != reqID {
+	if got := lineField(ok1, "req_id"); got != reqID {
 		t.Errorf("first upstream attempt req_id = %q, want %q", got, reqID)
 	}
-	if got := entryField(*ok2, "req_id"); got != reqID {
+	if got := lineField(ok2, "req_id"); got != reqID {
 		t.Errorf("second upstream attempt req_id = %q, want %q", got, reqID)
 	}
-	if got := entryField(*transient, "req_id"); got != reqID {
+	if got := lineField(transient, "req_id"); got != reqID {
 		t.Errorf("transient entry req_id = %q, want %q", got, reqID)
 	}
-	if got := entryField(*retriedOK, "req_id"); got != reqID {
+	if got := lineField(retriedOK, "req_id"); got != reqID {
 		t.Errorf("retry succeeded req_id = %q, want %q", got, reqID)
 	}
 }
@@ -1372,22 +1393,26 @@ func TestTraceSessionIDThreaded(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.ChatBody = responsesChunks()
-	_, ring, logger := debugRing(t)
-	ts, _ := newTestServerWithLogger(t, nil, logger, ring, mock)
+	buf, logger := debugRing(t)
+	ts, _ := newTestServerWithLogger(t, nil, logger, mock)
 
 	_, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
 	if !strings.Contains(string(data), "Hello") {
 		t.Fatalf("chat stream unexpected: %s", truncate(string(data), 200))
 	}
 	var startedTS, traceTS string
-	recent := ring.Recent(400)
-	for i := range recent {
-		e := &recent[i]
-		switch e.Message {
+	lines := strings.Split(buf.String(), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		switch lineMsg(line) {
 		case "runs: run started":
-			startedTS = entryField(*e, "trace_session_id")
+			if startedTS == "" {
+				startedTS = lineField(line, "trace_session_id")
+			}
 		case "chat trace":
-			traceTS = entryField(*e, "trace_session_id")
+			if traceTS == "" {
+				traceTS = lineField(line, "trace_session_id")
+			}
 		}
 	}
 	if startedTS == "" {

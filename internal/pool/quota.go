@@ -54,17 +54,15 @@ func quotaLimitError(tok *tokenEntry, model string) *upstream.RateLimitError {
 // recordChat appends one successful upstream chat for token and prunes the
 // token's usage history outside the 24h window.
 func (p *Pool) recordChat(token int) {
-	toks := p.toks.Load()
-	if token < 0 || token >= len(*toks) {
+	toks := p.toks
+	if token < 0 || token >= len(toks) {
 		return
 	}
 	p.usageMu.Lock()
 	defer p.usageMu.Unlock()
 	// Authoritative bound under the lock: p.msgsPerToken is the index space
-	// AddToken/RemoveLastToken/RemoveAllTokens keep consistent, so a
-	// removal that raced the snapshot check above (or a lease issued from a
-	// snapshot that already went stale) is caught here instead of indexing
-	// past the usage slice.
+	// built alongside the fixed-token list, so a stale token is caught here
+	// instead of indexing past the usage slice.
 	if token < 0 || token >= len(p.msgsPerToken) {
 		return
 	}
@@ -79,25 +77,20 @@ func (p *Pool) recordChat(token int) {
 
 // recordChatEntry appends one successful upstream chat for the lease's
 // backing entry and prunes its usage history outside the 24h window. The
-// entry is located by pointer in the CURRENT token list so the usage lands
-// on the right token: after a concurrent RemoveLastToken+AddToken, the
-// lease's Token index may point at a different token (or be out of range),
-// and charging by index would mis-record. An entry that is no longer in the
-// pool (removed while the request was in flight) skips the recording.
+// entry is located by pointer in the fixed-token list so the usage lands on
+// the right token; an entry that is no longer in the pool skips recording.
 func (p *Pool) recordChatEntry(entry *tokenEntry) {
 	if entry == nil {
 		return
 	}
 	p.usageMu.Lock()
 	defer p.usageMu.Unlock()
-	for idx, tok := range *p.toks.Load() {
+	for idx, tok := range p.toks {
 		if tok != entry {
 			continue
 		}
-		// Authoritative bound under the lock: the msgsPerToken slice is
-		// rebuilt under usageMu by AddToken/RemoveLastToken/RemoveAllTokens,
-		// and a removal racing this snapshot can leave the entry present in
-		// toks but absent from the usage slice — never index past it.
+		// Authoritative bound under the lock: never index past the usage
+		// slice.
 		if idx < 0 || idx >= len(p.msgsPerToken) {
 			return
 		}
@@ -116,14 +109,14 @@ func (p *Pool) recordChatEntry(entry *tokenEntry) {
 
 // usageWindow, pruning expired timestamps.
 func (p *Pool) usageCount(token int) int {
-	toks := p.toks.Load()
-	if token < 0 || token >= len(*toks) {
+	toks := p.toks
+	if token < 0 || token >= len(toks) {
 		return 0
 	}
 	p.usageMu.Lock()
 	defer p.usageMu.Unlock()
-	// Authoritative bound under the lock (see recordChat): the usage slice
-	// may have been truncated/nil'd by a removal racing the snapshot check.
+	// Authoritative bound under the lock (see recordChat): never index past
+	// the usage slice.
 	if token < 0 || token >= len(p.msgsPerToken) {
 		return 0
 	}
@@ -144,7 +137,7 @@ func (p *Pool) usageCount(token int) int {
 func (p *Pool) dailyLimitError(token int) *upstream.RateLimitError {
 	return &upstream.RateLimitError{
 		RetryAfter:  p.usageResetIn(token),
-		Limit:       float64(p.cfg.Load().MaxMessagesPerDay),
+		Limit:       float64(p.cfg.MaxMessagesPerDay),
 		RecentCount: float64(p.usageCount(token)),
 		Body:        "daily message limit reached",
 	}
@@ -249,7 +242,7 @@ func (p *Pool) bridgeUsageResetIn(entry *bridgeEntry) time.Duration {
 func (p *Pool) bridgeDailyLimitError(entry *bridgeEntry) *upstream.RateLimitError {
 	return &upstream.RateLimitError{
 		RetryAfter:  p.bridgeUsageResetIn(entry),
-		Limit:       float64(p.cfg.Load().MaxMessagesPerDay),
+		Limit:       float64(p.cfg.MaxMessagesPerDay),
 		RecentCount: float64(p.bridgeUsageCount(entry)),
 		Body:        "daily message limit reached",
 	}

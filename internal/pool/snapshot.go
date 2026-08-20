@@ -7,11 +7,11 @@ import (
 
 // Snapshot returns the per-token healthz view.
 func (p *Pool) Snapshot() []TokenSnapshot {
-	toks := p.toks.Load()
-	out := make([]TokenSnapshot, 0, len(*toks))
-	dailyLimit := p.cfg.Load().MaxMessagesPerDay
-	spendLimit := p.cfg.Load().MaxSpendPerDay
-	for i, tok := range *toks {
+	toks := p.toks
+	out := make([]TokenSnapshot, 0, len(toks))
+	dailyLimit := p.cfg.MaxMessagesPerDay
+	spendLimit := p.cfg.MaxSpendPerDay
+	for i, tok := range toks {
 		rs := tok.runs.Snapshot()
 		ss := tok.session.Snapshot()
 		msgs := p.usageCount(i)
@@ -125,8 +125,8 @@ type PoolSnapshot struct {
 // PoolSnapshot returns the pool-wide snapshot with aggregate counters.
 func (p *Pool) PoolSnapshot() PoolSnapshot {
 	ps := PoolSnapshot{Tokens: p.Snapshot(), RequestsServed: p.requestsServed.Load()}
-	toks := p.toks.Load()
-	for _, tok := range *toks {
+	toks := p.toks
+	for _, tok := range toks {
 		ps.TransientRetries += tok.client.TransientRetries()
 		ps.FingerprintRotations += tok.client.FingerprintRotations()
 	}

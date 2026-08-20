@@ -39,7 +39,7 @@ func tokenKey(raw string) string {
 // is returned as-is. Registry misses pass through.
 func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*Lease, error) {
 	clientToken = strings.TrimSpace(clientToken)
-	cfg := p.cfg.Load()
+	cfg := p.cfg
 	if clientToken == "" {
 		return nil, errors.New("bridge: empty client token")
 	}
@@ -196,24 +196,24 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 
 // ProbeNewToken validates a NOT-yet-added token against upstream with a
 // zero-cost GET session probe (no session claim, no model needed). It builds
-// the probe client from the pool's own config, so the base URL matches what
-// AddToken would use (tests inject a mock URL here). Returns the session
-// state on success, ErrNoActiveSession when the token is valid but idle,
-// or the classified auth/network error (ErrBanned / ErrCountryBlocked /
-// ErrAuthRejected / ErrRateLimited) otherwise.
+// the probe client from the pool's own config, so the base URL matches the
+// one a freshly-built client would use (tests inject a mock URL here).
+// Returns the session state on success, ErrNoActiveSession when the token is
+// valid but idle, or the classified auth/network error (ErrBanned /
+// ErrCountryBlocked / ErrAuthRejected / ErrRateLimited) otherwise.
 func (p *Pool) ProbeNewToken(ctx context.Context, token string) (*upstream.SessionState, error) {
 	if token == "" {
 		return nil, errors.New("pool: empty token")
 	}
-	cfg := *p.cfg.Load()
+	cfg := *p.cfg
 	// Match the base URL of an existing pooled client when one exists: the
 	// pool's fixed-token clients were built by the caller with the effective
 	// upstream URL (tests inject a mock URL), while p.cfg.UpstreamBaseURL
 	// may still hold the production default. A probe built from the wrong
 	// URL would validate against a different host than the one the token
 	// will actually use — silently false results.
-	if toks := p.toks.Load(); len(*toks) > 0 {
-		if base := (*toks)[0].client.BaseURL(); base != "" {
+	if len(p.toks) > 0 {
+		if base := p.toks[0].client.BaseURL(); base != "" {
 			cfg.UpstreamBaseURL = base
 		}
 	}
@@ -222,19 +222,6 @@ func (p *Pool) ProbeNewToken(ctx context.Context, token string) (*upstream.Sessi
 		return nil, fmt.Errorf("pool: probe token: %w", err)
 	}
 	return client.ProbeAccount(ctx)
-}
-
-// ProbeToken validates token against upstream with a zero-cost GET session
-// probe (dashboard test action): no session is created or claimed. Returns
-// the live session state (including RateLimitsByModel quota) on success, or
-// ErrNoActiveSession when the token has no active session (still a valid
-// token), or the classified auth/network error otherwise.
-func (p *Pool) ProbeToken(ctx context.Context, token int) (*upstream.SessionState, error) {
-	toks := p.toks.Load()
-	if token < 0 || token >= len(*toks) {
-		return nil, fmt.Errorf("pool: token %d out of range", token)
-	}
-	return (*toks)[token].client.ProbeAccount(ctx)
 }
 
 // BridgeCount returns the number of cached bridge entries (healthz).
@@ -298,7 +285,7 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	p.bridgeMu.Unlock()
 
 	// Create the client outside bridgeMu (B2).
-	client, err := upstream.New(clientToken, p.cfg.Load())
+	client, err := upstream.New(clientToken, p.cfg)
 	if err != nil {
 		return nil, fmt.Errorf("bridge: %w", err)
 	}
@@ -310,7 +297,7 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 		return entry, nil
 	}
 	entry := &bridgeEntry{token: clientToken, client: client, spend: newSpendLedger()}
-	cfg := p.cfg.Load()
+	cfg := p.cfg
 	entry.session = session.NewManagerWithStore(client, p.store)
 	entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 	entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
@@ -488,7 +475,7 @@ func (p *Pool) bridgeSessionPollTick(ctx context.Context, cfg *config.Config) {
 // are NOT part of this pass — they run on the jittered
 // bridgeSessionPollTick schedule (gap #2).
 func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
-	cfg := p.cfg.Load()
+	cfg := p.cfg
 	var toEvict []*bridgeEntry
 	var toMaintain []*bridgeEntry
 

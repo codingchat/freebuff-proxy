@@ -18,8 +18,7 @@ import (
 // registerOpenAIRoutes wires the OpenAI-compatible surface (chat
 // completions, Responses, embeddings, model catalog) onto the mux. The
 // Anthropic-compatible surface registers separately (registerAnthropicRoutes,
-// anthropic.go); shared routes (healthz/metrics/admin) live in
-// server.go's Handler.
+// anthropic.go); shared routes (healthz/metrics) live in server.go's Handler.
 func (s *Server) registerOpenAIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChat))
 	mux.HandleFunc("POST /v1/responses", s.requireAuth(s.handleResponses))

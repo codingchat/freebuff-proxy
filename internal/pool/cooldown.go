@@ -1,7 +1,6 @@
 package pool
 
 import (
-	"fmt"
 	"time"
 
 	"freebuff-proxy/internal/notify"
@@ -11,11 +10,11 @@ import (
 // CooldownToken puts token in a cooldown window of duration d (auth-reject
 // recovery, e.g. runs.DefaultCooldown). Out-of-range tokens are ignored.
 func (p *Pool) CooldownToken(token int, d time.Duration) {
-	toks := p.toks.Load()
-	if token < 0 || token >= len(*toks) {
+	toks := p.toks
+	if token < 0 || token >= len(toks) {
 		return
 	}
-	(*toks)[token].runs.Cooldown(d)
+	toks[token].runs.Cooldown(d)
 }
 
 // CooldownTokenRateLimit applies a rate-limit cooldown to token
@@ -24,11 +23,11 @@ func (p *Pool) CooldownToken(token int, d time.Duration) {
 // (issue #122), the event is also counted on the token's spend ledger —
 // the $ ceiling is server-enforced, so the ledger only records the event.
 func (p *Pool) CooldownTokenRateLimit(token int, rle *upstream.RateLimitError) {
-	toks := p.toks.Load()
-	if token < 0 || token >= len(*toks) || rle == nil {
+	toks := p.toks
+	if token < 0 || token >= len(toks) || rle == nil {
 		return
 	}
-	(*toks)[token].runs.CooldownRateLimit(rle)
+	toks[token].runs.CooldownRateLimit(rle)
 	if rle.Status == "spend_limited" {
 		p.spendMu.Lock()
 		defer p.spendMu.Unlock()
@@ -43,22 +42,22 @@ func (p *Pool) CooldownTokenRateLimit(token int, rle *upstream.RateLimitError) {
 // 429 ip_capped; upstream itself is admission-only, not a quota reset).
 // Out-of-range tokens are ignored.
 func (p *Pool) CooldownTokenIpCapped(token int, ice *upstream.IpCappedError) {
-	toks := p.toks.Load()
-	if token < 0 || token >= len(*toks) || ice == nil {
+	toks := p.toks
+	if token < 0 || token >= len(toks) || ice == nil {
 		return
 	}
-	(*toks)[token].runs.CooldownIpCapped(ice)
+	toks[token].runs.CooldownIpCapped(ice)
 }
 
 // CooldownTokenBan applies a ban cooldown to token (remembered so
 // Acquire surfaces 403 banned + resumes-at during the window) and fires the
 // token_banned webhook alert (issue #48, throttled per event type).
 func (p *Pool) CooldownTokenBan(token int, be *upstream.BanError) {
-	toks := p.toks.Load()
-	if token < 0 || token >= len(*toks) || be == nil {
+	toks := p.toks
+	if token < 0 || token >= len(toks) || be == nil {
 		return
 	}
-	(*toks)[token].runs.CooldownBan(be)
+	toks[token].runs.CooldownBan(be)
 	p.notifyBan(token+1, "")
 }
 
@@ -66,11 +65,11 @@ func (p *Pool) CooldownTokenBan(token int, be *upstream.BanError) {
 // (remembered so Acquire surfaces the region-block error during the ~15m
 // window instead of re-hitting upstream).
 func (p *Pool) CooldownTokenCountryBlocked(token int, cbe *upstream.CountryBlockedError) {
-	toks := p.toks.Load()
-	if token < 0 || token >= len(*toks) || cbe == nil {
+	toks := p.toks
+	if token < 0 || token >= len(toks) || cbe == nil {
 		return
 	}
-	(*toks)[token].runs.CooldownCountryBlocked(cbe)
+	toks[token].runs.CooldownCountryBlocked(cbe)
 }
 
 // CooldownBridge puts the bridge entry's token in a cooldown window of
@@ -142,15 +141,4 @@ func (p *Pool) notifyBan(tokenIndex int, model string) {
 	}
 	n.Send(notify.Event{Event: "token_banned", TokenIndex: tokenIndex, Model: model,
 		Message: "a FreeBuff token was classified banned upstream (403)"})
-}
-
-// UnlockToken clears any cooldown/rate-limit/ban lock on token so Acquire
-// can use it again (dashboard unlock action).
-func (p *Pool) UnlockToken(token int) error {
-	toks := p.toks.Load()
-	if token < 0 || token >= len(*toks) {
-		return fmt.Errorf("pool: token %d out of range", token)
-	}
-	(*toks)[token].runs.ClearCooldowns()
-	return nil
 }

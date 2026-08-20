@@ -1,14 +1,11 @@
 package pool
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -100,9 +97,8 @@ func TestRoundRobinDistribution(t *testing.T) {
 	for i := 0; i < n; i++ {
 		// Unconditional invalidation (test intent: force the cold path) —
 		// the pool's InvalidateSession is now instance-guarded (#132).
-		toks := p.toks.Load()
-		(*toks)[0].session.Invalidate()
-		(*toks)[1].session.Invalidate()
+		p.toks[0].session.Invalidate()
+		p.toks[1].session.Invalidate()
 		lease, err := p.Acquire(context.Background(), modelA)
 		if err != nil {
 			t.Fatal(err)
@@ -714,63 +710,6 @@ func TestPoolChat(t *testing.T) {
 	}
 }
 
-// TestChatDispatchesThroughLeaseEntry is the regression guard for the P2
-// chat dispatch bug: Chat used the lease's Token index against a FRESH
-// token snapshot, so a concurrent RemoveAllTokens+AddToken left the index
-// pointing at a DIFFERENT token — the chat went through the wrong account's
-// client and its usage/error path charged the wrong token (or the index was
-// out of range and the chat failed outright). The lease's backing entry is
-// the authoritative owner pinned at Acquire: Chat must dispatch through it
-// and skip usage recording once the entry is no longer in the pool.
-func TestChatDispatchesThroughLeaseEntry(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	mock.ChatBody = testutil.SSEEvent(`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"` + modelA + `","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`)
-	p := newTestPool(t, mock)
-
-	lease, err := p.Acquire(context.Background(), modelA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	origEntry := lease.entry
-	if origEntry == nil {
-		t.Fatal("acquired lease has no backing entry")
-	}
-	opts := upstream.ChatOptions{Model: modelA, RunID: lease.Run.RunID, SessionInstanceID: lease.SessionInstanceID}
-	body := []byte(`{"model":"` + modelA + `","messages":[{"role":"user","content":"ping"}]}`)
-
-	// Rebuild the token list under the in-flight lease: the lease's Token
-	// index (0) now belongs to a DIFFERENT token's entry.
-	p.RemoveAllTokens(context.Background())
-	if _, err := p.AddToken("new-token"); err != nil {
-		t.Fatal(err)
-	}
-	if (*p.toks.Load())[0] == origEntry {
-		t.Fatal("test setup: index 0 still the original entry")
-	}
-
-	rc, err := p.Chat(context.Background(), lease, opts, body)
-	if err != nil {
-		t.Fatalf("chat through stale lease failed: %v", err)
-	}
-	_ = rc.Close()
-	p.LeaseRelease(lease)
-
-	// The chat went out on the ORIGINAL token's client, not the new token
-	// that reused its index.
-	if len(mock.RecordedChatHeaders) != 1 {
-		t.Fatalf("upstream chat calls = %d, want 1", len(mock.RecordedChatHeaders))
-	}
-	if got := mock.RecordedChatHeaders[0].Get("Authorization"); got != "Bearer tok-0" {
-		t.Errorf("upstream Authorization = %q, want %q (chat went through the wrong token)", got, "Bearer tok-0")
-	}
-
-	// The removed entry's usage must NOT be charged to the new index-0 token.
-	if got := p.usageCount(0); got != 0 {
-		t.Errorf("usage on reused index = %d, want 0 (removed entry's chat must not charge the new token)", got)
-	}
-}
-
 func TestUnknownModel(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
@@ -819,7 +758,7 @@ func TestStartPrewarmsAndShutdownDrains(t *testing.T) {
 // fallback registry (the pool does not export its registry).
 func (p *Pool) regAgentIDs(t *testing.T) []string {
 	t.Helper()
-	reg := registry.New(p.cfg.Load(), nil)
+	reg := registry.New(p.cfg, nil)
 	reg.LoadFallback()
 	return reg.AgentIDs()
 }
@@ -900,9 +839,7 @@ func TestDailyMessageCap(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	p := newTestPool(t, mock)
-	cfg := p.cfg.Load()
-	cfg.MaxMessagesPerDay = 2
-	p.cfg.Store(cfg)
+	p.cfg.MaxMessagesPerDay = 2
 
 	for i := 0; i < 2; i++ {
 		lease, err := p.Acquire(context.Background(), modelA)
@@ -946,9 +883,7 @@ func TestDailyMessageCapFailover(t *testing.T) {
 	mock1 := testutil.NewMock()
 	defer mock1.Close()
 	p := newTestPool(t, mock0, mock1)
-	cfg := p.cfg.Load()
-	cfg.MaxMessagesPerDay = 1
-	p.cfg.Store(cfg)
+	p.cfg.MaxMessagesPerDay = 1
 
 	// Round-robin: first acquire lands on token-1; cap it with a chat.
 	lease, err := p.Acquire(context.Background(), modelA)
@@ -1007,118 +942,11 @@ func TestDailyMessageCapDisabled(t *testing.T) {
 	}
 }
 
-// TestSetConfigReloadsDailyLimit is the regression guard for the P1 stale
-// config bug: the pool kept the *config.Config it was built with, so a
-// reloaded config (dashboard save / admin reload) never took effect for
-// the daily message cap. SetConfig must swap the pointer the pool reads.
-func TestSetConfigReloadsDailyLimit(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	p := newTestPool(t, mock)
-
-	// One successful chat under the default (unlimited) config.
-	lease, err := p.Acquire(context.Background(), modelA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	chatOnce(t, p, lease)
-	p.LeaseRelease(lease)
-
-	// Reload a config with a daily cap of 1.
-	newCfg := *p.cfg.Load()
-	newCfg.MaxMessagesPerDay = 1
-	p.SetConfig(&newCfg)
-
-	// The next acquire must respect the NEW limit: one chat is already on
-	// the books, so the cap bites immediately.
-	_, err = p.Acquire(context.Background(), modelA)
-	var rle *upstream.RateLimitError
-	if !errors.As(err, &rle) {
-		t.Fatalf("want *upstream.RateLimitError after SetConfig cap, got %v", err)
-	}
-	if !errors.Is(err, upstream.ErrRateLimited) {
-		t.Error("errors.Is(ErrRateLimited) = false")
-	}
-	if rle.Limit != 1 {
-		t.Errorf("quota limit = %v, want 1 (reloaded config)", rle.Limit)
-	}
-}
-
-// TestSetConfigWarnsOnPersistenceChange pins the reload warning: session
-// persistence is fixed at startup (the store is built from the boot config
-// and injected via SetSessionStore), so a reloaded config that changes
-// SESSION_PERSIST / SESSION_STATE_FILE must warn that it only takes effect
-// on the next restart instead of silently doing nothing.
-func TestSetConfigWarnsOnPersistenceChange(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-
-	var buf bytes.Buffer
-	testLogger := slog.New(slog.NewTextHandler(&buf, nil))
-
-	p := newTestPoolCfg(t, func(c *config.Config) {
-		c.SessionPersist = true
-		c.SessionStateFile = ".freebuff-session-state.json"
-	}, mock)
-	p.logger = testLogger // internal test: capture the pool's logger
-	p.SetSessionStore(session.NewStore(filepath.Join(t.TempDir(), "state.json")))
-
-	// Same persistence config on reload → no warning.
-	buf.Reset()
-	same := *p.cfg.Load()
-	p.SetConfig(&same)
-	if got := buf.String(); got != "" {
-		t.Fatalf("SetConfig with unchanged persistence logged: %q, want none", got)
-	}
-
-	// Persistence disabled → warn.
-	buf.Reset()
-	disabled := *p.cfg.Load()
-	disabled.SessionPersist = false
-	p.SetConfig(&disabled)
-	if got := buf.String(); !strings.Contains(got, "SESSION_PERSIST") {
-		t.Fatalf("SetConfig disabling persistence logged %q, want SESSION_PERSIST warning", got)
-	}
-
-	// Same persistence, different state file → warn.
-	buf.Reset()
-	moved := *p.cfg.Load()
-	moved.SessionPersist = true
-	moved.SessionStateFile = "elsewhere.json"
-	p.SetConfig(&moved)
-	if got := buf.String(); !strings.Contains(got, "SESSION_PERSIST") || !strings.Contains(got, "elsewhere.json") {
-		t.Fatalf("SetConfig moving the state file logged %q, want SESSION_PERSIST warning with new path", got)
-	}
-}
-
-// TestSetConfigWarnsWhenPersistenceTurnedOn covers the pre-injection state
-// (SetSessionStore never called, store nil): a reload that turns
-// SESSION_PERSIST on cannot build the store at runtime, so it must warn.
-func TestSetConfigWarnsWhenPersistenceTurnedOn(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-
-	var buf bytes.Buffer
-	p := newTestPool(t, mock)
-	p.logger = slog.New(slog.NewTextHandler(&buf, nil))
-	// SetSessionStore never called: recorded persistence is off.
-
-	enabled := *p.cfg.Load()
-	enabled.SessionPersist = true
-	enabled.SessionStateFile = ".freebuff-session-state.json"
-	p.SetConfig(&enabled)
-	if got := buf.String(); !strings.Contains(got, "SESSION_PERSIST") {
-		t.Fatalf("SetConfig enabling persistence logged %q, want SESSION_PERSIST warning", got)
-	}
-}
-
 func TestIdleRotationFinishesRuns(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	p := newTestPool(t, mock)
-	cfg := p.cfg.Load()
-	cfg.IdleRotationTimeout = 10 * time.Millisecond
-	p.cfg.Store(cfg)
+	p.cfg.IdleRotationTimeout = 10 * time.Millisecond
 
 	lease, err := p.Acquire(context.Background(), modelA)
 	if err != nil {
@@ -1180,9 +1008,7 @@ func TestIdleRotationSkipsInflight(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	p := newTestPool(t, mock)
-	cfg := p.cfg.Load()
-	cfg.IdleRotationTimeout = 10 * time.Millisecond
-	p.cfg.Store(cfg)
+	p.cfg.IdleRotationTimeout = 10 * time.Millisecond
 
 	// Acquire a lease and HOLD it: the run stays in the run manager.
 	lease, err := p.Acquire(context.Background(), modelA)
@@ -1920,9 +1746,7 @@ func TestIdleFinishAllRunsHonorsMaintainCtx(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	p := newTestPool(t, mock)
-	cfg := p.cfg.Load()
-	cfg.IdleRotationTimeout = time.Millisecond
-	p.cfg.Store(cfg)
+	p.cfg.IdleRotationTimeout = time.Millisecond
 
 	lease, err := p.Acquire(context.Background(), modelA)
 	if err != nil {
@@ -2090,307 +1914,6 @@ func TestShutdownDrainsBridgeEntries(t *testing.T) {
 	if mock.SessionEnds != 2 {
 		t.Errorf("session ends = %d, want 2 (bridge sessions ended on shutdown)", mock.SessionEnds)
 	}
-}
-
-// Runtime token management: AddToken/RemoveLastToken/RemoveAllTokens mutate
-// the pool safely, and a chat through an added token works end to end.
-func TestRuntimeTokenManagement(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	// Bridge-mode pool (zero fixed tokens) pointed at the mock.
-	p := newTestPoolCfg(t, func(c *config.Config) {
-		c.AuthTokens = nil
-		c.UpstreamBaseURL = mock.URL()
-	})
-	if p.TokenCount() != 0 {
-		t.Fatalf("TokenCount = %d, want 0 at start", p.TokenCount())
-	}
-
-	idx, err := p.AddToken("rt-token")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if idx != 0 || p.TokenCount() != 1 {
-		t.Fatalf("after AddToken: idx=%d count=%d, want 0/1", idx, p.TokenCount())
-	}
-
-	// A real chat through the added token works (mock upstream).
-	lease, err := p.Acquire(context.Background(), modelA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mock.ChatBody = testutil.SSEEvent(`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n")
-	rc, err := p.Chat(context.Background(), lease, upstream.ChatOptions{Model: modelA}, []byte(`{"model":"z-ai/glm-5.2"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = rc.Close()
-	p.LeaseRelease(lease)
-
-	// RemoveLastToken refuses while a lease is in flight.
-	lease2, err := p.Acquire(context.Background(), modelA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := p.RemoveLastToken(); err == nil {
-		t.Fatal("RemoveLastToken succeeded with an in-flight lease, want refusal")
-	}
-	p.LeaseRelease(lease2)
-
-	if err := p.RemoveLastToken(); err != nil {
-		t.Fatalf("RemoveLastToken: %v", err)
-	}
-	if p.TokenCount() != 0 {
-		t.Fatalf("TokenCount = %d, want 0 after removal", p.TokenCount())
-	}
-
-	// Re-add + remove-all path.
-	if _, err := p.AddToken("rt-2"); err != nil {
-		t.Fatal(err)
-	}
-	p.RemoveAllTokens(context.Background())
-	if p.TokenCount() != 0 {
-		t.Fatalf("TokenCount = %d, want 0 after RemoveAllTokens", p.TokenCount())
-	}
-}
-
-// TestAcquireChatConcurrentTokenMutation is the P1 regression guard for the
-// snapshot double-load race: Acquire used to load p.toks once, then
-// acquireOrder loaded it AGAIN and built indices against the newer
-// (longer) snapshot — an AddToken between the two loads made the failover
-// loop index the stale snapshot past its end and panic with
-// index-out-of-range. The fix passes the single snapshot into acquireOrder
-// (plus a defensive bounds check in the loop), so this hammers Acquire+Chat
-// while a driver goroutine churns AddToken/RemoveLastToken/RemoveAllTokens.
-// The panic window is narrow, so the loop repeats many times; with -race any
-// reintroduced double-load that survives the panics still trips the race
-// detector. Assertion: no panic, and every attempt either succeeds or fails
-// cleanly (never an index-out-of-range).
-func TestAcquireChatConcurrentTokenMutation(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	mock.ChatBody = testutil.SSEEvent(`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n")
-	// Session-admission churn: ~2/3 of admits fail (404) in adjacent pairs,
-	// so an Acquire pass walks PAST every failing token to the end of the
-	// order — exactly the path that indexed past the stale snapshot in the
-	// original double-load bug (a success early in the order would return
-	// before the out-of-range index was reached). The sequence is long
-	// enough to cover the whole hammer so the failure mix never exhausts.
-	seq := make([]string, 8000)
-	for i := range seq {
-		if i%3 == 2 {
-			seq[i] = "active"
-		} else {
-			seq[i] = "404"
-		}
-	}
-	mock.SessionSequence = seq
-	// Two fixed tokens to start; the driver churns the list from there.
-	p := newTestPoolCfg(t, func(c *config.Config) {
-		c.UpstreamBaseURL = mock.URL()
-	}, mock, mock)
-
-	ctx := context.Background()
-	body := []byte(`{"model":"z-ai/glm-5.2"}`)
-	const (
-		workers = 8
-		iters   = 250
-		cycles  = 8
-	)
-
-	var (
-		mu       sync.Mutex
-		panics   []string
-		attempts int
-		success  int
-		failure  int
-	)
-	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < iters; i++ {
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							mu.Lock()
-							panics = append(panics, fmt.Sprintf("%v", r))
-							mu.Unlock()
-						}
-					}()
-					lease, err := p.Acquire(ctx, modelA)
-					if err != nil {
-						mu.Lock()
-						attempts++
-						failure++
-						mu.Unlock()
-						return
-					}
-					rc, err := p.Chat(ctx, lease, upstream.ChatOptions{Model: modelA}, body)
-					if err == nil {
-						_ = rc.Close()
-					}
-					p.LeaseRelease(lease)
-					mu.Lock()
-					attempts++
-					success++
-					mu.Unlock()
-				}()
-			}
-		}()
-	}
-
-	// Driver: churn the token list while the workers acquire/chat. AddToken
-	// is the dangerous direction (it grows the snapshot acquireOrder builds
-	// indices against); RemoveLastToken is refused while a lease is in
-	// flight (ignored here), RemoveAllTokens empties the list.
-	for i := 0; i < cycles; i++ {
-		if _, err := p.AddToken(fmt.Sprintf("hammer-%d", i)); err != nil {
-			t.Fatalf("AddToken: %v", err)
-		}
-		_ = p.RemoveLastToken()
-		if _, err := p.AddToken(fmt.Sprintf("hammer-%d", i+100)); err != nil {
-			t.Fatalf("AddToken: %v", err)
-		}
-		p.RemoveAllTokens(ctx)
-		if _, err := p.AddToken(fmt.Sprintf("hammer-%d", i+200)); err != nil {
-			t.Fatalf("AddToken: %v", err)
-		}
-	}
-	wg.Wait()
-
-	if len(panics) > 0 {
-		t.Fatalf("panic(s) under concurrent token mutation: %v", panics)
-	}
-	if attempts != success+failure {
-		t.Fatalf("attempts=%d but success=%d failure=%d", attempts, success, failure)
-	}
-	if success == 0 {
-		t.Fatal("no chat succeeded under the hammer; mutation churn starved the workers")
-	}
-}
-
-// TestUsageAccountingConcurrentTokenMutation is the P2 regression guard for
-// the usage-slice indexing race: recordChat/usageCount/usageResetIn index
-// p.msgsPerToken, which RemoveAllTokens (nil) and RemoveLastToken (truncate)
-// mutate concurrently — usageResetIn previously had no bounds check at all
-// and panicked the moment a capped Acquire raced a removal. This hammers the
-// daily-cap path (usageCount + dailyLimitError -> usageResetIn) and feeds
-// usage via recordChat from a seeder goroutine while the driver churns the
-// token list. Assertion: no panic, every Acquire succeeds or fails cleanly,
-// and the cap path actually fired.
-func TestUsageAccountingConcurrentTokenMutation(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	p := newTestPoolCfg(t, func(c *config.Config) {
-		c.UpstreamBaseURL = mock.URL()
-		c.MaxMessagesPerDay = 3
-	}, mock)
-
-	ctx := context.Background()
-	const (
-		workers = 8
-		iters   = 250
-		cycles  = 6
-	)
-
-	// Deterministic mechanism check: with token 0 pre-seeded past the cap,
-	// a single-threaded Acquire MUST surface the daily-cap 429. This pins
-	// the usageCount + dailyLimitError -> usageResetIn path (the functions
-	// that index p.msgsPerToken) without depending on goroutine scheduling;
-	// the concurrent hammer below covers the mutation race.
-	for range 5 {
-		p.recordChat(0)
-	}
-	if _, err := p.Acquire(ctx, modelA); !errors.Is(err, upstream.ErrRateLimited) {
-		t.Fatalf("capped Acquire err = %v, want ErrRateLimited", err)
-	}
-
-	var (
-		mu        sync.Mutex
-		panics    []string
-		attempts  int
-		success   int
-		failure   int
-		capped429 int
-	)
-	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < iters; i++ {
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							mu.Lock()
-							panics = append(panics, fmt.Sprintf("%v", r))
-							mu.Unlock()
-						}
-					}()
-					lease, err := p.Acquire(ctx, modelA)
-					if err != nil {
-						mu.Lock()
-						attempts++
-						failure++
-						if errors.Is(err, upstream.ErrRateLimited) {
-							capped429++
-						}
-						mu.Unlock()
-						return
-					}
-					p.LeaseRelease(lease)
-					mu.Lock()
-					attempts++
-					success++
-					mu.Unlock()
-				}()
-			}
-		}()
-	}
-
-	// Seeder: record usage on arbitrary indices (valid and stale) so
-	// recordChat itself runs under the driver's mutations (P2 class).
-	seedDone := make(chan struct{})
-	go func() {
-		defer close(seedDone)
-		for i := range cycles * workers * 20 {
-			p.recordChat(i % 8)
-		}
-	}()
-
-	for i := 0; i < cycles; i++ {
-		idx, err := p.AddToken(fmt.Sprintf("usage-%d", i))
-		if err != nil {
-			t.Fatalf("AddToken: %v", err)
-		}
-		// Seed the fresh generation past the cap immediately so the pool is
-		// capped for nearly its whole lifetime: a worker Acquire that lands
-		// here hits the daily-cap path instead of a fresh-token success.
-		for range 3 {
-			p.recordChat(idx)
-		}
-		_ = p.RemoveLastToken() // refused while a lease is in flight — fine
-		p.RemoveAllTokens(ctx)
-		idx, err = p.AddToken(fmt.Sprintf("usage-%d", i+100))
-		if err != nil {
-			t.Fatalf("AddToken: %v", err)
-		}
-		for range 3 {
-			p.recordChat(idx)
-		}
-	}
-	wg.Wait()
-	<-seedDone
-
-	if len(panics) > 0 {
-		t.Fatalf("panic(s) under concurrent token mutation: %v", panics)
-	}
-	if attempts != success+failure {
-		t.Fatalf("attempts=%d but success=%d failure=%d", attempts, success, failure)
-	}
-	t.Logf("hammer: attempts=%d success=%d failure=%d capped429=%d", attempts, success, failure, capped429)
 }
 
 // ── Wave 1 issue tests (#81, #77) ────────────────────────────────────────

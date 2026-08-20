@@ -1,28 +1,68 @@
 package server
 
-// Wave-2 observability tests (T15-T17): admin audit trail, silent-endpoint
-// coverage, and access-log hygiene. Internal package so the tests can reach
-// the unexported access gate, adminAuth snapshots, and config-diff helpers.
+// Wave-2 observability tests (T16-T17): silent-endpoint coverage and
+// access-log hygiene. Internal package so the tests can reach the unexported
+// access gate and the Server struct directly.
 
 import (
 	"bytes"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"freebuff-proxy/internal/config"
+	"freebuff-proxy/internal/pool"
 	"freebuff-proxy/internal/registry"
+	"freebuff-proxy/internal/session"
 	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/internal/upstream"
 )
+
+// newServer builds a test server over one mock token with a config mutation;
+// returns the raw *Server for pool/option assertions.
+func newServer(t *testing.T, mock *testutil.MockUpstream, mut func(*config.Config)) *Server {
+	t.Helper()
+	return newServerOpts(t, mock, mut)
+}
+
+// newServerOpts builds the full stack (one mock token, fallback registry)
+// and returns the raw *Server, applying mut before construction.
+func newServerOpts(t *testing.T, mock *testutil.MockUpstream, mut func(*config.Config)) *Server {
+	t.Helper()
+	cfg := &config.Config{
+		AuthTokens:         []string{"tok-0"},
+		RotationInterval:   time.Hour,
+		RequestTimeout:     15 * time.Minute,
+		SessionCallTimeout: 5 * time.Second,
+		RegistryRefresh:    6 * time.Hour,
+		UpstreamBaseURL:    "https://www.codebuff.com",
+		LogAccess:          true,
+	}
+	if mut != nil {
+		mut(cfg)
+	}
+	clientCfg := *cfg
+	clientCfg.UpstreamBaseURL = mock.URL()
+	client, err := upstream.New(cfg.AuthTokens[0], &clientCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.NewManager(client)
+	reg := registry.New(cfg, nil)
+	reg.LoadFallback()
+	p, err := pool.New(cfg, []*upstream.Client{client}, []*session.Manager{sess}, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(cfg, p, reg, nil)
+}
 
 // newLoggingServer builds a full test server (one mock token, fallback
 // registry) whose logger writes to a capture buffer at Debug level, so the
-// T15-T17 log lines are assertable.
+// T16-T17 log lines are assertable.
 func newLoggingServer(t *testing.T, mock *testutil.MockUpstream, mut func(*config.Config)) (*Server, *bytes.Buffer) {
 	t.Helper()
 	srv := newServerOpts(t, mock, mut)
@@ -108,153 +148,13 @@ func TestAccessLogDisabledSuppressesLines(t *testing.T) {
 	}
 
 	// Runtime toggle back on (config reload semantics).
-	cfg := *srv.cfg.Load()
+	cfg := *srv.cfg
 	cfg.LogAccess = true
-	srv.cfg.Store(&cfg)
+	srv.cfg = &cfg
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 	if !strings.Contains(sink.String(), "msg=access") {
 		t.Fatal("no access line after LOG_ACCESS re-enabled")
-	}
-}
-
-// TestAdminReloadLogsAudit verifies T15: /admin/reload success logs INFO and
-// failure logs WARN, both with remote and path.
-func TestAdminReloadLogsAudit(t *testing.T) {
-	testutil.UnsetConfigEnv(t)
-	t.Chdir(t.TempDir())
-	mock := testutil.NewMock()
-	defer mock.Close()
-	srv, sink := newLoggingServer(t, mock, nil)
-	h := srv.Handler()
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/reload", nil)
-	req.RemoteAddr = "198.51.100.7:1234"
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("reload status = %d, want 200: %s", rec.Code, rec.Body.String())
-	}
-	logs := sink.String()
-	for _, want := range []string{"admin reload requested", "config reloaded successfully", "remote=198.51.100.7", "path=/admin/reload"} {
-		if !strings.Contains(logs, want) {
-			t.Errorf("reload success logs missing %q", want)
-		}
-	}
-
-	// Failure path: an invalid .env makes config.Load reject the reload.
-	if err := os.WriteFile(".env", []byte("ROTATION_INTERVAL=not-a-duration\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	reqFail := httptest.NewRequest(http.MethodPost, "/admin/reload", nil)
-	reqFail.RemoteAddr = "198.51.100.7:1234"
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, reqFail)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("reload failure status = %d, want 500", rec.Code)
-	}
-	logs = sink.String()
-	for _, want := range []string{"admin reload failed", "remote=198.51.100.7", "path=/admin/reload"} {
-		if !strings.Contains(logs, want) {
-			t.Errorf("reload failure logs missing %q", want)
-		}
-	}
-}
-
-// TestAdminLoginFailureLogsNoCredential verifies T15: a failed /admin/login
-// logs a WARN with remote, running attempt count, and reason — never the
-// submitted credential or the configured token.
-func TestAdminLoginFailureLogsNoCredential(t *testing.T) {
-	testutil.UnsetConfigEnv(t)
-	mock := testutil.NewMock()
-	defer mock.Close()
-	srv, sink := newLoggingServer(t, mock, func(c *config.Config) { c.AdminToken = "secret-admin-token" })
-	h := srv.Handler()
-
-	post := func(cred string) {
-		t.Helper()
-		form := url.Values{"token": {cred}}
-		req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.RemoteAddr = "198.51.100.9:1234"
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-	}
-
-	post("wrong-credential-value")
-	logs := sink.String()
-	if !strings.Contains(logs, "admin login failed") {
-		t.Fatal("missing admin login failure WARN")
-	}
-	for _, want := range []string{"remote=198.51.100.9", "attempts=1", "reason=invalid_token"} {
-		if !strings.Contains(logs, want) {
-			t.Errorf("login WARN missing %q", want)
-		}
-	}
-	if strings.Contains(logs, "wrong-credential-value") || strings.Contains(logs, "secret-admin-token") {
-		t.Fatal("login failure log leaked the credential")
-	}
-
-	post("another-wrong-value")
-	if !strings.Contains(sink.String(), "attempts=2") {
-		t.Errorf("second failure did not log attempts=2: %s", sink.String())
-	}
-	if strings.Contains(sink.String(), "another-wrong-value") {
-		t.Fatal("second login failure log leaked the credential")
-	}
-}
-
-// TestConfigSaveLogsChangedKeys verifies T15: a config save logs the sorted
-// changed effective key NAMES (never values — including secret values).
-func TestConfigSaveLogsChangedKeys(t *testing.T) {
-	testutil.UnsetConfigEnv(t)
-	t.Chdir(t.TempDir())
-	if err := os.WriteFile(".env", []byte("SAFE_MODE=true\nAUTH_TOKENS=tok-a\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mock := testutil.NewMock()
-	defer mock.Close()
-	// The helper cfg must mirror the initial .env effective state
-	// (SAFE_MODE=true, one token) so the save diff is old-vs-new effective.
-	srv, sink := newLoggingServer(t, mock, func(c *config.Config) {
-		c.SafeMode = true
-		c.AuthTokens = []string{"tok-a"}
-	})
-	h := srv.Handler()
-
-	// Loopback remote + Host: the open-mode adminSensitive gate requires it.
-	req := httptest.NewRequest(http.MethodPost, "/admin/config",
-		strings.NewReader("SAFE_MODE=false\nAUTH_TOKENS=tok-a\nADMIN_TOKEN=new-secret-xyz\nMAX_MESSAGES_PER_DAY=10\n"))
-	req.Header.Set("Content-Type", "text/plain")
-	req.RemoteAddr = "127.0.0.1:1234"
-	req.Host = "127.0.0.1:3457"
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("config save status = %d: %s", rec.Code, rec.Body.String())
-	}
-
-	logs := sink.String()
-	if !strings.Contains(logs, "dashboard config saved and reloaded") {
-		t.Fatal("missing config save INFO")
-	}
-	if !strings.Contains(logs, "changed_keys=") {
-		t.Fatalf("save INFO missing changed_keys: %s", logs)
-	}
-	for _, key := range []string{"ADMIN_TOKEN", "MAX_MESSAGES_PER_DAY", "SAFE_MODE"} {
-		if !strings.Contains(logs, key) {
-			t.Errorf("changed_keys missing %q: %s", key, logs)
-		}
-	}
-	// AUTH_TOKENS kept the same count → not changed.
-	if strings.Contains(logs, "AUTH_TOKENS") {
-		t.Errorf("AUTH_TOKENS listed as changed despite the same count: %s", logs)
-	}
-	// Values — including the new ADMIN_TOKEN secret — must never appear.
-	for _, leaked := range []string{"new-secret-xyz", "SAFE_MODE=false", "MAX_MESSAGES_PER_DAY=10"} {
-		if strings.Contains(logs, leaked) {
-			t.Errorf("config save log leaked %q: %s", leaked, logs)
-		}
 	}
 }
 
@@ -288,7 +188,7 @@ func TestModelsEmptyRegistryWarn(t *testing.T) {
 	defer mock.Close()
 	srv, sink := newLoggingServer(t, mock, nil)
 	// Replace the fallback-populated registry with an empty one.
-	srv.reg = registry.New(srv.cfg.Load(), nil)
+	srv.reg = registry.New(srv.cfg, nil)
 	h := srv.Handler()
 
 	rec := httptest.NewRecorder()

@@ -38,9 +38,9 @@ import (
 // fails over linearly until a token yields both a run and a session. Returns
 // a lease on success. Registry misses (unknown model) are returned as-is.
 func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
-	toks := p.toks.Load()
-	cfg := p.cfg.Load()
-	if len(*toks) == 0 {
+	toks := p.toks
+	cfg := p.cfg
+	if len(toks) == 0 {
 		return nil, errors.New("pool: no auth tokens configured")
 	}
 	agentID, err := p.reg.AgentForModel(model)
@@ -48,7 +48,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		return nil, err
 	}
 
-	start := int(p.rr.Add(1)-1) % len(*toks)
+	start := int(p.rr.Add(1)-1) % len(toks)
 	// Hot-session-first selection: tokens that already hold a live session
 	// are tried before any fresh account, so a request reuses the live slot
 	// instead of admitting a new session (never create where one already
@@ -72,13 +72,11 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			return nil, err
 		}
 		// Defensive bounds check: acquireOrder builds its order against the
-		// SAME snapshot loaded above, but a removal racing this call must
-		// never index past the slice it computed the order from. Skip
-		// indices that are no longer present instead of panicking.
-		if idx < 0 || idx >= len(*toks) {
+		// same token list loaded above; never index past it.
+		if idx < 0 || idx >= len(toks) {
 			continue
 		}
-		tok := (*toks)[idx]
+		tok := toks[idx]
 		name := fmt.Sprintf("token-%d", idx+1)
 
 		if until := tok.runs.CooldownUntil(); time.Now().Before(until) {
@@ -274,16 +272,6 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			continue
 		}
 
-		// Re-validate the token is still current: a concurrent
-		// RemoveLastToken may have swapped the snapshot while the session
-		// admission above was in flight. Leasing a removed token would
-		// strand its run's inflight — LeaseRelease always releases through
-		// the lease's own entry, but the run would belong to a drained,
-		// retiring manager — so skip instead (the removal path drains the
-		// retired entry once it observes the slip).
-		if cur := p.toks.Load(); idx < 0 || idx >= len(*cur) || (*cur)[idx] != tok {
-			continue
-		}
 		ss := tok.session.Snapshot()
 		effectiveModel := model
 		effectiveAgentID := agentID
@@ -441,11 +429,9 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 }
 
 // acquireOrder computes the token iteration order for one Acquire pass
-// (hot-session-first selection, see Acquire). toks is the caller's snapshot
-// (loaded once in Acquire) — the order is built against the same snapshot
-// the failover loop indexes, so an AddToken racing the call can never make
-// the loop index past its own snapshot. start is the round-robin start
-// index; model is the requested upstream model.
+// (hot-session-first selection, see Acquire). toks is the pool's fixed-token
+// list (write-once, so indices are stable for the whole call). start is the
+// round-robin start index; model is the requested upstream model.
 //
 // Issue #85: within the hot set, tokens whose last admission reported a
 // known positive remaining session quota for the requested model rank above
@@ -455,14 +441,14 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 // whose quota is exhausted for the model (RecentCount >= Limit with a future
 // ResetAt) are excluded from this pass entirely; their rate-limit reasons
 // are returned so the caller surfaces a real 429 when every token is capped.
-func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int, []*upstream.RateLimitError) {
-	cfg := p.cfg.Load()
+func (p *Pool) acquireOrder(toks []*tokenEntry, start int, model string) ([]int, []*upstream.RateLimitError) {
+	cfg := p.cfg
 	// eligible mirrors the per-token checks the failover loop applies:
 	// not cooling down, under the daily message cap, and not quota-capped
 	// for the requested model (issue #85). It never records the exclusion
 	// reasons — the caller does that in one place.
 	eligible := func(idx int) bool {
-		tok := (*toks)[idx]
+		tok := toks[idx]
 		// Quota-capped tokens are excluded from BOTH the hot set and the
 		// cold fallback: their rate-limit reasons ride back in quotaLimited,
 		// so the pool surfaces a real 429 when every token is capped.
@@ -479,7 +465,7 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 	// them here would drop those reasons from the error matrix when a hot
 	// token fails (review finding).
 	eligibleForHot := func(idx int) bool {
-		tok := (*toks)[idx]
+		tok := toks[idx]
 		if time.Now().Before(tok.runs.CooldownUntil()) {
 			return false
 		}
@@ -491,9 +477,9 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 
 	var hotBuf [32]int // stack-allocated hot-set buffer; >32 tokens spill to heap
 	hot := hotBuf[:0]
-	for offset := 0; offset < len(*toks); offset++ {
-		idx := (start + offset) % len(*toks)
-		if !eligibleForHot(idx) || !tokenHasLiveSession((*toks)[idx]) {
+	for offset := 0; offset < len(toks); offset++ {
+		idx := (start + offset) % len(toks)
+		if !eligibleForHot(idx) || !tokenHasLiveSession(toks[idx]) {
 			continue
 		}
 		hot = append(hot, idx)
@@ -502,9 +488,9 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 		// No hot tokens: plain round-robin over every token, exactly like
 		// the historical behavior. Capped/cooldown tokens stay in the order
 		// — the failover loop re-checks and records their reasons.
-		order := make([]int, len(*toks))
+		order := make([]int, len(toks))
 		for i := range order {
-			order[i] = (start + i) % len(*toks)
+			order[i] = (start + i) % len(toks)
 		}
 		return order, nil
 	}
@@ -515,13 +501,13 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 	// first.
 	sort.SliceStable(hot, func(i, j int) bool {
 		a, b := hot[i], hot[j]
-		aMatch := (*toks)[a].session.Snapshot().Model == model
-		bMatch := (*toks)[b].session.Snapshot().Model == model
+		aMatch := toks[a].session.Snapshot().Model == model
+		bMatch := toks[b].session.Snapshot().Model == model
 		if aMatch != bMatch {
 			return aMatch
 		}
-		aKnown, aRem, _ := quotaRemaining((*toks)[a], model)
-		bKnown, bRem, _ := quotaRemaining((*toks)[b], model)
+		aKnown, aRem, _ := quotaRemaining(toks[a], model)
+		bKnown, bRem, _ := quotaRemaining(toks[b], model)
 		if aKnown != bKnown {
 			return aKnown
 		}
@@ -534,16 +520,16 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 	// Cold fallback: the remaining eligible tokens from the round-robin
 	// start, excluding the hot tokens already attempted this pass (each
 	// token is attempted at most once, as in the historical failover).
-	attemptedBuf := make([]bool, len(*toks))
+	attemptedBuf := make([]bool, len(toks))
 	for _, idx := range hot {
-		if idx >= 0 && idx < len(*toks) {
+		if idx >= 0 && idx < len(toks) {
 			attemptedBuf[idx] = true
 		}
 	}
 	order := hot
-	for offset := 0; offset < len(*toks); offset++ {
-		idx := (start + offset) % len(*toks)
-		if idx >= 0 && idx < len(*toks) && attemptedBuf[idx] || !eligible(idx) {
+	for offset := 0; offset < len(toks); offset++ {
+		idx := (start + offset) % len(toks)
+		if idx >= 0 && idx < len(toks) && attemptedBuf[idx] || !eligible(idx) {
 			continue
 		}
 		order = append(order, idx)
@@ -558,12 +544,12 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 		inOrder[idx] = struct{}{}
 	}
 	var quotaLimited []*upstream.RateLimitError
-	for idx := range *toks {
+	for idx := range toks {
 		if _, ok := inOrder[idx]; ok {
 			continue
 		}
-		if _, _, capped := quotaRemaining((*toks)[idx], model); capped {
-			quotaLimited = append(quotaLimited, quotaLimitError((*toks)[idx], model))
+		if _, _, capped := quotaRemaining(toks[idx], model); capped {
+			quotaLimited = append(quotaLimited, quotaLimitError(toks[idx], model))
 		}
 	}
 	return order, quotaLimited

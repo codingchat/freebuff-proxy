@@ -7,7 +7,6 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"net/http"
 	"strings"
@@ -64,7 +63,7 @@ func (w *statusWriter) Push(target string, opts *http.PushOptions) error {
 // corsOrigin returns the configured Access-Control-Allow-Origin, treating an
 // empty value as the "*" default (an empty .env line must not disable CORS).
 func (s *Server) corsOrigin() string {
-	origin := strings.TrimSpace(s.cfg.Load().CORSAllowedOrigin)
+	origin := strings.TrimSpace(s.cfg.CORSAllowedOrigin)
 	if origin == "" {
 		return "*"
 	}
@@ -75,7 +74,7 @@ func (s *Server) corsOrigin() string {
 // the allow headers on /v1/* responses. An OPTIONS request for any /v1/*
 // path is answered with 204 before the route table sees it (so unknown
 // /v1/* subpaths still get a clean preflight, matching the reference
-// proxy-freebuff OPTIONS → 204). Admin routes pass through untouched.
+// proxy-freebuff OPTIONS → 204).
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/") {
@@ -139,29 +138,6 @@ func resetAccessLogGate() {
 	clear(accessLogGate.lastSeen)
 }
 
-// mustSubFS returns the named subtree of an embed.FS. The directory is
-// embedded at compile time, so a missing subtree is an invariant violation,
-// not a runtime condition.
-func mustSubFS(fsys fs.FS, dir string) fs.FS {
-	sub, err := fs.Sub(fsys, dir)
-	if err != nil {
-		panic("dashboard: embedded subtree missing: " + err.Error())
-	}
-	return sub
-}
-
-// noDirListing rejects directory requests so FileServerFS never renders an
-// index listing of the embedded assets.
-func noDirListing(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/") {
-			http.NotFound(w, r)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // remoteHost returns the client host without the port.
 func remoteHost(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -180,7 +156,7 @@ func remoteHost(r *http.Request) string {
 // token there, and API_KEYS is meaningless.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cfg := s.cfg.Load()
+		cfg := s.cfg
 		if len(cfg.APIKeys) == 0 || cfg.BridgeMode() {
 			next(w, r)
 			return
@@ -210,7 +186,7 @@ func extractBearerToken(authHeader string) (string, bool) {
 // "anthropic-api-key: <key>". Comparison is constant-time against every
 // configured key.
 func (s *Server) authorized(r *http.Request) bool {
-	cfg := s.cfg.Load()
+	cfg := s.cfg
 	provided := ""
 	if tok, ok := extractBearerToken(r.Header.Get("Authorization")); ok {
 		provided = tok
@@ -228,31 +204,6 @@ func (s *Server) authorized(r *http.Request) bool {
 		}
 	}
 	return false
-}
-
-// requireAdminToken guards POST /admin/reload when ADMIN_TOKEN is set: the
-// request must present it as "Authorization: Bearer <token>" (constant-time
-// compare). When ADMIN_TOKEN is unset the handler passes through untouched —
-// the legacy API_KEYS gate still applies via requireAuth, and main.go logs a
-// startup warning for the open (default) case.
-func (s *Server) requireAdminToken(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		cfg := s.cfg.Load()
-		if cfg.AdminToken == "" {
-			next(w, r)
-			return
-		}
-		provided := ""
-		if tok, ok := extractBearerToken(r.Header.Get("Authorization")); ok {
-			provided = tok
-		}
-		if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(cfg.AdminToken)) != 1 {
-			s.writeJSONError(w, http.StatusUnauthorized,
-				"Invalid admin token", "invalid_request_error", "invalid_admin_token", 0)
-			return
-		}
-		next(w, r)
-	}
 }
 
 // clientToken returns the request's bearer token (Authorization: Bearer,

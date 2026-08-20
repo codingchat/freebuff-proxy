@@ -35,10 +35,10 @@ func quotaFor(model string, limit, recent float64, reset time.Time) map[string]a
 // admitBoth admits sessions for token 0 and 1 on modelA so both are "hot".
 func admitBoth(t *testing.T, p *Pool, model string) {
 	t.Helper()
-	toks := p.toks.Load()
+	toks := p.toks
 	ctx := context.Background()
-	for i := 0; i < len(*toks); i++ {
-		if _, err := (*toks)[i].session.EnsureSessionForModel(ctx, model); err != nil {
+	for i := range len(toks) {
+		if _, err := toks[i].session.EnsureSessionForModel(ctx, model); err != nil {
 			t.Fatalf("admit token %d: %v", i, err)
 		}
 	}
@@ -57,7 +57,7 @@ func TestAcquireQuotaAwareOrdering(t *testing.T) {
 
 	// Both tokens hot with KNOWN positive remaining quota: smallest
 	// remaining (token 0, rem 2) must be tried first.
-	toks := p.toks.Load()
+	toks := p.toks
 	order, limited := p.acquireOrder(toks, 0, modelA)
 	if len(limited) != 0 {
 		t.Fatalf("unexpected quota-limited errors: %v", limited)
@@ -81,7 +81,7 @@ func TestAcquireKnownQuotaBeforeUnknown(t *testing.T) {
 	p := newTestPool(t, mock0, mock1)
 	admitBoth(t, p, modelA)
 
-	toks := p.toks.Load()
+	toks := p.toks
 	order, _ := p.acquireOrder(toks, 0, modelA)
 	if len(order) < 2 || order[0] != 0 {
 		t.Fatalf("order = %v, want known-quota token 0 first", order)
@@ -127,7 +127,7 @@ func TestAcquireStaleQuotaNotCapped(t *testing.T) {
 	p := newTestPool(t, mock0)
 	admitBoth(t, p, modelA)
 
-	toks := p.toks.Load()
+	toks := p.toks
 	order, limited := p.acquireOrder(toks, 0, modelA)
 	if len(limited) != 0 {
 		t.Fatalf("stale-quota token wrongly capped: %v", limited)

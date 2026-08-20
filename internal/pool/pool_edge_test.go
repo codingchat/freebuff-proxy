@@ -1,18 +1,16 @@
 package pool
 
 // Edge-case and E2E tests for the pool: live failover matrix, bridge daily
-// cap, idle handling in bridge mode, RemoveLastToken drain + race, maintain
-// queued-advance/session-poll, runtime token actions, and exact daily-cap
-// accounting. Regression guards for the audit's pool bugs (AcquireBridge
-// idle tracking, RemoveLastToken drain/TOCTOU, Cooldown ban memory, idle
-// bridge sweep).
+// cap, idle handling in bridge mode, maintain queued-advance/session-poll,
+// and exact daily-cap accounting. Regression guards for the audit's pool
+// bugs (AcquireBridge idle tracking, Cooldown ban memory, idle bridge
+// sweep).
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -183,9 +181,7 @@ func TestBridgeDailyMessageCap(t *testing.T) {
 	defer mock.Close()
 	mock.ChatBody = testutil.SSEEvent(`{"id":"chatcmpl-b1","object":"chat.completion.chunk","created":1,"model":"` + modelA + `","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`)
 	p := newBridgePool(t, mock)
-	cfg := p.cfg.Load()
-	cfg.MaxMessagesPerDay = 1
-	p.cfg.Store(cfg)
+	p.cfg.MaxMessagesPerDay = 1
 
 	// Client A: the first chat succeeds (and records usage)...
 	lease, err := p.AcquireBridge(context.Background(), "client-a", modelA)
@@ -261,9 +257,7 @@ func TestBridgeDailyUsageCounter(t *testing.T) {
 	}
 
 	// Set BridgeDailyLimit=3; AcquireBridge must return an error.
-	cfg := p.cfg.Load()
-	cfg.BridgeDailyLimit = 3
-	p.cfg.Store(cfg)
+	p.cfg.BridgeDailyLimit = 3
 	_, err = p.AcquireBridge(context.Background(), "counter-client", modelA)
 	if err == nil {
 		t.Fatal("expected error for bridge daily limit, got nil")
@@ -297,9 +291,7 @@ func TestBridgeIdlePause(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	p := newBridgePool(t, mock)
-	cfg := p.cfg.Load()
-	cfg.IdleRotationTimeout = 10 * time.Millisecond
-	p.cfg.Store(cfg)
+	p.cfg.IdleRotationTimeout = 10 * time.Millisecond
 
 	lease, err := p.AcquireBridge(context.Background(), "client-tok", modelA)
 	if err != nil {
@@ -354,9 +346,7 @@ func TestBridgeMaintainRunsOnIdlePass(t *testing.T) {
 	p := newTestPoolCfg(t, func(c *config.Config) {
 		c.UpstreamBaseURL = mock.URL() // bridge entries must hit the mock, not the real gateway
 	}, mock) // one fixed token: mixed mode
-	cfg := p.cfg.Load()
-	cfg.IdleRotationTimeout = 10 * time.Millisecond
-	p.cfg.Store(cfg)
+	p.cfg.IdleRotationTimeout = 10 * time.Millisecond
 
 	// A pooled acquire marks the pool active (lastActive); then a bridge
 	// entry is created and aged past bridgeIdleEvict.
@@ -487,171 +477,6 @@ func TestBridgeEvictionAllBusyKeepsCap(t *testing.T) {
 	p.LeaseRelease(lease33)
 }
 
-// TestRemoveLastTokenDrainsRun is the regression guard for the P1 removal
-// leak: RemoveLastToken removed the token without finishing its run or
-// ending its admitted session (contrast RemoveAllTokens), so the run and
-// session stayed alive upstream. Removal must drain the token.
-func TestRemoveLastTokenDrainsRun(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	p := newTestPool(t, mock)
-
-	lease, err := p.Acquire(context.Background(), modelA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.LeaseRelease(lease)
-	if got := mock.StartedRunsSnapshot(); len(got) != 1 {
-		t.Fatalf("started runs = %v, want 1", got)
-	}
-	if mock.SessionEnds != 0 {
-		t.Fatalf("session ends = %d before removal, want 0", mock.SessionEnds)
-	}
-
-	if err := p.RemoveLastToken(); err != nil {
-		t.Fatalf("RemoveLastToken: %v", err)
-	}
-	if p.TokenCount() != 0 {
-		t.Fatalf("TokenCount = %d, want 0", p.TokenCount())
-	}
-
-	// The removed token's run was FINISHed and its admitted session ended
-	// (both synchronous inside RemoveLastToken).
-	if got := parentFinished(mock); len(got) != 1 || got[0].Status != "completed" {
-		t.Errorf("finished runs = %v, want 1 completed", got)
-	}
-	if mock.SessionEnds != 1 {
-		t.Errorf("session ends = %d, want 1 (removed token's session ended)", mock.SessionEnds)
-	}
-}
-
-// TestRemoveLastTokenRaceHammer hammers Acquire/Chat/LeaseRelease against a
-// concurrent driver churning RemoveLastToken/AddToken: the removal's busy
-// check and snapshot swap are TOCTOU, so a lease can slip through onto the
-// removed token. The pool must not panic, must release every slipped lease
-// (no leaked inflight), and must not leave any removed token's run active —
-// the retired-entry drain finishes them. Run with -race.
-func TestRemoveLastTokenRaceHammer(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	mock.ChatBody = testutil.SSEEvent(`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n")
-	ids := make([]string, 4000)
-	for i := range ids {
-		ids[i] = fmt.Sprintf("run-%04d", i)
-	}
-	mock.RunIDs = ids
-	// Interleave active/disabled admissions so Acquire passes exercise both
-	// paths while the driver churns the token list.
-	seq := make([]string, 6000)
-	for i := range seq {
-		if i%2 == 0 {
-			seq[i] = "active"
-		} else {
-			seq[i] = "404"
-		}
-	}
-	mock.SessionSequence = seq
-	p := newTestPool(t, mock, mock)
-
-	ctx := context.Background()
-	body := []byte(`{"model":"` + modelA + `"}`)
-	const (
-		workers = 8
-		iters   = 300
-		cycles  = 40
-	)
-
-	var (
-		mu       sync.Mutex
-		panics   []string
-		attempts int
-		success  int
-		failure  int
-	)
-	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < iters; i++ {
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							mu.Lock()
-							panics = append(panics, fmt.Sprintf("%v", r))
-							mu.Unlock()
-						}
-					}()
-					lease, err := p.Acquire(ctx, modelA)
-					if err != nil {
-						mu.Lock()
-						attempts++
-						failure++
-						mu.Unlock()
-						return
-					}
-					rc, err := p.Chat(ctx, lease, upstream.ChatOptions{Model: modelA}, body)
-					if err == nil {
-						_ = rc.Close()
-					}
-					p.LeaseRelease(lease)
-					mu.Lock()
-					attempts++
-					success++
-					mu.Unlock()
-				}()
-			}
-		}()
-	}
-
-	// Driver: churn the token list so removals race in-flight acquires
-	// (RemoveLastToken refuses while a lease is in flight — fine).
-	for i := 0; i < cycles; i++ {
-		if _, err := p.AddToken(fmt.Sprintf("rm-%d", i)); err != nil {
-			t.Fatalf("AddToken: %v", err)
-		}
-		_ = p.RemoveLastToken()
-		if _, err := p.AddToken(fmt.Sprintf("rm-%d", i+100)); err != nil {
-			t.Fatalf("AddToken: %v", err)
-		}
-	}
-	if _, err := p.AddToken("rm-final"); err != nil {
-		t.Fatal(err)
-	}
-	wg.Wait()
-
-	if len(panics) > 0 {
-		t.Fatalf("panic(s) under concurrent removal: %v", panics)
-	}
-	if attempts != success+failure {
-		t.Fatalf("attempts=%d but success=%d failure=%d", attempts, success, failure)
-	}
-	if success == 0 {
-		t.Fatal("no chat succeeded under the hammer; removal churn starved the workers")
-	}
-
-	// Every retired (removed) token must be fully drained: no leaked
-	// inflight, no active runs.
-	p.retiredMu.Lock()
-	for entry := range p.retired {
-		if got := entry.runs.InflightCount(); got != 0 {
-			t.Errorf("retired token leaked inflight = %d", got)
-		}
-		if got := entry.runs.Snapshot().ActiveRuns; got != 0 {
-			t.Errorf("retired token left %d active runs", got)
-		}
-	}
-	p.retiredMu.Unlock()
-
-	// Current tokens hold no leaked inflight either.
-	toks := p.toks.Load()
-	for i, tok := range *toks {
-		if got := tok.runs.InflightCount(); got != 0 {
-			t.Errorf("current token %d leaked inflight = %d", i, got)
-		}
-	}
-}
-
 // TestMaintainTickAdvancesQueuedAndPollsActive is the first E2E coverage of
 // the maintain pass's session work: a queued session is advanced
 // (EnsureSession polls upstream) once its pollAt passes, and an active
@@ -716,105 +541,6 @@ func TestEmptyPoolAcquire(t *testing.T) {
 	}
 }
 
-// TestProbeToken pins the dashboard test action: ProbeToken runs a
-// zero-cost GET session probe (no session claimed) against the token's
-// upstream client and returns the live session state with quota.
-func TestProbeToken(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	p := newTestPool(t, mock)
-
-	st, err := p.ProbeToken(context.Background(), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st == nil {
-		t.Fatal("ProbeToken returned nil state, want live session state")
-	}
-	// The probe is a GET with no instance header: it claims no session slot.
-	if mock.SessionCreates != 0 {
-		t.Errorf("session creates = %d, want 0 (probe must not claim a session)", mock.SessionCreates)
-	}
-	// The probe surfaces the live quota from rateLimitsByModel.
-	if len(st.RateLimitsByModel) == 0 {
-		t.Errorf("RateLimitsByModel = %v, want quota from the probe response", st.RateLimitsByModel)
-	}
-
-	// Out-of-range tokens error without panicking.
-	if _, err := p.ProbeToken(context.Background(), 99); err == nil {
-		t.Error("ProbeToken(99) succeeded, want out-of-range error")
-	}
-}
-
-// TestFinishTokenRuns pins the dashboard finish action: all active runs of a
-// token are FINISHed upstream and dropped from the manager.
-func TestFinishTokenRuns(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	p := newTestPool(t, mock)
-
-	lease, err := p.Acquire(context.Background(), modelA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.LeaseRelease(lease)
-
-	if err := p.FinishTokenRuns(context.Background(), 0); err != nil {
-		t.Fatal(err)
-	}
-	if got := p.Snapshot()[0].ActiveRuns; got != 0 {
-		t.Errorf("ActiveRuns = %d, want 0 after FinishTokenRuns", got)
-	}
-	finished := mock.FinishedRunsSnapshot()
-	// Issue #91: each run START also creates+FINISHes a context-pruner child
-	// run (best-effort, async), so the raw finished count includes the
-	// child. Assert the PARENT run was FINISHed with status completed
-	// (race-stable — the child may or may not have landed yet).
-	parentFinished := false
-	for _, f := range finished {
-		if f.RunID == "run-0001" && f.Status == "completed" {
-			parentFinished = true
-		}
-	}
-	if !parentFinished {
-		t.Errorf("finished runs = %v, want run-0001 completed", finished)
-	}
-
-	// Out-of-range tokens error without panicking.
-	if err := p.FinishTokenRuns(context.Background(), 99); err == nil {
-		t.Error("FinishTokenRuns(99) succeeded, want out-of-range error")
-	}
-}
-
-// TestUnlockToken pins the dashboard unlock action: clearing a ban/rate
-// cooldown makes the token acquirable again immediately.
-func TestUnlockToken(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	p := newTestPool(t, mock)
-
-	p.CooldownTokenBan(0, &upstream.BanError{Body: "banned", ResumesAt: time.Now().Add(time.Hour)})
-	if err := p.UnlockToken(0); err != nil {
-		t.Fatal(err)
-	}
-	snap := p.Snapshot()[0]
-	if !snap.CooldownUntil.IsZero() {
-		t.Errorf("CooldownUntil = %v after unlock, want zero", snap.CooldownUntil)
-	}
-	if snap.RiskLevel != "low" {
-		t.Errorf("RiskLevel = %q after unlock, want low", snap.RiskLevel)
-	}
-	lease, err := p.Acquire(context.Background(), modelA)
-	if err != nil {
-		t.Fatalf("acquire after unlock: %v", err)
-	}
-	p.LeaseRelease(lease)
-
-	if err := p.UnlockToken(99); err == nil {
-		t.Error("UnlockToken(99) succeeded, want out-of-range error")
-	}
-}
-
 // TestDailyCapExactRetryAfter pins the daily-cap RetryAfter exactly: with a
 // known oldest usage timestamp, usageResetIn is time.Until(oldest+24h) (the
 // moment the slot frees) — the existing tests only bounds-check (0, 24h].
@@ -822,9 +548,7 @@ func TestDailyCapExactRetryAfter(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	p := newTestPool(t, mock)
-	cfg := p.cfg.Load()
-	cfg.MaxMessagesPerDay = 1
-	p.cfg.Store(cfg)
+	p.cfg.MaxMessagesPerDay = 1
 
 	// Seed usage with a KNOWN oldest timestamp.
 	oldest := time.Now().Add(-2 * time.Hour)
@@ -905,7 +629,7 @@ func TestAcquireHotSessionModelTiebreak(t *testing.T) {
 		t.Fatalf("modelB lease token = %d, want 1", lease.Token)
 	}
 	p.LeaseRelease(lease)
-	_ = p.UnlockToken(0)
+	p.toks[0].runs.ClearCooldowns()
 
 	// Both tokens are hot; the modelB request must prefer token 2 (its
 	// session already serves modelB) over token 1.

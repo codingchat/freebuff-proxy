@@ -12,7 +12,7 @@ import (
 // cached bridge entries (bridge mode), and the effective routing mode.
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	snaps := s.pool.Snapshot()
-	cfg := s.cfg.Load()
+	cfg := s.cfg
 	w.Header().Set("Content-Type", "application/json")
 	tokens := make([]map[string]any, 0, len(snaps))
 	for _, snap := range snaps {
@@ -204,24 +204,6 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sb.WriteString("\n")
-
-	if s.logs != nil {
-		// T20: handled-record counters from the dashboard log ring. The key
-		// is logring's "level|msg" (level lowercased). msg is a free-form
-		// operator message, so the label is escaped like every upstream-
-		// derived label.
-		sb.WriteString("# HELP freebuff_proxy_log_events_total Log records handled per level and message\n")
-		sb.WriteString("# TYPE freebuff_proxy_log_events_total counter\n")
-		for key, n := range s.logs.Counts() {
-			level, msg, ok := strings.Cut(key, "|")
-			if !ok {
-				continue
-			}
-			fmt.Fprintf(&sb, "freebuff_proxy_log_events_total{level=\"%s\",msg=\"%s\"} %d\n",
-				escapeLabelValue(level), escapeLabelValue(msg), n)
-		}
-		sb.WriteString("\n")
-	}
 
 	_, _ = w.Write([]byte(sb.String()))
 }

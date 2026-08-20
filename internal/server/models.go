@@ -58,7 +58,7 @@ func (s *Server) modelAllowed(model string) bool {
 	if !registry.ServedModels[model] {
 		return false
 	}
-	cfg := s.cfg.Load()
+	cfg := s.cfg
 	allow := cfg.ModelsAllow
 	if len(allow) == 0 {
 		return true
@@ -78,7 +78,7 @@ func (s *Server) modelListed(model string) bool {
 	if !registry.ServedModels[model] {
 		return false
 	}
-	allow := s.cfg.Load().ModelsAllow
+	allow := s.cfg.ModelsAllow
 	if len(allow) == 0 {
 		return true
 	}
@@ -105,7 +105,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		// actually asks, not at startup.
 		s.logger.Warn("model list requested with empty registry", "path", r.URL.Path, "remote", remoteHost(r), "model_count", 0)
 	}
-	hideUnavailable := s.cfg.Load().ModelsHideUnavailable
+	hideUnavailable := s.cfg.ModelsHideUnavailable
 	data := make([]map[string]any, 0, len(models))
 	for _, id := range models {
 		available, status := modelAvailability(id, snaps)

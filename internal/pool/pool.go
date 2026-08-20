@@ -82,13 +82,6 @@ const maxBridgeEntries = 32
 // maintain loop FINISHes its runs and drops it from the cache.
 const bridgeIdleEvict = 2 * time.Hour
 
-// retiredDrainGrace is how long a retired token may sit without a lease
-// before maintainTick drops it from the retired map. RemoveLastToken drains
-// the entry at removal, so a parked entry's runs are already finished; the
-// grace exists to cover an Acquire that loaded the pre-removal snapshot and
-// is still mid-admission when the park happens (see RemoveLastToken).
-const retiredDrainGrace = 2 * time.Minute
-
 // Lease is one acquired right to send a chat request through a specific
 // token. The caller must call Pool.LeaseRelease when the request completes
 // or fails (it decrements the run's inflight counter).
@@ -99,11 +92,9 @@ type Lease struct {
 	Run               *runs.Run
 	SessionInstanceID string       // "" when the session is disabled
 	Bridge            *bridgeEntry // nil for pooled (fixed-token) leases
-	// entry is the fixed-token entry backing this lease. Set by Acquire so
-	// LeaseRelease always releases through the right run manager: after a
-	// concurrent RemoveLastToken, the Token index may be out of range (or
-	// reused by a later AddToken), and a bounds-checked release would leak
-	// the run's inflight or hit an unrelated manager.
+	// entry is the fixed-token entry backing this lease, pinned by Acquire so
+	// LeaseRelease always releases through the right run manager regardless of
+	// the lease's Token index.
 	entry *tokenEntry
 	// AcquiredAt is when this lease was handed out (per acquire attempt,
 	// not per run — a chat retry re-acquires and gets a fresh timestamp).
@@ -203,27 +194,15 @@ type TokenSnapshot struct {
 
 // Pool balances requests across the configured tokens.
 type Pool struct {
-	// cfg is the pool's effective configuration. It is an atomic pointer so
-	// the dashboard can swap in a reloaded config at runtime (SetConfig);
-	// every reader Load()s once per call instead of caching the pointer.
-	cfg atomic.Pointer[config.Config]
+	// cfg is the pool's write-once configuration, set at construction. The
+	// pool is CLI-only: there is no runtime config reload, so every reader
+	// reads the field directly.
+	cfg *config.Config
 	reg *registry.Registry
-	// toks is the fixed-token list. It is an atomic pointer so the dashboard
-	// can add/remove tokens at runtime (AddToken/RemoveLastToken/
-	// RemoveAllTokens rebuild the slice); every reader Load()s once per call
-	// and bounds-checks indices, since the slice can shrink mid-flight.
-	toks atomic.Pointer[[]*tokenEntry]
-
-	// retired maps token entries removed by RemoveLastToken to the time they
-	// were parked. The busy check and the toks swap are TOCTOU: an Acquire
-	// that loaded the pre-removal snapshot can lease the removed token in
-	// between, and its LeaseRelease would no-op on the post-removal bounds
-	// check (or mis-target a reused index). Leases carry their entry, so
-	// release always lands on the right manager; LeaseRelease drains a
-	// parked entry once its last lease releases. maintainTick prunes
-	// entries that never saw a slipped lease (already drained at removal).
-	retiredMu sync.Mutex
-	retired   map[*tokenEntry]time.Time
+	// toks is the fixed-token list, built once at construction. It never
+	// changes after New: readers index it directly instead of re-loading a
+	// swappable snapshot.
+	toks []*tokenEntry
 
 	rr     atomic.Uint64 // round-robin start index
 	logger *slog.Logger
@@ -249,8 +228,8 @@ type Pool struct {
 
 	// Spend ledger (issue #87): per-token token spend, rolling 24h window
 	// plus day/week/month buckets with rollover. Guarded by spendMu;
-	// spendPerToken stays index-aligned with msgsPerToken under usageMu's
-	// publish order (AddToken/RemoveLastToken update both slices together).
+	// spendPerToken stays index-aligned with msgsPerToken (both are built
+	// once alongside the fixed-token list).
 	spendMu       sync.Mutex
 	spendPerToken []*spendLedger
 
@@ -298,14 +277,6 @@ type Pool struct {
 	// classified. nil disables. Wired by main from WEBHOOK_URL.
 	notify   *notify.Sender
 	notifyMu sync.Mutex // guards notify reads/writes (P2-1 data race)
-
-	// storeSessionPersist and storeStateFile record the persistence config
-	// the store was created with (captured by SetSessionStore), so SetConfig
-	// can detect a reload that changes the persistence semantics — the live
-	// store cannot be swapped at runtime, so such a change only takes
-	// effect on the next restart.
-	storeSessionPersist bool
-	storeStateFile      string
 }
 
 type tokenEntry struct {
@@ -317,16 +288,9 @@ type tokenEntry struct {
 	// compact poll is due (zero = due on the next sessionPollTick pass);
 	// pollFailures counts consecutive poll failures for the 20s→300s backoff.
 	// Touched only by the maintain goroutine (sessionPollTick), so no lock is
-	// needed — AddToken entries are appended to a fresh slice the poll loop
-	// has not loaded yet.
+	// needed.
 	nextPollAt   time.Time
 	pollFailures int
-
-	// drained ensures FinishAllRuns + EndSession runs at most once for a
-	// retired entry. drainRemovedToken is called from both LeaseRelease
-	// (when the last inflight releases) and pruneRetired; the sync.Once
-	// prevents the race between these two callers from double-draining.
-	drained sync.Once
 }
 
 // New builds the pool over the configured tokens. len(clients) and
@@ -347,7 +311,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 	}
 
 	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4)}
-	p.cfg.Store(cfg)
+	p.cfg = cfg
 	p.msgsPerToken = make([][]time.Time, len(cfg.AuthTokens))
 	p.spendPerToken = make([]*spendLedger, len(cfg.AuthTokens))
 	for i := range p.spendPerToken {
@@ -365,7 +329,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 			client:  clients[i],
 		})
 	}
-	p.toks.Store(&toks)
+	p.toks = toks
 	return p, nil
 }
 
@@ -381,115 +345,23 @@ func runOptions(cfg *config.Config) runs.Options {
 	}
 }
 
-// SetConfig swaps in a reloaded configuration. The pool reads config
-// through an atomic pointer, so a config change takes effect on the next
-// Acquire/maintain pass without rebuilding the pool.
-func (p *Pool) SetConfig(cfg *config.Config) {
-	p.cfg.Store(cfg)
-
-	// Runtime-adjustable knobs: the create gate caps (#86) and the session
-	// re-admit lead / probe cache TTL (#99/#60) follow config reloads.
-	if p.gate != nil {
-		p.gate.setLimits(cfg.SessionCreateMaxParallelGlobal, cfg.SessionCreateMaxParallelPerModel)
-	}
-	toks := p.toks.Load()
-	for _, tok := range *toks {
-		tok.session.SetReAdmitLead(cfg.SessionReAdmitLead)
-		tok.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
-	}
-	p.bridgeMu.Lock()
-	for _, entry := range p.bridge {
-		entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
-		entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
-	}
-	p.bridgeMu.Unlock()
-
-	// Session persistence is decided at startup: the store is built from the
-	// boot config and injected once via SetSessionStore, so a reload cannot
-	// move the live store. Warn when the reloaded config changes the
-	// persistence semantics — otherwise operators get a silent no-op (the
-	// dashboard save / admin reload funnels through here).
-	persistChanged := cfg.SessionPersist != p.storeSessionPersist ||
-		(cfg.SessionPersist && cfg.SessionStateFile != p.storeStateFile)
-	if persistChanged {
-		p.logger.Warn("SESSION_PERSIST/SESSION_STATE_FILE changed via reload; takes effect on the next restart",
-			"old_session_persist", p.storeSessionPersist,
-			"new_session_persist", cfg.SessionPersist,
-			"old_state_file", p.storeStateFile,
-			"new_state_file", cfg.SessionStateFile)
-	}
-}
-
-// AddToken adds a token to the pool at runtime (dashboard action): builds
-// the client/session/run-manager triple and appends it, returning the new
-// token index. The config must be updated separately (AUTH_TOKENS + reload)
-// so the change survives a restart.
-func (p *Pool) AddToken(token string) (int, error) {
-	toks := p.toks.Load()
-	idx := len(*toks)
-	client, err := upstream.NewWithIndex(token, idx, p.cfg.Load())
-	if err != nil {
-		return 0, fmt.Errorf("pool: add token: %w", err)
-	}
-	sess := session.NewManagerWithStore(client, p.store)
-	cfg := p.cfg.Load()
-	sess.SetReAdmitLead(cfg.SessionReAdmitLead)
-	sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
-	entry := &tokenEntry{
-		session: sess,
-		runs:    runs.NewRunManagerOpts(client, sess, runOptions(cfg)),
-		client:  client,
-	}
-	next := make([]*tokenEntry, 0, len(*toks)+1)
-	next = append(next, *toks...)
-	next = append(next, entry)
-	// Publish the usage slice BEFORE the token snapshot: a concurrent
-	// reader that observes the new snapshot (via p.toks) must always find
-	// a matching entry in p.msgsPerToken, so recordChat/usageCount for the
-	// new index can never index past the usage slice. The two fields are
-	// otherwise independent (toks is an atomic pointer, msgsPerToken is
-	// usageMu-guarded); only this publish order matters. The spend ledger
-	// slice rides along so Snapshot() stays index-aligned too.
-	p.usageMu.Lock()
-	p.msgsPerToken = append(p.msgsPerToken, nil)
-	p.usageMu.Unlock()
-	p.spendMu.Lock()
-	p.spendPerToken = append(p.spendPerToken, newSpendLedger())
-	p.spendMu.Unlock()
-	p.toks.Store(&next)
-	return idx, nil
-}
-
 // TokenCount returns the current fixed-token count.
 func (p *Pool) TokenCount() int {
-	return len(*p.toks.Load())
+	return len(p.toks)
 }
 
-// SetSessionStore injects the shared session-state store used by runtime
-// token additions (AddToken) and bridge entries. Call before the pool
-// starts serving requests; the fixed-token session managers are built by the
-// caller and must use the same store instance. A nil store disables
-// persistence. The persistence config is captured here so SetConfig can warn
-// when a later reload tries to change it (that only takes effect on the next
-// restart, when the caller builds a fresh store).
+// SetSessionStore injects the shared session-state store used by the pool's
+// fixed-token and bridge entries. Call before the pool starts serving
+// requests; the fixed-token session managers are built by the caller and
+// must use the same store instance. A nil store disables persistence.
 func (p *Pool) SetSessionStore(store *session.Store) {
 	p.store = store
 	// Issue #40: run persistence rides the same store. The fixed-token run
 	// managers were built before the store existed (SetSessionStore runs
-	// after New), so inject it here; runtime-added tokens pass it through
-	// Options at construction.
-	toks := p.toks.Load()
-	for _, tok := range *toks {
+	// after New), so inject it here.
+	for _, tok := range p.toks {
 		tok.runs.SetStore(store)
 	}
-	if store == nil {
-		p.storeSessionPersist = false
-		p.storeStateFile = ""
-		return
-	}
-	cfg := p.cfg.Load()
-	p.storeSessionPersist = cfg.SessionPersist
-	p.storeStateFile = cfg.SessionStateFile
 }
 
 // SetNotifier wires the best-effort webhook sender (issue #48, WEBHOOK_URL);
@@ -521,11 +393,9 @@ func (p *Pool) Chat(ctx context.Context, lease *Lease, opts upstream.ChatOptions
 		return rc, err
 	}
 	// Fixed-token leases dispatch through their backing entry — the
-	// authoritative owner pinned by Acquire. A concurrent RemoveLastToken+
-	// AddToken can leave the lease's Token index out of range (chat would
-	// fail with "invalid lease token") or reused by a DIFFERENT token (chat
-	// would go through the wrong account's client and charge the wrong
-	// usage/error path); the entry is a stable pointer immune to both.
+	// authoritative owner pinned by Acquire: the entry is a stable pointer
+	// that always dispatches to the right account, regardless of the lease's
+	// Token index.
 	if lease.entry != nil {
 		rc, err := lease.entry.client.ChatCompletions(ctx, opts, body)
 		if err == nil {
@@ -535,11 +405,11 @@ func (p *Pool) Chat(ctx context.Context, lease *Lease, opts upstream.ChatOptions
 		return rc, err
 	}
 	// Synthetic leases without an entry keep the historical index path.
-	toks := p.toks.Load()
-	if lease.Token < 0 || lease.Token >= len(*toks) {
+	toks := p.toks
+	if lease.Token < 0 || lease.Token >= len(toks) {
 		return nil, errors.New("pool: chat: invalid lease token")
 	}
-	rc, err := (*toks)[lease.Token].client.ChatCompletions(ctx, opts, body)
+	rc, err := toks[lease.Token].client.ChatCompletions(ctx, opts, body)
 	if err == nil {
 		p.recordChat(lease.Token)
 		p.requestsServed.Add(1)
@@ -593,9 +463,9 @@ func (p *Pool) setIdleFinishedOnce() bool {
 // by the request timeout.
 func (p *Pool) prewarm(ctx context.Context, agentIDs []string) {
 	defer p.wg.Done()
-	toks := p.toks.Load()
-	for i, tok := range *toks {
-		preCtx, cancel := context.WithTimeout(ctx, p.cfg.Load().RequestTimeout)
+	toks := p.toks
+	for i, tok := range toks {
+		preCtx, cancel := context.WithTimeout(ctx, p.cfg.RequestTimeout)
 		tok.runs.Prewarm(preCtx, agentIDs)
 		cancel()
 		p.logger.Debug("pool: prewarm done", "token", i+1, "agents", len(agentIDs))
@@ -636,13 +506,8 @@ func (p *Pool) maintainLoop(ctx context.Context) {
 // maintainLoop so tests can drive a pass without waiting for the
 // minute-long ticker.
 func (p *Pool) maintainTick(ctx context.Context) {
-	toks := p.toks.Load()
-	cfg := p.cfg.Load()
-	// Drop retired tokens that never saw a slipped lease (their runs were
-	// drained at removal). Entries still carrying a lease stay until
-	// LeaseRelease drains them; the park grace covers an Acquire that loaded
-	// the pre-removal snapshot (see RemoveLastToken).
-	p.pruneRetired()
+	toks := p.toks
+	cfg := p.cfg
 	if cfg.IdleRotationTimeout > 0 && p.idleFor() > cfg.IdleRotationTimeout {
 		// Past the idle threshold. If this is the first idle pass, FINISH
 		// every run so the token's rotation/refresh activity stops
@@ -656,7 +521,7 @@ func (p *Pool) maintainTick(ctx context.Context) {
 			p.bridgeMaintain(ctx, true)
 			return
 		}
-		for _, tok := range *toks {
+		for _, tok := range toks {
 			// Skip tokens with outstanding leases: FINISHing this run
 			// would kill an in-flight chat; leave it for rotation once the
 			// lease drains (same rule as the bridge idle sweep).
@@ -671,7 +536,7 @@ func (p *Pool) maintainTick(ctx context.Context) {
 		p.bridgeMaintain(ctx, true)
 		return
 	}
-	for i, tok := range *toks {
+	for i, tok := range toks {
 		// Cooldown: skip all per-token maintain work (rotate, draining
 		// FINISH, queued-session advance). Upstream calls during a cooldown
 		// look like abuse; the skip is silent — the cooldown itself is
@@ -723,14 +588,14 @@ func (p *Pool) maintainTick(ctx context.Context) {
 // session with 428) and while the token cools down, exactly like
 // maintainTick.
 func (p *Pool) sessionPollTick(ctx context.Context) {
-	cfg := p.cfg.Load()
+	cfg := p.cfg
 	if cfg.IdleRotationTimeout > 0 && p.idleFor() > cfg.IdleRotationTimeout {
 		// Session polls pause with the fixed tokens while idle (the
 		// maintain pass already FINISHed every run upstream).
 		return
 	}
-	toks := p.toks.Load()
-	for i, tok := range *toks {
+	toks := p.toks
+	for i, tok := range toks {
 		if time.Now().Before(tok.runs.CooldownUntil()) {
 			// Cooldown: no session poll (same rule as maintainTick).
 			continue

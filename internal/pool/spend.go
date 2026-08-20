@@ -323,8 +323,8 @@ func (l *spendLedger) rolling24h(now time.Time) int64 {
 
 // recordSpend adds tokens to token's ledger (fixed-token index path).
 func (p *Pool) recordSpend(token int, tokens int64) {
-	toks := p.toks.Load()
-	if token < 0 || token >= len(*toks) {
+	toks := p.toks
+	if token < 0 || token >= len(toks) {
 		return
 	}
 	p.spendMu.Lock()
@@ -347,15 +347,14 @@ func (p *Pool) logSpendBuckets(tokens int64) {
 }
 
 // recordSpendEntry adds tokens to the lease's backing entry's ledger by
-// pointer (mirrors recordChatEntry: after a concurrent RemoveLastToken+
-// AddToken, the lease's Token index may target a different token).
+// pointer (mirrors recordChatEntry).
 func (p *Pool) recordSpendEntry(entry *tokenEntry, tokens int64) {
 	if entry == nil {
 		return
 	}
 	p.spendMu.Lock()
 	defer p.spendMu.Unlock()
-	for idx, tok := range *p.toks.Load() {
+	for idx, tok := range p.toks {
 		if tok != entry {
 			continue
 		}
@@ -393,8 +392,8 @@ type spendView struct {
 
 // spendSnapshot returns the fixed-token ledger view (index path).
 func (p *Pool) spendSnapshot(token int) spendView {
-	toks := p.toks.Load()
-	if token < 0 || token >= len(*toks) {
+	toks := p.toks
+	if token < 0 || token >= len(toks) {
 		return spendView{}
 	}
 	p.spendMu.Lock()

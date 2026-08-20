@@ -102,7 +102,7 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 	// the pool.
 	var up io.ReadCloser
 	var lease *pool.Lease
-	cfg := s.cfg.Load()
+	cfg := s.cfg
 	fallbackUsed := false
 	tok := bearerToken(r)
 	bridge := false
@@ -292,9 +292,8 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 	s.traceChat(lease, model, ms, "ok", "", phases.All(), st)
 }
 
-// traceChat records a structured "chat trace" entry for the dashboard
-// traces page (the page filters the shared log ring by msg == "chat trace").
-// phases carries the per-request latency phases (#89); the map is ordered
+// traceChat records a structured "chat trace" entry carrying the per-request
+// routing outcome and latency phases (#89); the map is ordered
 // deterministically for stable log output. st carries the retry-once
 // attempt history (nil-safe: a refusal before any chat attempt passes a
 // zero state).

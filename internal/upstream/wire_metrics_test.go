@@ -1,8 +1,8 @@
 package upstream
 
 import (
+	"bytes"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,19 +11,18 @@ import (
 	"time"
 
 	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/logring"
 	"freebuff-proxy/internal/testutil"
 )
 
-// entryFields returns the Fields of the newest entry whose message matches,
-// or nil when absent.
-func entryFields(entries []logring.Entry, msg string) []string {
-	for _, e := range entries {
-		if e.Message == msg {
-			return e.Fields
+// logLine returns the text-handler line whose msg field matches, or "" when
+// absent. The line carries the record's attrs as key=value pairs.
+func logLine(out, msg string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, `msg="`+msg+`"`) {
+			return line
 		}
 	}
-	return nil
+	return ""
 }
 
 // TestDoUpstreamResponseLogsAndPreservesBody pins T5: a >=400 upstream
@@ -45,9 +44,9 @@ func TestDoUpstreamResponseLogsAndPreservesBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ring := logring.NewHandler(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}), 200)
+	var buf bytes.Buffer
 	orig := slog.Default()
-	slog.SetDefault(slog.New(ring))
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(orig) })
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/chat/completions", nil)
@@ -76,12 +75,11 @@ func TestDoUpstreamResponseLogsAndPreservesBody(t *testing.T) {
 		t.Errorf("rle.Body leaked the redacted token: %q", rle.Body)
 	}
 
-	entries := ring.Recent(200)
-	fields := entryFields(entries, "upstream response")
-	if fields == nil {
+	out := buf.String()
+	line := logLine(out, "upstream response")
+	if line == "" {
 		t.Fatalf("no `upstream response` line captured")
 	}
-	joined := strings.Join(fields, " ")
 	for _, want := range []string{
 		"method=POST",
 		"path=/api/v1/chat/completions",
@@ -90,33 +88,32 @@ func TestDoUpstreamResponseLogsAndPreservesBody(t *testing.T) {
 		"wait 30 minutes before retrying",
 		"[redacted]",
 	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("`upstream response` missing %q in %s", want, joined)
+		if !strings.Contains(line, want) {
+			t.Errorf("`upstream response` missing %q in %s", want, line)
 		}
 	}
-	if strings.Contains(joined, "cb_token_abc") {
-		t.Errorf("`upstream response` body not redacted: %s", joined)
+	if strings.Contains(line, "cb_token_abc") {
+		t.Errorf("`upstream response` body not redacted: %s", line)
 	}
 
 	// T7 classification line: FULL redacted body, correct code + window.
-	fields = entryFields(entries, "upstream rate limit classified")
-	if fields == nil {
+	line = logLine(out, "upstream rate limit classified")
+	if line == "" {
 		t.Fatalf("no `upstream rate limit classified` line captured")
 	}
-	joined = strings.Join(fields, " ")
 	for _, want := range []string{
 		"status=429",
 		"code=free_mode_rate_limited",
-		"window=30 minutes",
+		"window=\"30 minutes\"",
 		"retry_after=1800",
 		"wait 30 minutes before retrying", // full body, not 200-rune truncated
 	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("`upstream rate limit classified` missing %q in %s", want, joined)
+		if !strings.Contains(line, want) {
+			t.Errorf("`upstream rate limit classified` missing %q in %s", want, line)
 		}
 	}
-	if strings.Contains(joined, "cb_token_abc") {
-		t.Errorf("classification body not redacted: %s", joined)
+	if strings.Contains(line, "cb_token_abc") {
+		t.Errorf("classification body not redacted: %s", line)
 	}
 
 	// Ledger counter incremented exactly once.
@@ -140,9 +137,9 @@ func TestDoKeepsUpstreamOkForSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ring := logring.NewHandler(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}), 100)
+	var buf bytes.Buffer
 	orig := slog.Default()
-	slog.SetDefault(slog.New(ring))
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(orig) })
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/chat/completions", nil)
@@ -158,11 +155,11 @@ func TestDoKeepsUpstreamOkForSuccess(t *testing.T) {
 	if got != "data: ok\n\n" {
 		t.Errorf("body = %q, want untouched 200 body", got)
 	}
-	entries := ring.Recent(100)
-	if entryFields(entries, "upstream ok") == nil {
+	out := buf.String()
+	if logLine(out, "upstream ok") == "" {
 		t.Errorf("missing `upstream ok` for 200 response")
 	}
-	if entryFields(entries, "upstream response") != nil {
+	if logLine(out, "upstream response") != "" {
 		t.Errorf("`upstream response` must not fire for 200 responses")
 	}
 }

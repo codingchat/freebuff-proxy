@@ -27,14 +27,12 @@ import (
 	_ "time/tzdata"
 
 	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/logring"
 	"freebuff-proxy/internal/notify"
 	"freebuff-proxy/internal/pool"
 	"freebuff-proxy/internal/registry"
 	"freebuff-proxy/internal/server"
 	"freebuff-proxy/internal/session"
 	"freebuff-proxy/internal/telemetry"
-	"freebuff-proxy/internal/updatecheck"
 	"freebuff-proxy/internal/upstream"
 )
 
@@ -100,10 +98,6 @@ func main() {
 	// Effective log level: LOG_LEVEL config wins, else -v → debug, else info.
 	level := resolveLogLevel(cfg.LogLevel, *verbose)
 	logger := telemetry.New(level, cfg.LogFile, cfg.LogFormat)
-	// The dashboard log viewer reads from an in-memory ring that mirrors
-	// every record the process logger emits (no log file or docker needed).
-	logringHandler := logring.NewHandler(logger.Handler(), cfg.LogRingSize)
-	logger = slog.New(logringHandler)
 	// The pool/upstream/session/runs log through slog.Default(); route it
 	// through our logger so the configured level and log file cover them too.
 	slog.SetDefault(logger)
@@ -245,19 +239,7 @@ func main() {
 	// operators keep the "Egress region" readout without an extra
 	// recurring request the CLI would never make.
 
-	// Issue #62: the dashboard login wizard drives the same headless OAuth
-	// flow as the CLI against the proxy's own transport/stealth wiring; the
-	// token it yields is added to the pool + .env (nil disables the wizard).
-	loginClient, err := upstream.NewForAuth(&cfg)
-	if err != nil {
-		slog.Warn("dashboard login client unavailable (login wizard disabled)", "err", err)
-	}
-	serverOpts := []server.Option{server.WithLoginClient(loginClient)}
-	// Issue #50b: release update indicator — the dashboard badge compares
-	// the running version against the latest GitHub release (6h cache).
-	serverOpts = append(serverOpts, server.WithVersion(version, updatecheck.New(updatecheck.DefaultRepo, nil)))
-
-	srv := server.New(&cfg, p, reg, logger, logringHandler, *configPath, serverOpts...)
+	srv := server.New(&cfg, p, reg, logger)
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           srv.Handler(),
@@ -286,7 +268,6 @@ func main() {
 		"registry_models", reg.ModelCount(),
 		"log_level", logLevelDisplay(level),
 		"verbose", *verbose,
-		"dashboard_enabled", cfg.DashboardEnabled,
 	)
 	if cfg.ActingUserID != "" {
 		// #126: the header is only safe with the token's OWN account id (the
@@ -294,12 +275,6 @@ func main() {
 		// FreeBuff Web service account) — any other value impersonates a
 		// foreign user and can flag the account.
 		logger.Info("acting user id set — x-freebuff-acting-user-id will be sent on chat calls (only safe with the token's own account id; any other value impersonates another user)", "acting_user_id", cfg.ActingUserID)
-	}
-	// /admin/reload and the admin dashboard are open in default deployments
-	// (no API_KEYS, or bridge mode): warn loudly so operators can decide
-	// whether to set ADMIN_TOKEN.
-	if cfg.DashboardEnabled && cfg.AdminToken == "" && (len(cfg.APIKeys) == 0 || cfg.BridgeMode()) {
-		logger.Warn("/admin/reload and the /admin dashboard are unauthenticated — any client that can reach the proxy can reload configuration and view its state. Set ADMIN_TOKEN to require a bearer token")
 	}
 	logger.Info("listening", "addr", cfg.ListenAddr)
 

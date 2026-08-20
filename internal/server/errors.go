@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,39 +16,6 @@ import (
 	"freebuff-proxy/internal/session"
 	"freebuff-proxy/internal/upstream"
 )
-
-// quotaSummary renders the live per-model session quota from a probe's
-// RateLimitsByModel map (models sorted for determinism), plus glmPromo when
-// the response carried it (the
-// x-freebuff-include-unused-rate-limits probe header asks upstream to
-// include the unused limits); "" when the upstream response carried no quota
-// data (compact responses omit it).
-func quotaSummary(st *upstream.SessionState) string {
-	if st == nil || (len(st.RateLimitsByModel) == 0 && st.GlmPromo == "") {
-		return ""
-	}
-	var parts []string
-	models := make([]string, 0, len(st.RateLimitsByModel))
-	for id := range st.RateLimitsByModel {
-		models = append(models, id)
-	}
-	sort.Strings(models)
-	for _, id := range models {
-		q := st.RateLimitsByModel[id]
-		entry := fmt.Sprintf("%s %s/%s", id, strconv.FormatFloat(q.Limit, 'f', -1, 64), strconv.FormatFloat(q.RecentCount, 'f', -1, 64))
-		if q.Period != "" {
-			entry += " " + q.Period
-		}
-		if !q.ResetAt.IsZero() {
-			entry += fmt.Sprintf(", resets %s", q.ResetAt.Format(time.RFC3339))
-		}
-		parts = append(parts, entry)
-	}
-	if st.GlmPromo != "" {
-		parts = append(parts, "glmPromo "+st.GlmPromo)
-	}
-	return "quota: " + strings.Join(parts, "; ")
-}
 
 // openAIError is the OpenAI error body with an optional human-readable hint (#19).
 // Per OpenAPI 3.1 specification (reference/openai-openapi/openapi.yaml), code,

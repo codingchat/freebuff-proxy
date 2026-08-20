@@ -21,7 +21,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"freebuff-proxy/internal/config"
@@ -161,9 +160,9 @@ var ErrModelNotFound = errors.New("model not found in registry")
 // Registry is a concurrency-safe model→agent mapping with periodic refresh.
 type Registry struct {
 	mu     sync.RWMutex
-	cfg    atomic.Pointer[config.Config] // swapped atomically on reload (SetConfig)
-	client *http.Client                  // fetch client; redirects followed, fetchTimeout applied
-	logger *slog.Logger                  // success-refresh INFO sink (nil = slog.Default())
+	cfg    *config.Config // write-once config (MODEL_ALIASES resolution)
+	client *http.Client   // fetch client; redirects followed, fetchTimeout applied
+	logger *slog.Logger   // success-refresh INFO sink (nil = slog.Default())
 
 	sources       []string // override of the default 5 source URLs (tests)
 	lastAttempted []string // URLs tried during the most recent Refresh, in order
@@ -175,15 +174,14 @@ type Registry struct {
 // New returns a Registry that fetches from the default Codebuff sources.
 // client is used for all fetches; when nil, a client with the 30s fetch
 // timeout is used. cfg is stored as the initial config the registry reads
-// (currently only MODEL_ALIASES resolution); SetConfig replaces it at
-// runtime after a dashboard save or /admin/reload.
+// (currently only MODEL_ALIASES resolution); it is write-once.
 func New(cfg *config.Config, client *http.Client) *Registry {
 	if client == nil {
 		client = &http.Client{Timeout: fetchTimeout}
 	}
 	r := &Registry{client: client, logger: slog.Default()}
 	if cfg != nil {
-		r.cfg.Store(cfg)
+		r.cfg = cfg
 	}
 	return r
 }
@@ -195,13 +193,6 @@ func (r *Registry) SetLogger(l *slog.Logger) {
 		l = slog.Default()
 	}
 	r.logger = l
-}
-
-// SetConfig atomically replaces the config the registry reads, so alias
-// resolution (ResolveModel) reflects a dashboard .env save or /admin/reload
-// without a restart. A nil cfg clears the stored config.
-func (r *Registry) SetConfig(cfg *config.Config) {
-	r.cfg.Store(cfg)
 }
 
 // SetSources overrides the source URLs fetched by Refresh (mainly for tests,
@@ -354,7 +345,7 @@ func (r *Registry) ResolveModel(model string) string {
 
 	var cfg *config.Config
 	if r != nil {
-		cfg = r.cfg.Load()
+		cfg = r.cfg
 	}
 	if cfg != nil && len(cfg.ModelAliases) > 0 {
 		if realModel, ok := cfg.ModelAliases[model]; ok && realModel != "" {

@@ -33,7 +33,6 @@ type Config struct {
 	RequestTimeout     time.Duration
 	SessionCallTimeout time.Duration
 	APIKeys            []string
-	AdminToken         string // bearer token required for POST /admin/reload ("" = unauthenticated in default deployments)
 	HTTP2Upstream      bool   // true = negotiate HTTP/2 with the upstream so the ALPN matches real browsers (HTTP2_UPSTREAM); false forces HTTP/1.1 (#51)
 	CostMode           string // "" (omit) or "free"; A/B pending, PRD §8
 	// ActingUserID is the optional FreeBuff account id sent as
@@ -46,18 +45,15 @@ type Config struct {
 	// The only safe value is the token's own account id. (True CLI parity —
 	// auto-deriving each token's own id once via GET /api/v1/me — is
 	// deferred; see the gap analysis item 24.)
-	ActingUserID    string
-	TLSFingerprint  string // "" (plain Go transport) | chrome120 | chrome126 | safari17 | safari18 | firefox120 | firefox128 | edge126 | random | auto
-	RegistryRefresh time.Duration
-	DebugDump       bool
-	LogFile         string
-	LogLevel        string // "" (use -v/default) or debug|info|warn|error|trace
-	LogFormat       string // "text" (default) or "json"
-	LogAccess       bool   // true = per-request access log lines (LOG_ACCESS; default true, an empty .env line keeps it enabled)
-	// LogRingSize is the bounded in-memory log ring capacity behind the
-	// dashboard log viewer (LOG_RING_SIZE; default 500, validated 50..5000).
-	LogRingSize       int
-	MaxMessagesPerDay int // 0 = unlimited: per-token cap on successful chats per 24h
+	ActingUserID      string
+	TLSFingerprint    string // "" (plain Go transport) | chrome120 | chrome126 | safari17 | safari18 | firefox120 | firefox128 | edge126 | random | auto
+	RegistryRefresh   time.Duration
+	DebugDump         bool
+	LogFile           string
+	LogLevel          string // "" (use -v/default) or debug|info|warn|error|trace
+	LogFormat         string // "text" (default) or "json"
+	LogAccess         bool   // true = per-request access log lines (LOG_ACCESS; default true, an empty .env line keeps it enabled)
+	MaxMessagesPerDay int    // 0 = unlimited: per-token cap on successful chats per 24h
 	// BridgeDailyLimit is the global daily chat cap across ALL bridge-mode
 	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited). Enforced in AcquireBridge
 	// before the per-entry check so a flood of distinct client tokens cannot
@@ -156,10 +152,6 @@ type Config struct {
 	// RATE_LIMIT_BURST default 0 (defaults to 2 * RateLimitPerIP).
 	RateLimitPerIP float64
 	RateLimitBurst int
-	// DashboardEnabled controls whether the embedded admin web UI is served
-	// (DASHBOARD_ENABLED; default true). Set to false to disable all /admin
-	// routes.
-	DashboardEnabled bool
 	// EnvFile is the .env path actually loaded ("" when none existed).
 	// Resolved via ResolveEnvFile (issue #39): ./.env in the working
 	// directory wins; otherwise the platform config dir is tried.
@@ -198,7 +190,6 @@ type rawConfig struct {
 	RequestTimeout     string   `json:"REQUEST_TIMEOUT"`
 	SessionCallTimeout string   `json:"SESSION_CALL_TIMEOUT"`
 	APIKeys            []string `json:"API_KEYS"`
-	AdminToken         string   `json:"ADMIN_TOKEN"`
 	CostMode           string   `json:"COST_MODE"`
 	ActingUserID       string   `json:"ACTING_USER_ID"`
 	// LegacyActingUserID is the pre-rename JSON key (USER_ID) — merged at
@@ -211,7 +202,6 @@ type rawConfig struct {
 	LogLevel           string `json:"LOG_LEVEL"`
 	LogFormat          string `json:"LOG_FORMAT"`
 	LogAccess          bool   `json:"LOG_ACCESS"`
-	LogRingSize        *int   `json:"LOG_RING_SIZE"`
 	MaxMessagesPerDay  *int   `json:"MAX_MESSAGES_PER_DAY"`
 	// BridgeDailyLimit is the global daily chat cap across all bridge
 	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited).
@@ -244,7 +234,6 @@ type rawConfig struct {
 	WaitingRoomChain                 bool            `json:"WAITING_ROOM_CHAIN"`
 	RateLimitPerIP                   *float64        `json:"RATE_LIMIT_PER_IP"`
 	RateLimitBurst                   *int            `json:"RATE_LIMIT_BURST"`
-	DashboardEnabled                 bool            `json:"DASHBOARD_ENABLED"`
 }
 
 // modelsAllowList is the raw MODELS_ALLOW value. The README documents list
@@ -279,14 +268,12 @@ func defaultRawConfig() rawConfig {
 		RegistryRefresh:                  "6h",
 		CostMode:                         "free", // free-tier mode; omission routes requests as PAID and fresh free accounts get 402 "Out of credits" (upstream check: cost_mode !== 'free' → billing)
 		MaxMessagesPerDay:                nil,
-		MaxSpendPerDay:                   nil,         // 0 = unlimited advisory spend ceiling (never enforced)
-		IdleRotationTimeout:              "",          // "" = disabled (unset → SAFE_MODE preset may fill)
-		SafeMode:                         true,        // anti-ban presets on by default; set SAFE_MODE=false to disable
-		DashboardEnabled:                 true,        // dashboard on by default; set DASHBOARD_ENABLED=false to disable
-		LogAccess:                        true,        // per-request access lines on by default; LOG_ACCESS=false disables them
-		LogRingSize:                      ptrInt(500), // dashboard log viewer ring capacity (T19)
-		CORSAllowedOrigin:                "*",         // browser clients reach /v1/* cross-origin by default
-		RequestJitter:                    "",          // "" = disabled (unset → SAFE_MODE preset may fill)
+		MaxSpendPerDay:                   nil,  // 0 = unlimited advisory spend ceiling (never enforced)
+		IdleRotationTimeout:              "",   // "" = disabled (unset → SAFE_MODE preset may fill)
+		SafeMode:                         true, // anti-ban presets on by default; set SAFE_MODE=false to disable
+		LogAccess:                        true, // per-request access lines on by default; LOG_ACCESS=false disables them
+		CORSAllowedOrigin:                "*",  // browser clients reach /v1/* cross-origin by default
+		RequestJitter:                    "",   // "" = disabled (unset → SAFE_MODE preset may fill)
 		CLIVersion:                       "0.10.7",
 		TransientRetries:                 nil,   // nil = 1 (one retry after a transient transport failure; 0 disables)
 		SessionPersist:                   false, // opt-in: persist session state across restarts
@@ -422,7 +409,6 @@ func Load(configPath string) (Config, error) {
 	overrideString(&raw.RequestTimeout, "REQUEST_TIMEOUT")
 	overrideString(&raw.SessionCallTimeout, "SESSION_CALL_TIMEOUT")
 	overrideCSV(&raw.APIKeys, "API_KEYS")
-	overrideString(&raw.AdminToken, "ADMIN_TOKEN")
 	overrideString(&raw.CostMode, "COST_MODE")
 	// ACTING_USER_ID / legacy USER_ID (#126): the alias is read from the
 	// SAME env source as the primary, so a real-environment USER_ID beats a
@@ -436,7 +422,6 @@ func Load(configPath string) (Config, error) {
 	overrideString(&raw.LogLevel, "LOG_LEVEL")
 	overrideString(&raw.LogFormat, "LOG_FORMAT")
 	overrideBool(&raw.LogAccess, "LOG_ACCESS")
-	overrideInt(&raw.LogRingSize, "LOG_RING_SIZE")
 	overrideInt(&raw.MaxMessagesPerDay, "MAX_MESSAGES_PER_DAY")
 	overrideInt(&raw.BridgeDailyLimit, "BRIDGE_DAILY_LIMIT")
 	overrideInt(&raw.MaxSpendPerDay, "MAX_SPEND_PER_DAY")
@@ -467,7 +452,6 @@ func Load(configPath string) (Config, error) {
 	overrideBool(&raw.WaitingRoomChain, "WAITING_ROOM_CHAIN")
 	overrideFloat(&raw.RateLimitPerIP, "RATE_LIMIT_PER_IP")
 	overrideInt(&raw.RateLimitBurst, "RATE_LIMIT_BURST")
-	overrideBool(&raw.DashboardEnabled, "DASHBOARD_ENABLED")
 
 	parseDuration := func(raw, name string) (time.Duration, error) {
 		d, err := time.ParseDuration(strings.TrimSpace(raw))
@@ -611,9 +595,6 @@ func Load(configPath string) (Config, error) {
 		transientRetries = *raw.TransientRetries
 	}
 
-	// LOG_RING_SIZE: nil (unset/empty) defaults to 500; an explicit value
-	// must stay within 50..5000 (validated in Validate).
-	logRingSize := 500
 	// RATE_LIMIT_PER_IP / RATE_LIMIT_BURST (issue #137): per-source-IP rate
 	// limiter to protect upstream from bursts and spam. 0 = disabled.
 	rateLimitPerIP := 0.0
@@ -623,9 +604,6 @@ func Load(configPath string) (Config, error) {
 	rateLimitBurst := 0
 	if raw.RateLimitBurst != nil {
 		rateLimitBurst = *raw.RateLimitBurst
-	}
-	if raw.LogRingSize != nil {
-		logRingSize = *raw.LogRingSize
 	}
 
 	// FALLBACK_AFTER_MS (issue #100): milliseconds, ""/0 = disabled. Any
@@ -687,7 +665,6 @@ func Load(configPath string) (Config, error) {
 		RequestTimeout:                   requestTimeout,
 		SessionCallTimeout:               sessionCallTimeout,
 		APIKeys:                          dedupeStrings(raw.APIKeys),
-		AdminToken:                       strings.TrimSpace(raw.AdminToken),
 		HTTP2Upstream:                    raw.HTTP2Upstream,
 		CostMode:                         strings.TrimSpace(raw.CostMode),
 		ActingUserID:                     strings.TrimSpace(raw.ActingUserID),
@@ -698,7 +675,6 @@ func Load(configPath string) (Config, error) {
 		LogLevel:                         strings.TrimSpace(raw.LogLevel),
 		LogFormat:                        logFormat,
 		LogAccess:                        raw.LogAccess,
-		LogRingSize:                      logRingSize,
 		MaxMessagesPerDay:                maxMessagesPerDay,
 		BridgeDailyLimit:                 bridgeDailyLimit,
 		MaxSpendPerDay:                   maxSpendPerDay,
@@ -728,7 +704,6 @@ func Load(configPath string) (Config, error) {
 		WaitingRoomChain:                 raw.WaitingRoomChain,
 		RateLimitPerIP:                   rateLimitPerIP,
 		RateLimitBurst:                   rateLimitBurst,
-		DashboardEnabled:                 raw.DashboardEnabled,
 		EnvFile:                          envFileUsed,
 	}
 
@@ -859,8 +834,6 @@ func (c Config) Validate() error {
 		return errors.New("BRIDGE_DAILY_LIMIT cannot be negative")
 	case c.MaxSpendPerDay < 0:
 		return errors.New("MAX_SPEND_PER_DAY cannot be negative")
-	case c.LogRingSize != 0 && (c.LogRingSize < 50 || c.LogRingSize > 5000):
-		return errors.New("LOG_RING_SIZE must be between 50 and 5000 (default 500)")
 	case c.RateLimitPerIP < 0:
 		return errors.New("RATE_LIMIT_PER_IP cannot be negative")
 	case c.RateLimitBurst < 0:
@@ -1017,7 +990,6 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideStringFrom(&raw.RequestTimeout, get, "REQUEST_TIMEOUT")
 	overrideStringFrom(&raw.SessionCallTimeout, get, "SESSION_CALL_TIMEOUT")
 	overrideCSVFrom(&raw.APIKeys, get, "API_KEYS")
-	overrideStringFrom(&raw.AdminToken, get, "ADMIN_TOKEN")
 	overrideStringFrom(&raw.CostMode, get, "COST_MODE")
 	// ACTING_USER_ID / legacy USER_ID (#126), same-source: a .env USER_ID
 	// beats a JSON ACTING_USER_ID (dotenv outranks JSON), ACTING_USER_ID
@@ -1030,7 +1002,6 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideStringFrom(&raw.LogLevel, get, "LOG_LEVEL")
 	overrideStringFrom(&raw.LogFormat, get, "LOG_FORMAT")
 	overrideBoolFrom(&raw.LogAccess, get, "LOG_ACCESS")
-	overrideIntFrom(&raw.LogRingSize, get, "LOG_RING_SIZE")
 	overrideIntFrom(&raw.MaxMessagesPerDay, get, "MAX_MESSAGES_PER_DAY")
 	overrideIntFrom(&raw.BridgeDailyLimit, get, "BRIDGE_DAILY_LIMIT")
 	overrideIntFrom(&raw.MaxSpendPerDay, get, "MAX_SPEND_PER_DAY")
@@ -1063,7 +1034,6 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideBoolFrom(&raw.WaitingRoomChain, get, "WAITING_ROOM_CHAIN")
 	overrideFloatFrom(&raw.RateLimitPerIP, get, "RATE_LIMIT_PER_IP")
 	overrideIntFrom(&raw.RateLimitBurst, get, "RATE_LIMIT_BURST")
-	overrideBoolFrom(&raw.DashboardEnabled, get, "DASHBOARD_ENABLED")
 	return nil
 }
 

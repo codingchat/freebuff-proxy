@@ -48,7 +48,6 @@ func newTestServerCfg(t *testing.T, apiKeys []string, mut func(*config.Config), 
 		UpstreamBaseURL:    "https://www.codebuff.com",
 		APIKeys:            apiKeys,
 		LogAccess:          true,
-		DashboardEnabled:   true,
 	}
 	if mut != nil {
 		mut(cfg)
@@ -72,7 +71,7 @@ func newTestServerCfg(t *testing.T, apiKeys []string, mut func(*config.Config), 
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.New(cfg, p, reg, nil, nil, "")
+	srv := server.New(cfg, p, reg, nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, p
@@ -1200,36 +1199,6 @@ func TestModelsAllowEmptyIsOpen(t *testing.T) {
 	}
 }
 
-// TestSmokeDefaultsToFallbackModel verifies the smoke test with no explicit
-// model probes the guaranteed fallback (deepseek-v4-flash), not the
-// alphabetical-first catalog model (anthropic/claude-fable-5, a gated offer).
-func TestSmokeDefaultsToFallbackModel(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	mock.ChatBody = testutil.SSEEvent(chunk("chatcmpl-sm", 1, `"choices":[{"index":0,"delta":{"content":"ping"},"finish_reason":"stop"}]`))
-	ts, _ := newTestServer(t, nil, mock)
-
-	// Smoke with no model field: server picks the fallback.
-	resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/smoke", []byte(`{"prompt":"ping"}`), nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("smoke status = %d, want 200: %s", resp.StatusCode, data)
-	}
-	if len(mock.RecordedChatHeaders) == 0 {
-		t.Fatal("no upstream chat recorded")
-	}
-	// #106: the smoke probe is a chat POST — the model rides in the body,
-	// not an x-freebuff-model header.
-	if got := mock.RecordedChatHeaders[0].Get("x-freebuff-model"); got != "" {
-		t.Errorf("smoke probe chat POST carries x-freebuff-model %q, want absent (#106)", got)
-	}
-	if len(mock.RecordedChatBodies) == 0 {
-		t.Fatal("no upstream chat body recorded")
-	}
-	if !strings.Contains(mock.RecordedChatBodies[0], `"model":"deepseek/deepseek-v4-flash"`) {
-		t.Errorf("smoke probe body missing model deepseek/deepseek-v4-flash: %s", mock.RecordedChatBodies[0])
-	}
-}
-
 // TestHealthzModeCountry verifies healthz surfaces the effective routing
 // mode plus the per-token country from the session admission.
 func TestHealthzModeCountry(t *testing.T) {
@@ -1341,122 +1310,6 @@ type quotaEntry struct {
 	Entitlement map[string]float64 `json:"entitlement"`
 }
 
-func TestAdminReload(t *testing.T) {
-	// Isolate cwd: handleReload runs config.Load("") which reads ./.env.
-	// Without a temp dir the test would silently pick up a developer's .env
-	// dropped into internal/server.
-	t.Chdir(t.TempDir())
-	mock0 := testutil.NewMock()
-	defer mock0.Close()
-	ts, _ := newTestServer(t, nil, mock0)
-
-	resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/reload", nil, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, data)
-	}
-	if !strings.Contains(string(data), `"status":"ok"`) {
-		t.Errorf("reload response missing ok status: %s", data)
-	}
-}
-
-// TestAdminReloadToken verifies ADMIN_TOKEN guards POST /admin/reload: 401
-// without the bearer token, 200 with it; unset keeps the legacy open
-// behavior.
-func TestAdminReloadToken(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	ts, _ := newTestServerCfg(t, nil, func(cfg *config.Config) { cfg.AdminToken = "admin-secret" }, mock)
-
-	resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/reload", nil, nil)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("reload without token status = %d, want 401: %s", resp.StatusCode, data)
-	}
-
-	resp, data = doJSON(t, http.MethodPost, ts.URL+"/admin/reload", nil, map[string]string{"Authorization": "Bearer wrong"})
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("reload with wrong token status = %d, want 401: %s", resp.StatusCode, data)
-	}
-
-	// The successful reload executes LAST: it swaps s.cfg for a fresh
-	// config.Load("") (no ADMIN_TOKEN in the test environment), so nothing
-	// after it may rely on the old gate.
-	resp, data = doJSON(t, http.MethodPost, ts.URL+"/admin/reload", nil, map[string]string{"Authorization": "Bearer admin-secret"})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("reload with token status = %d, want 200: %s", resp.StatusCode, data)
-	}
-	if !strings.Contains(string(data), `"status":"ok"`) {
-		t.Errorf("reload response missing ok status: %s", data)
-	}
-
-	// Unset: legacy behavior (open), still works.
-	mockLegacy := testutil.NewMock()
-	defer mockLegacy.Close()
-	tsLegacy, _ := newTestServer(t, nil, mockLegacy)
-	resp, data = doJSON(t, http.MethodPost, tsLegacy.URL+"/admin/reload", nil, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("reload without ADMIN_TOKEN status = %d, want 200 (legacy): %s", resp.StatusCode, data)
-	}
-}
-
-func TestConcurrentReloadAndChat(t *testing.T) {
-	// Isolate cwd: the reload workers run config.Load("") which reads
-	// ./.env (see TestAdminReload).
-	t.Chdir(t.TempDir())
-	mock := testutil.NewMock()
-	defer mock.Close()
-	mock.ChatBody = testutil.SSEEvent(chunk("chatcmpl-c1", 1, `"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]`))
-	ts, _ := newTestServer(t, nil, mock)
-
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	// Hammer chat and models while handleReload swaps s.cfg. The local run
-	// exercises the concurrent paths without panicking; the -race build in CI
-	// is the real data-race gate.
-	worker := func(method, url string, body []byte) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				var reader io.Reader
-				if body != nil {
-					reader = bytes.NewReader(body)
-				}
-				req, err := http.NewRequest(method, url, reader)
-				if err != nil {
-					t.Errorf("worker request build: %v", err)
-					return
-				}
-				resp, err := http.DefaultClient.Do(req)
-				if err != nil {
-					t.Errorf("worker request: %v", err)
-					continue
-				}
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
-			}
-		}()
-	}
-	for i := 0; i < 8; i++ {
-		worker(http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA))
-	}
-	for i := 0; i < 4; i++ {
-		worker(http.MethodGet, ts.URL+"/v1/models", nil)
-	}
-	for i := 0; i < 20; i++ {
-		resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/reload", nil, nil)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("reload %d status = %d, want 200: %s", i, resp.StatusCode, data)
-		}
-	}
-	close(stop)
-	wg.Wait()
-}
-
 func TestAllTokensDead502(t *testing.T) {
 	bad0 := testutil.NewMock()
 	defer bad0.Close()
@@ -1528,7 +1381,6 @@ func newBridgeTestServer(t *testing.T, mock *testutil.MockUpstream) (*httptest.S
 		SessionCallTimeout: 5 * time.Second,
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
-		DashboardEnabled:   true,
 	}
 	reg := registry.New(cfg, nil)
 	reg.LoadFallback()
@@ -1536,7 +1388,7 @@ func newBridgeTestServer(t *testing.T, mock *testutil.MockUpstream) (*httptest.S
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.New(cfg, p, reg, nil, nil, "")
+	srv := server.New(cfg, p, reg, nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, p
@@ -1841,8 +1693,7 @@ func TestChatModelAliasesAndReasoningEffort(t *testing.T) {
 		ModelAliases: map[string]string{
 			"gpt-4o": modelA,
 		},
-		DashboardEnabled: true,
-	}, p, reg, nil, nil, "")
+	}, p, reg, nil)
 	tsAlias := httptest.NewServer(srv.Handler())
 	t.Cleanup(tsAlias.Close)
 
@@ -1907,7 +1758,6 @@ func TestMetricsTransientRetryCounters(t *testing.T) {
 		SessionCallTimeout: 5 * time.Second,
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
-		DashboardEnabled:   true,
 		TransientRetries:   1,
 	}
 	client, err := upstream.New("tok-0", cfg)
@@ -1925,7 +1775,7 @@ func TestMetricsTransientRetryCounters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.New(cfg, p, reg, nil, nil, "")
+	srv := server.New(cfg, p, reg, nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -1969,7 +1819,7 @@ func TestBridgeRequestsServedCounter(t *testing.T) {
 }
 
 // TestBearerCaseInsensitiveVariants verifies lowercase bearer and mixed-case BEARER
-// work for API authentication, admin endpoints, and bridge token extraction.
+// work for API authentication and bridge token extraction.
 func TestBearerCaseInsensitiveVariants(t *testing.T) {
 	t.Run("API auth accepts case variations", func(t *testing.T) {
 		mock := testutil.NewMock()
@@ -1986,21 +1836,6 @@ func TestBearerCaseInsensitiveVariants(t *testing.T) {
 			resp, data := doJSON(t, http.MethodPost, chatURL, chatBody(modelA), map[string]string{"Authorization": auth})
 			if resp.StatusCode != http.StatusOK {
 				t.Errorf("auth %q status = %d, want 200: %s", auth, resp.StatusCode, data)
-			}
-		}
-	})
-
-	t.Run("admin reload accepts case variations", func(t *testing.T) {
-		for _, auth := range []string{
-			"bearer admin-secret",
-			"BEARER admin-secret",
-		} {
-			mock := testutil.NewMock()
-			ts, _ := newTestServerCfg(t, nil, func(cfg *config.Config) { cfg.AdminToken = "admin-secret" }, mock)
-			resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/reload", nil, map[string]string{"Authorization": auth})
-			mock.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("admin auth %q status = %d, want 200: %s", auth, resp.StatusCode, data)
 			}
 		}
 	})
@@ -2310,25 +2145,5 @@ func TestChatSpendLedgerIgnoresUsageNull(t *testing.T) {
 	}
 	if snaps[0].SpendDay != 13 || snaps[0].Spend24h != 13 {
 		t.Errorf("spend after usage-null trailing chunk = %d/%d, want 13/13 (not zeroed)", snaps[0].SpendDay, snaps[0].Spend24h)
-	}
-}
-
-// TestAdminSensitiveOpenMode verifies that in open mode (ADMIN_TOKEN unset / optional),
-// admin routes are accessible without 403.
-func TestAdminSensitiveOpenMode(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	ts, _ := newTestServer(t, nil, mock)
-
-	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/admin/config", nil)
-	req.Host = "127.0.0.1:3457"
-	resp, err := ts.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 }
