@@ -451,10 +451,15 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 		if len(fc) > 0 {
 			frags := make([]any, 0, len(fc))
 			for _, call := range fc {
+				if call.Function.Name == "end_turn" {
+					continue // strip-parity: never relay the proxy-injected pseudo-tool
+				}
 				frags = append(frags, convert.ToolCallDeltaFragment(xmlCallIndex, call))
 				xmlCallIndex++
 			}
-			delta["tool_calls"] = frags
+			if len(frags) > 0 {
+				delta["tool_calls"] = frags
+			}
 		}
 		id := "chatcmpl-flush"
 		if lastID != "" {
@@ -532,10 +537,15 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 							tcs = make([]any, 0, len(calls))
 						}
 						for _, call := range calls {
+							if call.Function.Name == "end_turn" {
+								continue // strip-parity: never relay the proxy-injected pseudo-tool
+							}
 							tcs = append(tcs, convert.ToolCallDeltaFragment(xmlCallIndex, call))
 							xmlCallIndex++
 						}
-						delta["tool_calls"] = tcs
+						if len(tcs) > 0 {
+							delta["tool_calls"] = tcs
+						}
 					}
 				}
 			}

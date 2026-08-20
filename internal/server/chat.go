@@ -970,11 +970,16 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 		if len(fc) > 0 {
 			tcs := make([]any, 0, len(fc))
 			for _, tc := range fc {
+				if tc.Function.Name == "end_turn" {
+					continue // never relay the proxy-injected pseudo-tool
+				}
 				tcs = append(tcs, convert.ToolCallDeltaFragment(xmlCallIndex, tc))
 				xmlCallIndex++
 			}
-			delta["tool_calls"] = tcs
-			xmlCallsSeen = true
+			if len(tcs) > 0 {
+				delta["tool_calls"] = tcs
+				xmlCallsSeen = true
+			}
 		}
 		streamID := xmlStreamID
 		if streamID == "" {
@@ -1126,52 +1131,7 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 			// tool_calls fragments appended after any native ones. Only
 			// re-marshal when the chunk actually changed so untouched
 			// frames keep their exact bytes.
-			if bytes.Contains(clean, []byte(`"content"`)) {
-				var chunk map[string]any
-				if json.Unmarshal(clean, &chunk) == nil {
-					changed := false
-					if rawChoices, ok := chunk["choices"].([]any); ok {
-						for _, raw := range rawChoices {
-							choice, _ := raw.(map[string]any)
-							if choice == nil {
-								continue
-							}
-							delta, _ := choice["delta"].(map[string]any)
-							if delta == nil {
-								continue
-							}
-							content, _ := delta["content"].(string)
-							if content == "" {
-								continue
-							}
-							text, calls := xmlExtractor.Feed(content)
-							if text != content {
-								if text == "" {
-									delete(delta, "content")
-								} else {
-									delta["content"] = text
-								}
-								changed = true
-							}
-							if len(calls) > 0 {
-								tcs, _ := delta["tool_calls"].([]any)
-								for _, tc := range calls {
-									tcs = append(tcs, convert.ToolCallDeltaFragment(xmlCallIndex, tc))
-									xmlCallIndex++
-								}
-								delta["tool_calls"] = tcs
-								xmlCallsSeen = true
-								changed = true
-							}
-						}
-					}
-					if changed {
-						if reEncoded, err := json.Marshal(chunk); err == nil {
-							clean = reEncoded
-						}
-					}
-				}
-			}
+			clean = streamChatContentToToolCalls(clean, xmlExtractor, &xmlCallIndex, &xmlCallsSeen)
 			// Rewrite finish_reason for the terminal chunk when ALL tool calls
 			// in this stream were end_turn. The terminal chunk carries no
 			// "end_turn" string (only finish_reason: "tool_calls"), so the
