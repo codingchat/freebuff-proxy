@@ -1705,6 +1705,76 @@ func toolCallsOf(delta map[string]any) []map[string]any {
 	return out
 }
 
+// StripEndTurnToolCalls removes any tool_call whose function.name is "end_turn"
+// from every choice in chunk. It returns whether non-end_turn tool calls remain
+// and the effective finish reason. If no tool calls remain and finish_reason was
+// "tool_calls", finish_reason is flipped to "stop" in-place.
+//
+// The Anthropic relay must NOT use this — it deliberately passes end_turn
+// through to Claude-Code-style clients.
+func StripEndTurnToolCalls(chunk map[string]any) (toolCallsRemaining bool, finishReason string) {
+	anyRemaining := false
+	for _, choice := range choicesOf(chunk) {
+		// Read finish_reason from the choice (not top-level).
+		if fr, ok := choice["finish_reason"].(string); ok {
+			finishReason = fr
+		}
+		// Streaming shape: delta.tool_calls
+		if delta, ok := choice["delta"].(map[string]any); ok {
+			if tcs, ok := delta["tool_calls"].([]any); ok {
+				filtered := filterEndTurn(tcs)
+				if len(filtered) == 0 {
+					delete(delta, "tool_calls")
+				} else {
+					delta["tool_calls"] = filtered
+					anyRemaining = true
+				}
+			}
+		}
+		// Non-streaming shape: message.tool_calls
+		if msg, ok := choice["message"].(map[string]any); ok {
+			if tcs, ok := msg["tool_calls"].([]any); ok {
+				filtered := filterEndTurn(tcs)
+				if len(filtered) == 0 {
+					delete(msg, "tool_calls")
+				} else {
+					msg["tool_calls"] = filtered
+					anyRemaining = true
+				}
+			}
+		}
+	}
+	toolCallsRemaining = anyRemaining
+	if !anyRemaining && finishReason == "tool_calls" {
+		finishReason = "stop"
+		// Flip finish_reason in the choice, not top-level.
+		for _, choice := range choicesOf(chunk) {
+			choice["finish_reason"] = finishReason
+		}
+	}
+	return
+}
+
+// filterEndTurn removes tool_call entries whose function.name is "end_turn"
+// from a []any slice, preserving the original element type for downstream
+// type assertions ([]any, not []map[string]any).
+func filterEndTurn(tcs []any) []any {
+	out := make([]any, 0, len(tcs))
+	for _, raw := range tcs {
+		tc, ok := raw.(map[string]any)
+		if !ok {
+			out = append(out, raw)
+			continue
+		}
+		fn, _ := tc["function"].(map[string]any)
+		if name, _ := fn["name"].(string); name == "end_turn" {
+			continue
+		}
+		out = append(out, raw)
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Non-streaming accumulator (ported from freebuff-api-kiprana
 // CompletionAccumulator).

@@ -937,6 +937,8 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 	var streamModel string
 	toolIDsMap := make(map[string]bool)
 	var toolIDs []string
+	endTurnCallIndexes := make(map[int]bool)
+	seenRealToolCalls := false
 
 	for {
 		select {
@@ -971,6 +973,113 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 				// Non-chunk lines (upstream comments) still prove liveness.
 				relayed = time.Now()
 				continue
+			}
+			// Strip Codebuff end_turn pseudo-tool-calls (issue #140).
+			// The proxy injects end_turn into every upstream request to pass
+			// foreign_toolset validation; the model calls it when done. We
+			// must not relay it to clients that never declared it.
+			if bytes.Contains(clean, []byte(`"end_turn"`)) {
+				var chunk map[string]any
+				if json.Unmarshal(clean, &chunk) == nil {
+					convert.StripEndTurnToolCalls(chunk)
+					// Drop continuation fragments for already-stripped end_turn indexes.
+					if len(endTurnCallIndexes) > 0 {
+						if choices, ok := chunk["choices"].([]any); ok {
+							for _, raw := range choices {
+								choice, _ := raw.(map[string]any)
+								if choice == nil {
+									continue
+								}
+								delta, _ := choice["delta"].(map[string]any)
+								if delta == nil {
+									continue
+								}
+								tcs, _ := delta["tool_calls"].([]any)
+								if len(tcs) == 0 {
+									continue
+								}
+								filtered := make([]any, 0, len(tcs))
+								for _, tc := range tcs {
+									tcMap, _ := tc.(map[string]any)
+									if tcMap == nil {
+										filtered = append(filtered, tc)
+										continue
+									}
+									idx := 0
+									if i, ok := tcMap["index"].(float64); ok {
+										idx = int(i)
+									}
+									if endTurnCallIndexes[idx] {
+										continue // drop continuation fragment
+									}
+									filtered = append(filtered, tc)
+								}
+								if len(filtered) == 0 {
+									delete(delta, "tool_calls")
+								} else {
+									delta["tool_calls"] = filtered
+								}
+							}
+						}
+					}
+					// Track newly discovered end_turn AND real tool call indexes.
+					if choices, ok := chunk["choices"].([]any); ok {
+						for _, raw := range choices {
+							choice, _ := raw.(map[string]any)
+							if choice == nil {
+								continue
+							}
+							delta, _ := choice["delta"].(map[string]any)
+							if delta == nil {
+								continue
+							}
+							tcs, _ := delta["tool_calls"].([]any)
+							for _, tc := range tcs {
+								tcMap, _ := tc.(map[string]any)
+								if tcMap == nil {
+									continue
+								}
+								fn, _ := tcMap["function"].(map[string]any)
+								name, _ := fn["name"].(string)
+								if name == "end_turn" {
+									if i, ok := tcMap["index"].(float64); ok {
+										endTurnCallIndexes[int(i)] = true
+									}
+								} else if name != "" {
+									seenRealToolCalls = true
+								}
+							}
+						}
+					}
+					reEncoded, err := json.Marshal(chunk)
+					if err == nil {
+						clean = reEncoded
+					}
+				}
+			}
+			// Rewrite finish_reason for the terminal chunk when ALL tool calls
+			// in this stream were end_turn. The terminal chunk carries no
+			// "end_turn" string (only finish_reason: "tool_calls"), so the
+			// block above is skipped. Without this, finish_reason: "tool_calls"
+			// leaks to clients that never declared end_turn.
+			if !seenRealToolCalls && len(endTurnCallIndexes) > 0 {
+				if bytes.Contains(clean, []byte(`"finish_reason":"tool_calls"`)) {
+					var chunk map[string]any
+					if json.Unmarshal(clean, &chunk) == nil {
+						if rawChoices, ok := chunk["choices"].([]any); ok {
+							for _, raw := range rawChoices {
+								if choice, ok := raw.(map[string]any); ok {
+									if fr, ok := choice["finish_reason"].(string); ok && fr == "tool_calls" {
+										choice["finish_reason"] = "stop"
+									}
+								}
+							}
+						}
+						if b, err := json.Marshal(chunk); err == nil {
+							clean = b
+						}
+					}
+				}
 			}
 			// The final chunk carries the usage block (or a usage-only
 			// chunk when stream_options.include_usage is set); capture its
@@ -1089,6 +1198,16 @@ func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Read
 		return
 	}
 	out := acc.Finish()
+	// Strip Codebuff end_turn pseudo-tool-calls from non-streaming response.
+	if bytes.Contains(out, []byte(`"end_turn"`)) {
+		var comp map[string]any
+		if json.Unmarshal(out, &comp) == nil {
+			convert.StripEndTurnToolCalls(comp)
+			if b, err := json.Marshal(comp); err == nil {
+				out = b
+			}
+		}
+	}
 	stats.bytes = len(out)
 	// Capture the accumulated usage total for the spend ledger (#122);
 	// only adopt when the response actually carries a usage block.

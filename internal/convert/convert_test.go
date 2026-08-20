@@ -2855,3 +2855,280 @@ func TestAccumulator_AssistantToolCallContentNull(t *testing.T) {
 		t.Fatalf("len(tool_calls) = %d, want 1", len(calls))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// StripEndTurnToolCalls — strips injected end_turn pseudo-tool-calls from
+// OpenAI-format relay chunks (streaming delta + non-streaming message).
+// ---------------------------------------------------------------------------
+
+func TestStripEndTurnToolCalls(t *testing.T) {
+	t.Run("SingleFragment", func(t *testing.T) {
+		// Streaming chunk: single end_turn tool_call in delta.tool_calls.
+		// Expected: tool_calls removed, finish_reason flipped to "stop".
+		chunk := decode(t, mustJSON(t, map[string]any{
+			"choices": []map[string]any{{
+				"finish_reason": "tool_calls",
+				"delta": map[string]any{
+					"tool_calls": []map[string]any{{
+						"index": 0,
+						"id":    "call_001",
+						"type":  "function",
+						"function": map[string]any{
+							"name":      "end_turn",
+							"arguments": "",
+						},
+					}},
+				},
+			}},
+		}))
+
+		remaining, fr := StripEndTurnToolCalls(chunk)
+
+		if remaining {
+			t.Error("toolCallsRemaining = true, want false")
+		}
+		if fr != "stop" {
+			t.Errorf("finishReason = %q, want %q", fr, "stop")
+		}
+		// delta.tool_calls should be deleted entirely.
+		delta := chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+		if _, ok := delta["tool_calls"]; ok {
+			t.Error("delta.tool_calls should be deleted, but still present")
+		}
+		choice0 := chunk["choices"].([]any)[0].(map[string]any)
+		if choice0["finish_reason"] != "stop" {
+			t.Errorf("choice.finish_reason = %v, want %q", choice0["finish_reason"], "stop")
+		}
+	})
+
+	t.Run("ContinuationFragment", func(t *testing.T) {
+		// Streaming chunk: a continuation fragment with only index (no
+		// function.name). The helper only strips entries where
+		// function.name == "end_turn"; entries without function.name are
+		// kept. The relay loop would have dropped these via
+		// endTurnCallIndexes, but the helper itself preserves them.
+		chunk := decode(t, mustJSON(t, map[string]any{
+			"choices": []map[string]any{{
+				"finish_reason": "tool_calls",
+				"delta": map[string]any{
+					"tool_calls": []map[string]any{{
+						"index": 0,
+					}},
+				},
+			}},
+		}))
+
+		remaining, fr := StripEndTurnToolCalls(chunk)
+
+		if !remaining {
+			t.Error("toolCallsRemaining = false, want true")
+		}
+		if fr != "tool_calls" {
+			t.Errorf("finishReason = %q, want %q", fr, "tool_calls")
+		}
+		// tool_calls should still be present.
+		delta := chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+		tcs, ok := delta["tool_calls"]
+		if !ok {
+			t.Fatal("delta.tool_calls was deleted; should have been kept")
+		}
+		tcsSlice, ok := tcs.([]any)
+		if !ok || len(tcsSlice) != 1 {
+			t.Errorf("len(delta.tool_calls) = %v, want 1 element", tcs)
+		}
+	})
+
+	t.Run("MixedToolCalls", func(t *testing.T) {
+		// Streaming chunk: one end_turn + one real tool call (bash).
+		// Expected: only end_turn stripped, bash kept, finish_reason stays "tool_calls".
+		chunk := decode(t, mustJSON(t, map[string]any{
+			"choices": []map[string]any{{
+				"finish_reason": "tool_calls",
+				"delta": map[string]any{
+					"tool_calls": []map[string]any{
+						{
+							"index": 0,
+							"id":    "call_et",
+							"type":  "function",
+							"function": map[string]any{
+								"name":      "end_turn",
+								"arguments": "",
+							},
+						},
+						{
+							"index": 1,
+							"id":    "call_bash",
+							"type":  "function",
+							"function": map[string]any{
+								"name":      "bash",
+								"arguments": `{"command":"echo hi"}`,
+							},
+						},
+					},
+				},
+			}},
+		}))
+
+		remaining, fr := StripEndTurnToolCalls(chunk)
+
+		if !remaining {
+			t.Error("toolCallsRemaining = false, want true")
+		}
+		if fr != "tool_calls" {
+			t.Errorf("finishReason = %q, want %q", fr, "tool_calls")
+		}
+		delta := chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+		tcsSlice := delta["tool_calls"].([]any)
+		if len(tcsSlice) != 1 {
+			t.Fatalf("len(delta.tool_calls) = %d, want 1", len(tcsSlice))
+		}
+		fn := tcsSlice[0].(map[string]any)["function"].(map[string]any)
+		if fn["name"] != "bash" {
+			t.Errorf("remaining tool_call name = %q, want %q", fn["name"], "bash")
+		}
+	})
+
+	t.Run("NonStreamingMessage", func(t *testing.T) {
+		// Non-streaming chunk: message.tool_calls with one end_turn entry.
+		// Expected: end_turn stripped, finish_reason flipped to "stop".
+		chunk := decode(t, mustJSON(t, map[string]any{
+			"choices": []map[string]any{{
+				"finish_reason": "tool_calls",
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": nil,
+					"tool_calls": []map[string]any{{
+						"id":   "call_001",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "end_turn",
+							"arguments": "{}",
+						},
+					}},
+				},
+			}},
+		}))
+
+		remaining, fr := StripEndTurnToolCalls(chunk)
+
+		if remaining {
+			t.Error("toolCallsRemaining = true, want false")
+		}
+		if fr != "stop" {
+			t.Errorf("finishReason = %q, want %q", fr, "stop")
+		}
+		msg := chunk["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+		if _, ok := msg["tool_calls"]; ok {
+			t.Error("message.tool_calls should be deleted, but still present")
+		}
+		choice0 := chunk["choices"].([]any)[0].(map[string]any)
+		if choice0["finish_reason"] != "stop" {
+			t.Errorf("choice.finish_reason = %v, want %q", choice0["finish_reason"], "stop")
+		}
+	})
+
+	t.Run("NonStreamingMixed", func(t *testing.T) {
+		// Non-streaming chunk: end_turn + real tool (bash).
+		chunk := decode(t, mustJSON(t, map[string]any{
+			"choices": []map[string]any{{
+				"finish_reason": "tool_calls",
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": nil,
+					"tool_calls": []map[string]any{
+						{
+							"id":   "call_et",
+							"type": "function",
+							"function": map[string]any{
+								"name":      "end_turn",
+								"arguments": "{}",
+							},
+						},
+						{
+							"id":   "call_bash",
+							"type": "function",
+							"function": map[string]any{
+								"name":      "bash",
+								"arguments": `{"command":"ls"}`,
+							},
+						},
+					},
+				},
+			}},
+		}))
+
+		remaining, fr := StripEndTurnToolCalls(chunk)
+
+		if !remaining {
+			t.Error("toolCallsRemaining = false, want true")
+		}
+		if fr != "tool_calls" {
+			t.Errorf("finishReason = %q, want %q", fr, "tool_calls")
+		}
+		msg := chunk["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+		tcs := msg["tool_calls"].([]any)
+		if len(tcs) != 1 {
+			t.Fatalf("len(message.tool_calls) = %d, want 1", len(tcs))
+		}
+		fn := tcs[0].(map[string]any)["function"].(map[string]any)
+		if fn["name"] != "bash" {
+			t.Errorf("remaining tool_call name = %q, want %q", fn["name"], "bash")
+		}
+	})
+
+	t.Run("NoToolCalls", func(t *testing.T) {
+		// Chunk with no tool_calls at all. Expected: no-op, finish_reason unchanged.
+		chunk := decode(t, mustJSON(t, map[string]any{
+			"choices": []map[string]any{{
+				"finish_reason": "stop",
+				"delta": map[string]any{
+					"content": "Hello!",
+				},
+			}},
+		}))
+
+		remaining, fr := StripEndTurnToolCalls(chunk)
+
+		if remaining {
+			t.Error("toolCallsRemaining = true, want false")
+		}
+		if fr != "stop" {
+			t.Errorf("finishReason = %q, want %q", fr, "stop")
+		}
+	})
+
+	t.Run("FinishReasonStop", func(t *testing.T) {
+		// Chunk with end_turn tool_calls but finish_reason already "stop".
+		// Expected: end_turn stripped, finish_reason stays "stop" (no flip needed).
+		chunk := decode(t, mustJSON(t, map[string]any{
+			"choices": []map[string]any{{
+				"finish_reason": "stop",
+				"delta": map[string]any{
+					"tool_calls": []map[string]any{{
+						"index": 0,
+						"id":    "call_001",
+						"type":  "function",
+						"function": map[string]any{
+							"name":      "end_turn",
+							"arguments": "",
+						},
+					}},
+				},
+			}},
+		}))
+
+		remaining, fr := StripEndTurnToolCalls(chunk)
+
+		if remaining {
+			t.Error("toolCallsRemaining = true, want false")
+		}
+		if fr != "stop" {
+			t.Errorf("finishReason = %q, want %q", fr, "stop")
+		}
+		// finish_reason should still be "stop" — not flipped, just unchanged.
+		choice0 := chunk["choices"].([]any)[0].(map[string]any)
+		if choice0["finish_reason"] != "stop" {
+			t.Errorf("choice.finish_reason = %v, want %q", choice0["finish_reason"], "stop")
+		}
+	})
+}

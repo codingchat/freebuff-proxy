@@ -425,6 +425,7 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 	go relayReadLoop(ctx, r, lines)
 	relayed := time.Now()
 	first := true
+	endTurnCallIndexes := make(map[int]bool)
 
 	for {
 		select {
@@ -455,6 +456,111 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 			}
 			var chunk map[string]any
 			if err := json.Unmarshal(clean, &chunk); err != nil {
+				continue
+			}
+			// --- end_turn pseudo-tool-call filtering ---
+			// Record end_turn indexes before stripping to catch continuation fragments.
+			foundEndTurn := false
+			if rawChoices, ok := chunk["choices"].([]any); ok {
+				for _, c := range rawChoices {
+					choice, _ := c.(map[string]any)
+					if choice == nil {
+						continue
+					}
+					delta, _ := choice["delta"].(map[string]any)
+					if rawTCs, ok := delta["tool_calls"].([]any); ok {
+						for _, raw := range rawTCs {
+							tc, _ := raw.(map[string]any)
+							if tc == nil {
+								continue
+							}
+							fn, _ := tc["function"].(map[string]any)
+							if name, _ := fn["name"].(string); name == "end_turn" {
+								foundEndTurn = true
+								if idx, ok := tc["index"].(float64); ok {
+									endTurnCallIndexes[int(idx)] = true
+								}
+							}
+						}
+					}
+				}
+			}
+			toolCallsRemaining, _ := convert.StripEndTurnToolCalls(chunk)
+			// Drop continuation fragments for stripped end_turn indexes.
+			if rawChoices, ok := chunk["choices"].([]any); ok && len(endTurnCallIndexes) > 0 {
+				for _, c := range rawChoices {
+					choice, _ := c.(map[string]any)
+					if choice == nil {
+						continue
+					}
+					delta, _ := choice["delta"].(map[string]any)
+					raw, _ := delta["tool_calls"].([]any)
+					if len(raw) == 0 {
+						continue
+					}
+					filtered := make([]any, 0, len(raw))
+					dropped := false
+					for _, r := range raw {
+						tc, ok := r.(map[string]any)
+						if !ok {
+							filtered = append(filtered, r)
+							continue
+						}
+						idx, _ := tc["index"].(float64)
+						if endTurnCallIndexes[int(idx)] {
+							dropped = true
+							continue
+						}
+						filtered = append(filtered, r)
+					}
+					if dropped {
+						if len(filtered) == 0 {
+							delete(delta, "tool_calls")
+							toolCallsRemaining = false
+						} else {
+							delta["tool_calls"] = filtered
+						}
+					}
+				}
+			}
+			// Flip finish_reason only when end_turn calls were actually found
+			// in this chunk and no real tool calls remain. Without the
+			// foundEndTurn gate, the terminal chunk (finish_reason: "tool_calls",
+			// empty delta) would be incorrectly rewritten to "stop" for
+			// non-end_turn tool calls.
+			if foundEndTurn && !toolCallsRemaining {
+				if rawChoices, ok := chunk["choices"].([]any); ok {
+					for _, c := range rawChoices {
+						choice, _ := c.(map[string]any)
+						if choice == nil {
+							continue
+						}
+						if fr, ok := choice["finish_reason"].(string); ok && fr == "tool_calls" {
+							choice["finish_reason"] = "stop"
+						}
+					}
+				}
+			}
+			// Skip chunk if it was emptied by end_turn stripping (delta now
+			// empty AND finish_reason is null/absent — a real terminal chunk
+			// with finish_reason must never be dropped).
+			if foundEndTurn && !toolCallsRemaining {
+				if rawChoices, ok := chunk["choices"].([]any); ok {
+					for _, c := range rawChoices {
+						choice, _ := c.(map[string]any)
+						if choice == nil {
+							continue
+						}
+						if delta, ok := choice["delta"].(map[string]any); ok && len(delta) == 0 {
+							if fr, ok := choice["finish_reason"]; !ok || fr == nil {
+								drop = true
+							}
+						}
+					}
+				}
+			}
+			if drop {
+				relayed = time.Now()
 				continue
 			}
 			if first {
@@ -660,6 +766,7 @@ func (s *Server) relayResponsesJSON(ctx context.Context, w http.ResponseWriter, 
 			"failed to decode upstream stream: "+err.Error(), "upstream_error", "upstream_unavailable", 0)
 		return
 	}
+	convert.StripEndTurnToolCalls(completion)
 	resp := responsesBase(model, respID, time.Now().Unix(), "completed")
 	if m, _ := completion["model"].(string); m != "" {
 		resp["model"] = m
