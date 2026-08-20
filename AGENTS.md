@@ -36,8 +36,8 @@ vendored `reference/` clones were removed 2026-08-20 after the RE completed).
   `errors.go`, `health.go`, `chat.go` (chat completions pipeline), `anthropic.go`
   (Anthropic-compatible surface), `responses.go`, and the admin dashboard split
   across `admin.go`, `admin_auth.go`, `admin_tokens.go`, `admin_env.go`.
-- `internal/dashboard` — embedded Svelte 5 SPA (`go:embed`), render helpers
-  (fragments, config-result rows, diag checks), htmx + Pico styling.
+- `internal/dashboard` — embedded Svelte 5 SPA (`go:embed`), Tailwind CSS,
+  Geist font, JSON API endpoints (config, tokens, smoke test, diagnostics).
 - `internal/runs` — agent-run lifecycle: START/FINISH, steps, drain queue,
   honest `cancelled/failed/completed` status.
 - `internal/reasoningcache` — cache for reasoning-effort computations.
