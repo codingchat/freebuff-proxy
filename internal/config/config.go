@@ -66,7 +66,7 @@ type Config struct {
 	MaxSpendPerDay        int64         // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $0.50 restricted, compose by minimum, server-enforced) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
 	IdleRotationTimeout   time.Duration // 0 = disabled: pause rotation/refresh after this idle period
 	SafeMode              bool          // true = apply recommended anti-ban safe defaults
-	ModelsHideUnavailable bool          // true = /v1/models prunes models marked unavailable (region/tier/quota)
+	ModelsHideUnavailable bool          // true = /v1/models prunes models marked unavailable (region/quota/lock)
 	// ModelsAllow is the operator-set model allowlist (MODELS_ALLOW,
 	// comma-separated). When non-empty, /v1/models lists only the allowed
 	// ids and chat/messages/responses requests whose RESOLVED model (after
