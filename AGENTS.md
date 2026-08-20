@@ -79,9 +79,10 @@ model header — never add one).
 - **`reference/` is read-only RE source** — a vendored upstream clone. Never
   edit it, never build from it, never treat it as an edit target.
 - **File-size budget**: 1400 lines per non-test `.go` file, enforced in CI
-  (`.github/workflows/ci.yml`). `internal/convert/convert.go` and
-  `internal/pool/pool.go` are tracked exceptions with shrink follow-ups — do not
-  add to the allowlist without a documented reason.
+  (`.github/workflows/ci.yml`). `internal/convert/convert.go`,
+  `internal/pool/pool.go`, and `internal/runs/runs.go` are tracked exceptions
+  with shrink follow-ups — do not add to the allowlist without a documented
+  reason.
 
 ## Doc pointers
 
