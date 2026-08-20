@@ -147,11 +147,13 @@ func New(cfg *config.Config, p *pool.Pool, reg *registry.Registry, logger *slog.
 	for _, opt := range opts {
 		opt(s)
 	}
-	dashOpts := []dashboard.Option{}
-	if s.version != "" {
-		dashOpts = append(dashOpts, dashboard.WithVersion(s.version, s.updates))
+	if cfg.DashboardEnabled {
+		dashOpts := []dashboard.Option{}
+		if s.version != "" {
+			dashOpts = append(dashOpts, dashboard.WithVersion(s.version, s.updates))
+		}
+		s.dash = dashboard.New(func() *config.Config { return s.cfg.Load() }, p, reg, logger, logs, dashOpts...)
 	}
-	s.dash = dashboard.New(func() *config.Config { return s.cfg.Load() }, p, reg, logger, logs, dashOpts...)
 	s.adminAuth = newAdminAuth()
 	s.reasoningCache = reasoningcache.New(10000, 2*time.Hour)
 	convert.SetReasoningLookup(func(toolID string, content, toolCallsJSON string) (string, string, bool) {
@@ -172,68 +174,70 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleModels))
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
-	mux.HandleFunc("POST /admin/reload", s.requireAdminToken(s.requireAuth(s.adminCSRF(http.HandlerFunc(s.handleReload)))))
-	// Admin dashboard: cookie-authenticated browser UI. Assets are static
-	// and public — the login page (served without a cookie) references them,
-	// so they must NOT sit behind dashboardAuth. Overview/tokens/metrics are
-	// read-only status and stay open when ADMIN_TOKEN is unset (legacy).
-	// Config (read + write) and logs expose secrets and are gated further:
-	// with ADMIN_TOKEN unset they require a loopback client.
-	// GET /admin/login serves the SPA login page (client-side form, posts to
-	// the JSON API below); with ADMIN_TOKEN unset it redirects straight to
-	// the dashboard (handleAdminLogin's first branch). POST /admin/login is
-	// the JSON token-check API.
-	mux.HandleFunc("GET /admin/login", s.handleAdminLogin)
-	// POST /admin/login consumes the per-IP login-attempt budget, so it must
-	// carry the same CSRF gate as the other mutating admin routes: without it
-	// a malicious page could fire cross-origin POSTs with wrong tokens and
-	// lock the victim out of the dashboard (5 fails → 1-minute lockout,
-	// repeatable).
-	mux.HandleFunc("POST /admin/login", s.adminCSRF(http.HandlerFunc(s.handleAdminLogin)))
-	// GET /admin/logout clears the session cookie and returns to the login
-	// page; POST /admin/logout does the same but answers JSON {"ok":true}.
-	// Logout deliberately runs WITHOUT a valid cookie (expired sessions must
-	// still be logged out) and is NOT wrapped in adminSensitive — it exposes
-	// nothing and must work for anyone capable of reaching /admin/login.
-	mux.HandleFunc("GET /admin/logout", s.handleAdminLogout)
-	mux.HandleFunc("POST /admin/logout", s.handleAdminLogout)
-	// Admin dashboard API routes (JSON)
-	mux.Handle("GET /admin/api/overview", s.dashboardAuth(s.dash.APIHandler("overview")))
-	mux.Handle("GET /admin/api/tokens", s.dashboardAuth(s.dash.APIHandler("tokens")))
-	mux.Handle("GET /admin/api/models", s.dashboardAuth(s.dash.APIHandler("models")))
-	mux.Handle("GET /admin/api/traces", s.dashboardAuth(s.dash.APIHandler("traces")))
-	mux.Handle("GET /admin/api/setup", s.dashboardAuth(s.dash.APIHandler("setup")))
-	mux.Handle("GET /admin/api/config", s.dashboardAuth(s.adminSensitive(s.dash.APIHandler("config"))))
-	mux.Handle("GET /admin/api/logs", s.dashboardAuth(s.adminSensitive(s.dash.APIHandler("logs"))))
-	mux.Handle("GET /admin/api/metrics", s.dashboardAuth(s.dash.APIHandler("metrics")))
-	mux.Handle("GET /admin/api/version", s.dashboardAuth(http.HandlerFunc(s.dash.APIVersion)))
+	if s.cfg.Load().DashboardEnabled {
+		mux.HandleFunc("POST /admin/reload", s.requireAdminToken(s.requireAuth(s.adminCSRF(http.HandlerFunc(s.handleReload)))))
+		// Admin dashboard: cookie-authenticated browser UI. Assets are static
+		// and public — the login page (served without a cookie) references them,
+		// so they must NOT sit behind dashboardAuth. Overview/tokens/metrics are
+		// read-only status and stay open when ADMIN_TOKEN is unset (legacy).
+		// Config (read + write) and logs expose secrets and are gated further:
+		// with ADMIN_TOKEN unset they require a loopback client.
+		// GET /admin/login serves the SPA login page (client-side form, posts to
+		// the JSON API below); with ADMIN_TOKEN unset it redirects straight to
+		// the dashboard (handleAdminLogin's first branch). POST /admin/login is
+		// the JSON token-check API.
+		mux.HandleFunc("GET /admin/login", s.handleAdminLogin)
+		// POST /admin/login consumes the per-IP login-attempt budget, so it must
+		// carry the same CSRF gate as the other mutating admin routes: without it
+		// a malicious page could fire cross-origin POSTs with wrong tokens and
+		// lock the victim out of the dashboard (5 fails → 1-minute lockout,
+		// repeatable).
+		mux.HandleFunc("POST /admin/login", s.adminCSRF(http.HandlerFunc(s.handleAdminLogin)))
+		// GET /admin/logout clears the session cookie and returns to the login
+		// page; POST /admin/logout does the same but answers JSON {"ok":true}.
+		// Logout deliberately runs WITHOUT a valid cookie (expired sessions must
+		// still be logged out) and is NOT wrapped in adminSensitive — it exposes
+		// nothing and must work for anyone capable of reaching /admin/login.
+		mux.HandleFunc("GET /admin/logout", s.handleAdminLogout)
+		mux.HandleFunc("POST /admin/logout", s.handleAdminLogout)
+		// Admin dashboard API routes (JSON)
+		mux.Handle("GET /admin/api/overview", s.dashboardAuth(s.dash.APIHandler("overview")))
+		mux.Handle("GET /admin/api/tokens", s.dashboardAuth(s.dash.APIHandler("tokens")))
+		mux.Handle("GET /admin/api/models", s.dashboardAuth(s.dash.APIHandler("models")))
+		mux.Handle("GET /admin/api/traces", s.dashboardAuth(s.dash.APIHandler("traces")))
+		mux.Handle("GET /admin/api/setup", s.dashboardAuth(s.dash.APIHandler("setup")))
+		mux.Handle("GET /admin/api/config", s.dashboardAuth(s.adminSensitive(s.dash.APIHandler("config"))))
+		mux.Handle("GET /admin/api/logs", s.dashboardAuth(s.adminSensitive(s.dash.APIHandler("logs"))))
+		mux.Handle("GET /admin/api/metrics", s.dashboardAuth(s.dash.APIHandler("metrics")))
+		mux.Handle("GET /admin/api/version", s.dashboardAuth(http.HandlerFunc(s.dash.APIVersion)))
 
-	// SPA: all admin/* GET routes serve the embedded Svelte SPA
-	mux.Handle("GET /admin", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-	mux.Handle("GET /admin/", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-	mux.Handle("GET /admin/tokens", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-	mux.Handle("GET /admin/models", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-	mux.Handle("GET /admin/traces", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-	mux.Handle("GET /admin/setup", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-	mux.Handle("GET /admin/playground", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-	mux.Handle("GET /admin/config", s.dashboardAuth(s.adminSensitive(http.HandlerFunc(s.dash.ServeSPA))))
-	mux.Handle("GET /admin/logs", s.dashboardAuth(s.adminSensitive(http.HandlerFunc(s.dash.ServeSPA))))
-	mux.Handle("GET /admin/metrics", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-	mux.Handle("POST /admin/playground/chat", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handlePlaygroundChat)))))
-	mux.Handle("POST /admin/login/start", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleLoginStart)))))
-	mux.Handle("GET /admin/login/status", s.dashboardAuth(s.adminSensitive(http.HandlerFunc(s.handleLoginStatus))))
-	mux.Handle("POST /admin/config", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleConfigSave)))))
-	mux.Handle("POST /admin/tokens/{id}/unlock", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenUnlock)))))
-	mux.Handle("POST /admin/tokens/{id}/finish", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenFinish)))))
-	mux.Handle("POST /admin/tokens/{id}/test", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenTest)))))
-	mux.Handle("POST /admin/tokens/test-all", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenTestAll)))))
-	mux.Handle("POST /admin/tokens/add", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenAdd)))))
-	mux.Handle("POST /admin/tokens/remove", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenRemove)))))
-	mux.Handle("POST /admin/mode", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleModeSwitch)))))
-	mux.Handle("POST /admin/diag", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleDiag)))))
-	mux.Handle("POST /admin/smoke", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleSmoke)))))
-	// Static assets: serve from embedded dist/assets
-	mux.Handle("GET /admin/assets/", noDirListing(http.StripPrefix("/admin/assets/", http.FileServerFS(mustSubFS(dashboard.DistFS(), "assets")))))
+		// SPA: all admin/* GET routes serve the embedded Svelte SPA
+		mux.Handle("GET /admin", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
+		mux.Handle("GET /admin/", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
+		mux.Handle("GET /admin/tokens", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
+		mux.Handle("GET /admin/models", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
+		mux.Handle("GET /admin/traces", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
+		mux.Handle("GET /admin/setup", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
+		mux.Handle("GET /admin/playground", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
+		mux.Handle("GET /admin/config", s.dashboardAuth(s.adminSensitive(http.HandlerFunc(s.dash.ServeSPA))))
+		mux.Handle("GET /admin/logs", s.dashboardAuth(s.adminSensitive(http.HandlerFunc(s.dash.ServeSPA))))
+		mux.Handle("GET /admin/metrics", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
+		mux.Handle("POST /admin/playground/chat", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handlePlaygroundChat)))))
+		mux.Handle("POST /admin/login/start", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleLoginStart)))))
+		mux.Handle("GET /admin/login/status", s.dashboardAuth(s.adminSensitive(http.HandlerFunc(s.handleLoginStatus))))
+		mux.Handle("POST /admin/config", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleConfigSave)))))
+		mux.Handle("POST /admin/tokens/{id}/unlock", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenUnlock)))))
+		mux.Handle("POST /admin/tokens/{id}/finish", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenFinish)))))
+		mux.Handle("POST /admin/tokens/{id}/test", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenTest)))))
+		mux.Handle("POST /admin/tokens/test-all", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenTestAll)))))
+		mux.Handle("POST /admin/tokens/add", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenAdd)))))
+		mux.Handle("POST /admin/tokens/remove", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenRemove)))))
+		mux.Handle("POST /admin/mode", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleModeSwitch)))))
+		mux.Handle("POST /admin/diag", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleDiag)))))
+		mux.Handle("POST /admin/smoke", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleSmoke)))))
+		// Static assets: serve from embedded dist/assets
+		mux.Handle("GET /admin/assets/", noDirListing(http.StripPrefix("/admin/assets/", http.FileServerFS(mustSubFS(dashboard.DistFS(), "assets")))))
+	}
 	// CORS middleware wraps the whole route table: it answers OPTIONS
 	// preflights on the /v1/* API surface with 204 and stamps the allow
 	// headers on every /v1/* response. Admin routes are intentionally left

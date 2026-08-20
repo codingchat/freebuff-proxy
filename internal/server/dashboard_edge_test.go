@@ -40,6 +40,7 @@ func bridgeDashboardServer(t *testing.T, adminToken string) *httptest.Server {
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
 		AdminToken:         adminToken,
+		DashboardEnabled:   true,
 	}
 	reg := registry.New(cfg, nil)
 	reg.LoadFallback()
@@ -102,6 +103,7 @@ func TestDashboardTokenTestAllEmptyRegistry(t *testing.T) {
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
 		AdminToken:         "secret",
+		DashboardEnabled:   true,
 	}
 	reg := registry.New(cfg, nil) // no LoadFallback → empty catalog
 	clientCfg := *cfg
@@ -740,6 +742,7 @@ func TestDashboardSmokeEmptyRegistry(t *testing.T) {
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
 		AdminToken:         "secret",
+		DashboardEnabled:   true,
 	}
 	reg := registry.New(cfg, nil) // no fallback
 	p, err := pool.New(cfg, nil, nil, reg)
