@@ -1,0 +1,607 @@
+// Package pool is the multi-token front door: it picks the token that will
+// serve a model request, then leases a run from that token's RunManager and
+// an instance from its session manager. Port of freebuff2api-quorinex
+// run_manager.go (Acquire half) with the upstream/session/runs split of this
+// project.
+//
+// Failover semantics (PRD §6 error matrix):
+//   - 401 (ErrAuthRejected) from a token's run START → 30-min cooldown for
+//     that token, try the next.
+//   - session waiting room → remember the best position, try the next token;
+//     when every token fails, the pool surfaces the highest-precedence
+//     non-empty error bucket (ban > country-blocked > model-IP-limited >
+//     rate-limit > waiting-room > daily cap) instead of a generic 502 — a
+//     queued token surfaces 503 + Retry-After as soon as no higher bucket
+//     is populated.
+//   - run-invalid / session-invalid recoveries are NOT handled here: the
+//     caller (server) retries once via a fresh Acquire after invalidating.
+//   - anything else → next token; all failed → combined error (only when no
+//     error-bucket matched any token).
+package pool
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"freebuff-proxy/internal/notify"
+	"freebuff-proxy/internal/phasetiming"
+	"freebuff-proxy/internal/runs"
+	"freebuff-proxy/internal/session"
+	"freebuff-proxy/internal/upstream"
+)
+
+// Acquire resolves the model's agent, picks a start token round-robin, and
+// fails over linearly until a token yields both a run and a session. Returns
+// a lease on success. Registry misses (unknown model) are returned as-is.
+func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
+	toks := p.toks.Load()
+	cfg := p.cfg.Load()
+	if len(*toks) == 0 {
+		return nil, errors.New("pool: no auth tokens configured")
+	}
+	agentID, err := p.reg.AgentForModel(model)
+	if err != nil {
+		return nil, err
+	}
+
+	start := int(p.rr.Add(1)-1) % len(*toks)
+	// Hot-session-first selection: tokens that already hold a live session
+	// are tried before any fresh account, so a request reuses the live slot
+	// instead of admitting a new session (never create where one already
+	// exists — the lowest fingerprint/quota-burn path). When at least one
+	// token is hot, the pass iterates only over hot tokens; only when every
+	// hot token fails does it fall back to the remaining eligible tokens
+	// from the round-robin start (cold path), exactly like the historical
+	// linear failover. When no token is hot the order is unchanged.
+	order, quotaLimited := p.acquireOrder(toks, start, model)
+	var errs []string
+	var waiting []*session.WaitingRoomError
+	var rateLimited []*upstream.RateLimitError
+	var ipCapped []*upstream.IpCappedError
+	var banned []*upstream.BanError
+	var countryBlocked []*upstream.CountryBlockedError
+	var modelLimited []*upstream.LimitedIpError
+	var dailyLimited []*upstream.RateLimitError
+
+	for _, idx := range order {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// Defensive bounds check: acquireOrder builds its order against the
+		// SAME snapshot loaded above, but a removal racing this call must
+		// never index past the slice it computed the order from. Skip
+		// indices that are no longer present instead of panicking.
+		if idx < 0 || idx >= len(*toks) {
+			continue
+		}
+		tok := (*toks)[idx]
+		name := fmt.Sprintf("token-%d", idx+1)
+
+		if until := tok.runs.CooldownUntil(); time.Now().Before(until) {
+			errs = append(errs, fmt.Sprintf("%s: cooling down until %s", name, until.Format(time.RFC3339)))
+			p.logger.Debug("pool: token skipped (cooldown)", "token", idx+1, "until", until.Format(time.RFC3339))
+			if be := tok.runs.BanError(); be != nil {
+				dup := false
+				for _, existing := range banned {
+					if existing.Error() == be.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					banned = append(banned, be)
+				}
+			}
+			if cbe := tok.runs.CountryBlockedError(); cbe != nil {
+				dup := false
+				for _, existing := range countryBlocked {
+					if existing.Error() == cbe.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					countryBlocked = append(countryBlocked, cbe)
+				}
+			}
+			if rle := tok.runs.RateLimitError(); rle != nil {
+				dup := false
+				for _, existing := range rateLimited {
+					if existing.Error() == rle.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					rateLimited = append(rateLimited, rle)
+				}
+			}
+			if ice := tok.runs.IpCappedError(); ice != nil {
+				dup := false
+				for _, existing := range ipCapped {
+					if existing.Error() == ice.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					ipCapped = append(ipCapped, ice)
+				}
+			}
+			continue
+		}
+
+		// Daily rolling cap: a token that already sent its
+		// MAX_MESSAGES_PER_DAY successful chats in the last 24h is skipped
+		// like a cooldown; when every token is capped, the pool surfaces a
+		// 429 with the earliest window reset.
+		if cfg.MaxMessagesPerDay > 0 && p.usageCount(idx) >= cfg.MaxMessagesPerDay {
+			dailyLimited = append(dailyLimited, p.dailyLimitError(idx))
+			errs = append(errs, fmt.Sprintf("%s: daily message limit (%d) reached", name, cfg.MaxMessagesPerDay))
+			p.logger.Debug("pool: token skipped (daily message limit)", "token", idx+1, "limit", cfg.MaxMessagesPerDay)
+			continue
+		}
+
+		// Issue #85: session-quota-capped token for the requested model.
+		// The hot path excludes these in acquireOrder (their rate-limit
+		// reasons ride back in quotaLimited); the no-hot round-robin path
+		// reaches them here and records the reason the same way.
+		if _, _, capped := quotaRemaining(tok, model); capped {
+			rateLimited = append(rateLimited, quotaLimitError(tok, model))
+			errs = append(errs, fmt.Sprintf("%s: session quota exhausted for model", name))
+			p.logger.Debug("pool: token skipped (session quota exhausted)", "token", idx+1, "model", model)
+			continue
+		}
+
+		// Session-create admission gate (issue #86): concurrent session
+		// creates are bounded globally and per model; when the gate is at
+		// capacity the acquire waits (the caller's deadline surfaces as
+		// 503). The permit is held only for the admission call, never
+		// across the upstream chat.
+		permit, err := p.gate.acquire(ctx, model)
+		if err != nil {
+			// Context expired while waiting for a create slot: the caller's
+			// deadline surfaces as 503 (wait-or-503). The pass is aborted —
+			// the ctx is done, so trying further tokens would only repeat
+			// the same wait.
+			return nil, err
+		}
+		sessionStart := time.Now()
+		// Issue #94(b): WAITING_ROOM_CHAIN gate — when the upstream last
+		// refused this token with 428 waiting_room_required, fire the
+		// reference pre-session ad-chain + streak flow (best-effort, bounded
+		// by the client's own chain timeout) before the next session create
+		// so the admission does not bounce off the same 428 again.
+		if cfg.WaitingRoomChain && tok.client.ConsumeWaitingRoomChain() {
+			p.logger.Debug("pool: firing waiting-room pre-session chain", "token", idx+1)
+			tok.client.FireWaitingRoomChain(ctx)
+		}
+		instanceID, err := tok.session.EnsureSessionForModel(ctx, model)
+		permit.Release()
+		phasetiming.FromContext(ctx).Since(phasetiming.SessionRefreshMS, sessionStart)
+		if err != nil {
+			if errors.Is(err, upstream.ErrAuthRejected) {
+				tok.runs.Cooldown(runs.DefaultCooldown)
+				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
+			}
+			var wr *session.WaitingRoomError
+			if errors.As(err, &wr) {
+				waiting = append(waiting, wr)
+			}
+			if rle := asRateLimit(err); rle != nil {
+				tok.runs.CooldownRateLimit(rle)
+				dup := false
+				for _, existing := range rateLimited {
+					if existing.Error() == rle.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					rateLimited = append(rateLimited, rle)
+				}
+				// Issue #122: the fresh-admission spend ceiling is the
+				// upstream's primary spend gate, so an admission-path
+				// spend_limited counts on the ledger too (same counter as
+				// the chat-path refusal in CooldownTokenRateLimit).
+				if rle.Status == "spend_limited" {
+					p.spendMu.Lock()
+					p.recordSpendLimited(idx)
+					p.spendMu.Unlock()
+				}
+			}
+			if ice := asIpCapped(err); ice != nil {
+				tok.runs.CooldownIpCapped(ice)
+				dup := false
+				for _, existing := range ipCapped {
+					if existing.Error() == ice.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					ipCapped = append(ipCapped, ice)
+				}
+			}
+			if be := asBan(err); be != nil {
+				tok.runs.CooldownBan(be)
+				p.notifyBan(idx+1, model)
+				dup := false
+				for _, existing := range banned {
+					if existing.Error() == be.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					banned = append(banned, be)
+				}
+			}
+			if cbe := asCountryBlocked(err); cbe != nil {
+				tok.runs.CooldownCountryBlocked(cbe)
+				dup := false
+				for _, existing := range countryBlocked {
+					if existing.Error() == cbe.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					countryBlocked = append(countryBlocked, cbe)
+				}
+			}
+			if lie := asLimitedIp(err); lie != nil {
+				// Issue #74 P2: the egress IP cannot serve this model
+				// (limited_ip). The session row is fine — it stays bound to
+				// its admitted model — so nothing is invalidated or cooled
+				// per-token: the (egress, model) pair is marked unfit so
+				// new requests are refused fast instead of re-admitting and
+				// burning a daily session slot on every token. The lie is
+				// pool-owned here (fresh from the admission error), so
+				// stamping Model makes the surfaced refusal self-describing;
+				// the registry stores its own copy.
+				lie.Model = model
+				p.MarkModelUnfit(model, lie)
+				modelLimited = append(modelLimited, lie)
+				errs = append(errs, fmt.Sprintf("%s: %v", name, err))
+				continue
+			}
+			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+
+		// Re-validate the token is still current: a concurrent
+		// RemoveLastToken may have swapped the snapshot while the session
+		// admission above was in flight. Leasing a removed token would
+		// strand its run's inflight — LeaseRelease always releases through
+		// the lease's own entry, but the run would belong to a drained,
+		// retiring manager — so skip instead (the removal path drains the
+		// retired entry once it observes the slip).
+		if cur := p.toks.Load(); idx < 0 || idx >= len(*cur) || (*cur)[idx] != tok {
+			continue
+		}
+		ss := tok.session.Snapshot()
+		effectiveModel := model
+		effectiveAgentID := agentID
+		if ss.Model != "" && ss.Model != model {
+			effectiveModel = ss.Model
+			if p.reg != nil {
+				if resolvedAgent, aerr := p.reg.AgentForModel(effectiveModel); aerr == nil {
+					effectiveAgentID = resolvedAgent
+				}
+			}
+		}
+
+		// Issue #90a: pre-create the run at session admission (best-effort)
+		// so the first chat on a freshly-admitted session does not pay the
+		// START latency. When a run already exists this is a cheap no-op;
+		// when the START fails here the Acquire below retries and surfaces
+		// the real error through the normal failover path.
+		_ = tok.runs.Precreate(ctx, effectiveAgentID)
+		runStart := time.Now()
+		run, err := tok.runs.Acquire(ctx, effectiveAgentID)
+		phasetiming.FromContext(ctx).Since(phasetiming.RunAcquireMS, runStart)
+		if err != nil {
+			if errors.Is(err, upstream.ErrAuthRejected) {
+				tok.runs.Cooldown(runs.DefaultCooldown)
+				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
+			}
+			if rle := asRateLimit(err); rle != nil {
+				tok.runs.CooldownRateLimit(rle)
+				dup := false
+				for _, existing := range rateLimited {
+					if existing.Error() == rle.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					rateLimited = append(rateLimited, rle)
+				}
+				// Issue #122: count run-start spend_limited refusals on the
+				// ledger (same counter as the chat-path refusal).
+				if rle.Status == "spend_limited" {
+					p.spendMu.Lock()
+					p.recordSpendLimited(idx)
+					p.spendMu.Unlock()
+				}
+			}
+			if ice := asIpCapped(err); ice != nil {
+				tok.runs.CooldownIpCapped(ice)
+				dup := false
+				for _, existing := range ipCapped {
+					if existing.Error() == ice.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					ipCapped = append(ipCapped, ice)
+				}
+			}
+			if be := asBan(err); be != nil {
+				tok.runs.CooldownBan(be)
+				p.notifyBan(idx+1, model)
+				dup := false
+				for _, existing := range banned {
+					if existing.Error() == be.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					banned = append(banned, be)
+				}
+			}
+			if cbe := asCountryBlocked(err); cbe != nil {
+				tok.runs.CooldownCountryBlocked(cbe)
+				dup := false
+				for _, existing := range countryBlocked {
+					if existing.Error() == cbe.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					countryBlocked = append(countryBlocked, cbe)
+				}
+			}
+			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+		p.logger.Debug("pool: lease acquired", "token", idx+1, "model", effectiveModel, "agent", effectiveAgentID, "instance_id", instanceID,
+			"tier", ss.TierAccess, "country", ss.TierCountry)
+		// Track the activity and end any idle-maintenance pause: the next
+		// maintain tick resumes rotation/refresh work.
+		p.lastActiveMu.Lock()
+		p.lastActive = time.Now()
+		p.idleFinished = false
+		p.lastActiveMu.Unlock()
+		provisioned := provisionedFromQuota(ss)
+		return &Lease{Token: idx, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: instanceID,
+			TierAccess: ss.TierAccess, TierCountry: ss.TierCountry, ProvisionedModels: provisioned, entry: tok, AcquiredAt: time.Now()}, nil
+	}
+
+	// Failover precedence (PRD §6 error matrix): when buckets are mixed the
+	// highest-precedence non-empty bucket wins — ban > country-blocked >
+	// model-IP-limited > rate-limit > ip-capped > waiting-room > daily cap.
+	// Each bucket contributes its best error (first ban, longest rate
+	// window, first ip_capped, lowest queue position, earliest daily
+	// reset). Only when every bucket is empty — all tokens failed with
+	// errors outside the matrix — is the generic error surfaced.
+	// Issue #85: quota-capped tokens were excluded in acquireOrder (never
+	// attempted); their rate-limit reasons land here so a fully-capped pool
+	// surfaces a real 429 with the earliest window reset instead of a
+	// generic combined error.
+	rateLimited = append(rateLimited, quotaLimited...)
+	if len(banned) > 0 {
+		return nil, banned[0]
+	}
+	if len(countryBlocked) > 0 {
+		return nil, countryBlocked[0]
+	}
+	if len(modelLimited) > 0 {
+		// Egress-model gate dominates per-token windows (issue #74 P2):
+		// every token shares the one egress, so no token can serve the
+		// model within the unfit window — retrying any token is pointless.
+		// Surface the refusal (409 model_ip_limited) and let the server's
+		// new-request guard fast-refuse until the window lapses.
+		return nil, modelLimited[0]
+	}
+	if len(rateLimited) > 0 {
+		// Pool exhausted (issue #48): every token failed and the highest-
+		// precedence bucket is rate-limit — no ban/country is present, so
+		// this is the "all tokens are at their quota/window limit" state the
+		// operator wants to be alerted about. Fire-and-forget webhook
+		// (throttled per event type); the 429 still surfaces as usual.
+		if p.notify != nil {
+			p.notify.Send(notify.Event{Event: "pool_exhausted", TokenIndex: 0, Model: model,
+				Message: "all tokens are rate-limited; the pool cannot serve the request"})
+		}
+		return nil, bestRateLimit(rateLimited)
+	}
+	if len(ipCapped) > 0 {
+		return nil, ipCapped[0]
+	}
+	if len(waiting) > 0 {
+		wr := bestWaitingRoom(waiting)
+		p.logger.Debug("pool: waiting room surfaced", "position", wr.Position, "queue_depth", wr.QueueDepth, "retry_after", wr.RetryAfter.String())
+		return nil, wr
+	}
+	if len(dailyLimited) > 0 {
+		return nil, bestDailyLimit(dailyLimited)
+	}
+	return nil, fmt.Errorf("unable to acquire run from any token: %s", strings.Join(errs, "; "))
+}
+
+// acquireOrder computes the token iteration order for one Acquire pass
+// (hot-session-first selection, see Acquire). toks is the caller's snapshot
+// (loaded once in Acquire) — the order is built against the same snapshot
+// the failover loop indexes, so an AddToken racing the call can never make
+// the loop index past its own snapshot. start is the round-robin start
+// index; model is the requested upstream model.
+//
+// Issue #85: within the hot set, tokens whose last admission reported a
+// known positive remaining session quota for the requested model rank above
+// unknown-quota tokens, ordered by smallest remaining first (drain the
+// account closest to its limit; preserve fuller quotas —
+// reference/freebuff-reverse .../scheduler.go:472-496 tier ordering). Tokens
+// whose quota is exhausted for the model (RecentCount >= Limit with a future
+// ResetAt) are excluded from this pass entirely; their rate-limit reasons
+// are returned so the caller surfaces a real 429 when every token is capped.
+func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int, []*upstream.RateLimitError) {
+	cfg := p.cfg.Load()
+	// eligible mirrors the per-token checks the failover loop applies:
+	// not cooling down, under the daily message cap, and not quota-capped
+	// for the requested model (issue #85). It never records the exclusion
+	// reasons — the caller does that in one place.
+	eligible := func(idx int) bool {
+		tok := (*toks)[idx]
+		// Quota-capped tokens are excluded from BOTH the hot set and the
+		// cold fallback: their rate-limit reasons ride back in quotaLimited,
+		// so the pool surfaces a real 429 when every token is capped.
+		if _, _, capped := quotaRemaining(tok, model); capped {
+			return false
+		}
+		return true
+	}
+
+	// Cooldown and daily-message-capped tokens stay ELIGIBLE for the cold
+	// fallback (they are simply not hot): the failover loop visits them and
+	// records their remembered ban/country-block/rate-limit/ip-capped/daily
+	// reasons, matching the historical linear-failover behavior. Excluding
+	// them here would drop those reasons from the error matrix when a hot
+	// token fails (review finding).
+	eligibleForHot := func(idx int) bool {
+		tok := (*toks)[idx]
+		if time.Now().Before(tok.runs.CooldownUntil()) {
+			return false
+		}
+		if cfg.MaxMessagesPerDay > 0 && p.usageCount(idx) >= cfg.MaxMessagesPerDay {
+			return false
+		}
+		return eligible(idx)
+	}
+
+	var hotBuf [32]int // stack-allocated, max tokens
+	hot := hotBuf[:0]
+	for offset := 0; offset < len(*toks); offset++ {
+		idx := (start + offset) % len(*toks)
+		if !eligibleForHot(idx) || !tokenHasLiveSession((*toks)[idx]) {
+			continue
+		}
+		hot = append(hot, idx)
+	}
+	if len(hot) == 0 {
+		// No hot tokens: plain round-robin over every token, exactly like
+		// the historical behavior. Capped/cooldown tokens stay in the order
+		// — the failover loop re-checks and records their reasons.
+		order := make([]int, len(*toks))
+		for i := range order {
+			order[i] = (start + i) % len(*toks)
+		}
+		return order, nil
+	}
+
+	// Quota-aware secondary sort (issue #85), stable over the round-robin
+	// base order: session-model match first (existing tiebreak), then known
+	// positive remaining quota before unknown, then smallest remaining
+	// first.
+	sort.SliceStable(hot, func(i, j int) bool {
+		a, b := hot[i], hot[j]
+		aMatch := (*toks)[a].session.Snapshot().Model == model
+		bMatch := (*toks)[b].session.Snapshot().Model == model
+		if aMatch != bMatch {
+			return aMatch
+		}
+		aKnown, aRem, _ := quotaRemaining((*toks)[a], model)
+		bKnown, bRem, _ := quotaRemaining((*toks)[b], model)
+		if aKnown != bKnown {
+			return aKnown
+		}
+		if aKnown {
+			return aRem < bRem
+		}
+		return false
+	})
+
+	// Cold fallback: the remaining eligible tokens from the round-robin
+	// start, excluding the hot tokens already attempted this pass (each
+	// token is attempted at most once, as in the historical failover).
+	var attemptedBuf [32]bool // stack-allocated, max tokens
+	for _, idx := range hot {
+		if idx >= 0 && idx < 32 {
+			attemptedBuf[idx] = true
+		}
+	}
+	order := hot
+	for offset := 0; offset < len(*toks); offset++ {
+		idx := (start + offset) % len(*toks)
+		if (idx >= 0 && idx < 32 && attemptedBuf[idx]) || !eligible(idx) {
+			continue
+		}
+		order = append(order, idx)
+	}
+
+	// The capped tokens excluded above are never visited by the failover
+	// loop, so their rate-limit reasons must ride back with the order: when
+	// every token is capped the pool surfaces a real 429 with the earliest
+	// window reset instead of a generic combined error.
+	inOrder := make(map[int]struct{}, len(order))
+	for _, idx := range order {
+		inOrder[idx] = struct{}{}
+	}
+	var quotaLimited []*upstream.RateLimitError
+	for idx := range *toks {
+		if _, ok := inOrder[idx]; ok {
+			continue
+		}
+		if _, _, capped := quotaRemaining((*toks)[idx], model); capped {
+			quotaLimited = append(quotaLimited, quotaLimitError((*toks)[idx], model))
+		}
+	}
+	return order, quotaLimited
+}
+
+// tokenHasLiveSession reports whether token's cached session is active and
+// unexpired — i.e. a request can reuse it without admitting a new session.
+// Snapshot reads local state only (no upstream calls), safe to call per
+// token per acquire.
+func tokenHasLiveSession(tok *tokenEntry) bool {
+	snap := tok.session.Snapshot()
+	return snap.Status == "active" && !snap.ExpiresAt.IsZero() && snap.ExpiresAt.After(time.Now())
+}
+
+// bestWaitingRoom picks the queue entry with the lowest position; ties break
+// on the lowest queue depth (PRD §3: best-waiting-room-position selection).
+func bestWaitingRoom(entries []*session.WaitingRoomError) *session.WaitingRoomError {
+	best := entries[0]
+	for _, candidate := range entries[1:] {
+		if betterWait(candidate, best) {
+			best = candidate
+		}
+	}
+	return best
+}
+
+// betterWait reports whether a outranks b. Positions <= 0 mean "unknown" and
+// rank below any known position (mirrors freebuff2api-quorinex).
+func betterWait(a, b *session.WaitingRoomError) bool {
+	if b == nil {
+		return true
+	}
+	if a.Position <= 0 {
+		return false
+	}
+	if b.Position <= 0 {
+		return true
+	}
+	if a.Position != b.Position {
+		return a.Position < b.Position
+	}
+	return a.QueueDepth < b.QueueDepth
+}

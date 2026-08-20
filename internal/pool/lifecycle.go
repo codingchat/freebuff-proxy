@@ -245,12 +245,19 @@ func (p *Pool) RemoveLastToken() error {
 // drainRemovedToken finishes the removed token's runs and ends its admitted
 // session (mirrors RemoveAllTokens' run finish plus the session end that
 // removal previously skipped), bounded by the per-token shutdown timeout so
-// a hung upstream cannot block the dashboard action.
+// a hung upstream cannot block the dashboard action. guarded by
+// tokenEntry.drained sync.Once to prevent double-drain when both
+// LeaseRelease and pruneRetired race on the same retired entry.
 func (p *Pool) drainRemovedToken(entry *tokenEntry) {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	entry.runs.FinishAllRuns(ctx)
-	_ = entry.session.EndSession(ctx)
+	entry.drained.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		entry.runs.FinishAllRuns(ctx)
+		_ = entry.session.EndSession(ctx)
+		p.retiredMu.Lock()
+		delete(p.retired, entry)
+		p.retiredMu.Unlock()
+	})
 }
 
 // RemoveAllTokens finishes every fixed token's runs and empties the pool

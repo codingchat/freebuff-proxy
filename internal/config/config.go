@@ -58,6 +58,11 @@ type Config struct {
 	// dashboard log viewer (LOG_RING_SIZE; default 500, validated 50..5000).
 	LogRingSize           int
 	MaxMessagesPerDay     int           // 0 = unlimited: per-token cap on successful chats per 24h
+	// BridgeDailyLimit is the global daily chat cap across ALL bridge-mode
+	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited). Enforced in AcquireBridge
+	// before the per-entry check so a flood of distinct client tokens cannot
+	// collectively exceed the operator's budget.
+	BridgeDailyLimit      int
 	MaxSpendPerDay        int64         // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $0.50 restricted, compose by minimum, server-enforced) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
 	IdleRotationTimeout   time.Duration // 0 = disabled: pause rotation/refresh after this idle period
 	SafeMode              bool          // true = apply recommended anti-ban safe defaults
@@ -231,6 +236,9 @@ type rawConfig struct {
 	LogAccess                        bool            `json:"LOG_ACCESS"`
 	LogRingSize                      *int            `json:"LOG_RING_SIZE"`
 	MaxMessagesPerDay                *int            `json:"MAX_MESSAGES_PER_DAY"`
+	// BridgeDailyLimit is the global daily chat cap across all bridge
+	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited).
+	BridgeDailyLimit                 *int            `json:"BRIDGE_DAILY_LIMIT"`
 	MaxSpendPerDay                   *int            `json:"MAX_SPEND_PER_DAY"`
 	IdleRotationTimeout              string          `json:"IDLE_ROTATION_TIMEOUT"`
 	SafeMode                         bool            `json:"SAFE_MODE"`
@@ -453,6 +461,7 @@ func Load(configPath string) (Config, error) {
 	overrideBool(&raw.LogAccess, "LOG_ACCESS")
 	overrideInt(&raw.LogRingSize, "LOG_RING_SIZE")
 	overrideInt(&raw.MaxMessagesPerDay, "MAX_MESSAGES_PER_DAY")
+	overrideInt(&raw.BridgeDailyLimit, "BRIDGE_DAILY_LIMIT")
 	overrideInt(&raw.MaxSpendPerDay, "MAX_SPEND_PER_DAY")
 	overrideString(&raw.IdleRotationTimeout, "IDLE_ROTATION_TIMEOUT")
 	overrideBool(&raw.SafeMode, "SAFE_MODE")
@@ -602,6 +611,13 @@ func Load(configPath string) (Config, error) {
 		maxMessagesPerDay = *raw.MaxMessagesPerDay
 	}
 
+	// BRIDGE_DAILY_LIMIT (B5): global daily chat cap across ALL bridge
+	// entries. 0 = unlimited (default). Explicit values always win.
+	bridgeDailyLimit := 0
+	if raw.BridgeDailyLimit != nil {
+		bridgeDailyLimit = *raw.BridgeDailyLimit
+	}
+
 	// MAX_SPEND_PER_DAY (issue #122): advisory per-token Pacific-day spend
 	// ceiling in ledger units, default 0 (unlimited). Deliberately NOT
 	// enforced — the upstream $ ceilings are server-side and the proxy
@@ -708,6 +724,7 @@ func Load(configPath string) (Config, error) {
 		LogAccess:                        raw.LogAccess,
 		LogRingSize:                      logRingSize,
 		MaxMessagesPerDay:                maxMessagesPerDay,
+		BridgeDailyLimit:                 bridgeDailyLimit,
 		MaxSpendPerDay:                   maxSpendPerDay,
 		IdleRotationTimeout:              idleRotationTimeout,
 		SafeMode:                         raw.SafeMode,
@@ -864,6 +881,8 @@ func (c Config) Validate() error {
 		return errors.New(`COST_MODE must be "free" or unset -- any other value (e.g. a typo) routes requests as PAID and fresh free accounts get 402 "Out of credits"`)
 	case c.MaxMessagesPerDay < 0:
 		return errors.New("MAX_MESSAGES_PER_DAY cannot be negative")
+	case c.BridgeDailyLimit < 0:
+		return errors.New("BRIDGE_DAILY_LIMIT cannot be negative")
 	case c.MaxSpendPerDay < 0:
 		return errors.New("MAX_SPEND_PER_DAY cannot be negative")
 	case c.LogRingSize != 0 && (c.LogRingSize < 50 || c.LogRingSize > 5000):
@@ -1039,6 +1058,7 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideBoolFrom(&raw.LogAccess, get, "LOG_ACCESS")
 	overrideIntFrom(&raw.LogRingSize, get, "LOG_RING_SIZE")
 	overrideIntFrom(&raw.MaxMessagesPerDay, get, "MAX_MESSAGES_PER_DAY")
+	overrideIntFrom(&raw.BridgeDailyLimit, get, "BRIDGE_DAILY_LIMIT")
 	overrideIntFrom(&raw.MaxSpendPerDay, get, "MAX_SPEND_PER_DAY")
 	overrideStringFrom(&raw.IdleRotationTimeout, get, "IDLE_ROTATION_TIMEOUT")
 	// The remaining keys mirror the real-environment override set in Load.
