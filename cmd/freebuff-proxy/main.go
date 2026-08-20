@@ -46,48 +46,11 @@ func main() {
 	configPath := flag.String("config", "", "path to an optional JSON config file (keys mirror env names)")
 	verbose := flag.Bool("v", false, "verbose (debug) logging")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	showDoctor := flag.Bool("doctor", false, "run environment and configuration diagnostics")
-	showUpdate := flag.Bool("update", false, "check for and download the latest release update")
-	showSetup := flag.Bool("setup", false, "run interactive client configuration helper")
-	testToken := flag.Bool("test-token", false, "probe the first configured token with a zero-cost GET probe (no session consumed) and exit 0/1")
-	installService := flag.Bool("install-service", false, "register the current binary as a background service and start it (Task Scheduler / systemd --user / launchd)")
-	uninstallService := flag.Bool("uninstall-service", false, "stop and unregister the background service")
-	serviceStatus := flag.Bool("service-status", false, "check whether the background service is registered and running (exit 0 registered, 1 not)")
-	autoYes := flag.Bool("yes", false, "auto-confirm prompts during setup")
-	refreshToken := flag.Int("refresh-token", -1, "re-authenticate token #N in .env via the headless GitHub login flow and exit (interactive: start → print login URL → poll; with -yes and GITHUB_USER/GITHUB_PASSWORD/GITHUB_TOTP set: protocol login)")
 	flag.Parse()
-
-	if w := modeFlagsExclusiveWarning(*showDoctor, *showUpdate, *showSetup, *testToken, *installService, *uninstallService, *serviceStatus); w != "" {
-		fmt.Fprintln(os.Stderr, w)
-	}
 
 	if *showVersion {
 		fmt.Println("freebuff-proxy", version)
 		os.Exit(0)
-	}
-	if *testToken {
-		runTokenTest(*configPath)
-	}
-	if *refreshToken >= 0 {
-		runTokenRefresh(*configPath, *refreshToken, *autoYes)
-	}
-	if *showDoctor {
-		runDoctor(*configPath)
-	}
-	if *showUpdate {
-		runUpdate()
-	}
-	if *showSetup {
-		runSetup(*autoYes)
-	}
-	if *installService {
-		runServiceInstall()
-	}
-	if *uninstallService {
-		runServiceUninstall()
-	}
-	if *serviceStatus {
-		runServiceStatus()
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -236,15 +199,6 @@ func main() {
 	// Prewarm + the 60s maintain loop run until ctx is canceled (shutdown).
 	p.Start(ctx)
 
-	// Egress probing is deliberately NOT wired into startup (#123): the
-	// official CLI never talks to cloudflare.com (the probe target), and
-	// the background loop's risk-engine feed has no consumer (Score()
-	// reads only upstream privacy signals + ip-cap ratios, never the
-	// probe's IP/country). The probe still runs on demand — `-doctor`
-	// re-probes with its own cache (doctor.go egressRegionRow) — so
-	// operators keep the "Egress region" readout without an extra
-	// recurring request the CLI would never make.
-
 	// Issue #62: the dashboard login wizard drives the same headless OAuth
 	// flow as the CLI against the proxy's own transport/stealth wiring; the
 	// token it yields is added to the pool + .env (nil disables the wizard).
@@ -372,6 +326,17 @@ func main() {
 	}
 }
 
+// cliOwnerFilePath returns the platform freebuff-instance-owner.json path
+// (issue #97) — the manicode config dir, matching the credentials file the
+// auto-discoverer reads.
+func cliOwnerFilePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", fmt.Errorf("cannot resolve home directory")
+	}
+	return filepath.Join(home, ".config", "manicode", "freebuff-instance-owner.json"), nil
+}
+
 // stderrIsCharDevice reports whether stderr is a character device (an
 // interactive console). Piped or redirected stderr (containers, log files,
 // services, Task Scheduler) is not, so interactive-only behavior is skipped.
@@ -401,23 +366,6 @@ func holdForExitIfConsole() {
 	}
 	fmt.Fprintln(os.Stderr, "Press Enter to exit.")
 	_, _ = fmt.Scanln()
-}
-
-// modeFlagsExclusiveWarning returns the warning printed when 2+ of the
-// mutually-exclusive mode flags (-doctor/-update/-setup/-test-token/
-// -install-service/-uninstall-service/-service-status) are set; "" when at
-// most one is set (only the first flag then runs).
-func modeFlagsExclusiveWarning(doctor, update, setup, testToken, installService, uninstallService, serviceStatus bool) string {
-	n := 0
-	for _, set := range []bool{doctor, update, setup, testToken, installService, uninstallService, serviceStatus} {
-		if set {
-			n++
-		}
-	}
-	if n <= 1 {
-		return ""
-	}
-	return "freebuff-proxy: warning: -doctor, -update, -setup, -test-token, -install-service, -uninstall-service and -service-status are mutually exclusive; only the first will run"
 }
 
 // resolveLogLevel applies the effective log-level precedence: a set
