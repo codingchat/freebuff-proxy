@@ -549,7 +549,7 @@
 
         <!-- Settings List -->
         <div class="space-y-2 max-h-[520px] overflow-y-auto pr-1">
-          {#if filteredSettings().length === 0}
+          {#if filteredSettings.length === 0}
             <div class="py-10 text-center space-y-3">
               <Search size={24} class="mx-auto text-[var(--fp-dim)] opacity-60" />
               <p class="text-xs text-[var(--fp-muted)]">No configuration settings match "<span class="text-white font-mono">{searchQuery}</span>"</p>
@@ -562,7 +562,7 @@
               </button>
             </div>
           {:else}
-            {#each filteredSettings() as kv}
+            {#each filteredSettings as kv}
               {@const doc = settingDocs[kv.key]}
               {@const curVal = getEnvValue(kv.key)}
               {@const isSelected = selectedSettingKey === kv.key}
