@@ -21,6 +21,6 @@
     </div>
   {/if}
   {#if description}
-    <p class="text-xs text-[var(--fp-dim)] mt-4">{description}</p>
+    <p class="text-xs text-[var(--fp-muted)] mt-4">{description}</p>
   {/if}
 </div>

@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"freebuff-proxy/internal/upstream"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -169,8 +171,51 @@ func (s *Server) dashboardAuth(next http.Handler) http.Handler {
 
 func (s *Server) adminSensitive(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.cfg.Load()
+		if cfg.AdminToken == "" && (!isLoopbackAddr(r.RemoteAddr) || !isLoopbackHost(r.Host)) {
+			http.Error(w, "forbidden: admin config requires a loopback client", http.StatusForbidden)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isLoopbackAddr reports whether remoteAddr's host part is a loopback
+// address (127.0.0.0/8 or ::1). Both "127.0.0.1:1234" and "[::1]:1234" forms
+// are accepted, as is a port-less remoteAddr; anything else — attacker
+// source IPs included — is not loopback.
+func isLoopbackAddr(remoteAddr string) bool {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// isLoopbackHost reports whether an HTTP Host header names a loopback
+// destination: a loopback IP (loopback port form, optional port) or the
+// exact DNS name "localhost" (case-insensitive, optional trailing dot).
+// Port stripping is best-effort: net.SplitHostPort handles "127.0.0.1:3457"
+// and "[::1]:3457"; on failure the last ":port" is stripped only when one
+// is present. An unbracketed IPv6 literal is never mangled into a loopback
+// name by that fallback (the residue still has to parse as a loopback IP or
+// equal "localhost"), so the safe direction — reject — holds for any
+// malformed or attacker-supplied Host.
+func isLoopbackHost(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	} else if idx := strings.LastIndex(host, ":"); idx > 0 {
+		host = host[:idx]
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return host == "localhost"
 }
 
 func (s *Server) adminCSRF(next http.Handler) http.HandlerFunc {
@@ -247,4 +292,26 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dash.RenderLogin(w, r, "")
+}
+
+// handleAdminLogout clears the fb_admin session cookie (MaxAge=-1, same
+// name/Path/SameSite as the login cookie) and answers: 302 → /admin/login
+// on GET, JSON {"ok":true} on POST. It does NOT require a valid cookie —
+// logging out an already-expired session must work — and it is not wrapped
+// in adminSensitive because it exposes nothing.
+func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminCookieName,
+		Value:    "",
+		Path:     "/admin",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+	if r.Method == http.MethodPost {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		return
+	}
+	http.Redirect(w, r, "/admin/login", http.StatusFound)
 }

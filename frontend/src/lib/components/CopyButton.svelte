@@ -28,7 +28,7 @@
   <button
     type="button"
     onclick={handleCopy}
-    class="p-2 rounded-lg bg-[var(--fp-input-bg)] border border-[var(--fp-border)] hover:border-[var(--fp-border-bright)] text-[var(--fp-muted)] hover:text-white transition-colors"
+    class="p-2.5 min-w-11 min-h-11 rounded-lg bg-[var(--fp-input-bg)] border border-[var(--fp-border)] hover:border-[var(--fp-border-bright)] text-[var(--fp-muted)] hover:text-white transition-colors"
     title="Copy to clipboard"
     aria-label={copied ? 'Copied' : 'Copy to clipboard'}
   >

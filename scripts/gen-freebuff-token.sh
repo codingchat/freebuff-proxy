@@ -47,6 +47,12 @@ gray() { printf '\033[90m%s\033[0m\n' "$*"; }
 
 command -v curl >/dev/null || { err "curl is required"; exit 1; }
 command -v jq >/dev/null   || { err "jq is required (apt install jq / brew install jq)"; exit 1; }
+command -v openssl >/dev/null || { err "openssl is required (openssl rand generates the CLI-parity fingerprint)"; exit 1; }
+
+# esc_val <str> - escape sed replacement metacharacters (&, \ and the |
+# delimiter used below) so a value can be spliced into a `s|...|...|` script
+# verbatim without corrupting the .env. Same helper as install.sh.
+esc_val() { printf '%s' "$1" | sed -e 's/[&\\|]/\\&/g'; }
 
 # --- 0. warning --------------------------------------------------------------
 echo ""
@@ -147,9 +153,34 @@ START_TIME=$(date +%s)
 ATTEMPTS=0
 USER_JSON=""
 
-ENCODED_FP=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$FINGERPRINT_ID'))" 2>/dev/null || echo "$FINGERPRINT_ID")
-ENCODED_HASH=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$FP_HASH'))" 2>/dev/null || echo "$FP_HASH")
-ENCODED_EXPIRES=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$EXPIRES_AT'))" 2>/dev/null || echo "$EXPIRES_AT")
+# url_encode <str> - percent-encode a value for the status query string.
+# jq (a documented dependency) is the primary path. The python3 fallback
+# reads the value from argv instead of string-interpolating it into `-c`:
+# values come from the upstream POST response and an embedded single quote
+# could otherwise break out of the Python program (arbitrary code execution
+# from upstream-controlled data). Raw echo is the last resort — FP_HASH /
+# EXPIRES_AT (ISO timestamps with + and :) are legal in a query unchanged,
+# so an unencoded value is safe as long as it is never re-parsed as code.
+url_encode() {
+  local encoded
+  encoded="$(jq -rn --arg v "$1" '$v | @uri' 2>/dev/null)" || encoded=""
+  if [ -z "$encoded" ]; then
+    encoded="$(python3 - "$1" <<'PY' 2>/dev/null
+import sys, urllib.parse
+sys.stdout.write(urllib.parse.quote(sys.argv[1]))
+PY
+)"
+  fi
+  if [ -n "$encoded" ]; then
+    printf '%s' "$encoded"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+ENCODED_FP=$(url_encode "$FINGERPRINT_ID")
+ENCODED_HASH=$(url_encode "$FP_HASH")
+ENCODED_EXPIRES=$(url_encode "$EXPIRES_AT")
 
 while true; do
   ELAPSED=$(( $(date +%s) - START_TIME ))
@@ -282,10 +313,13 @@ case "$MODE" in
     elif grep -q '^AUTH_TOKENS=' "$TARGET_ENV"; then
       EXISTING=$(grep '^AUTH_TOKENS=' "$TARGET_ENV" | head -1 | cut -d= -f2-)
       TMP_ENV="$(mktemp)"
+      # sed would interpret & (whole match), \ and the | delimiter inside the
+      # replacement; escape both spliced values first so a token containing
+      # those characters round-trips verbatim.
       if [ -n "$EXISTING" ]; then
-        sed "s|^AUTH_TOKENS=.*|AUTH_TOKENS=${EXISTING},${AUTH_TOKEN}|" "$TARGET_ENV" > "$TMP_ENV" && mv "$TMP_ENV" "$TARGET_ENV"
+        sed "s|^AUTH_TOKENS=.*|AUTH_TOKENS=$(esc_val "$EXISTING"),$(esc_val "$AUTH_TOKEN")|" "$TARGET_ENV" > "$TMP_ENV" && mv "$TMP_ENV" "$TARGET_ENV"
       else
-        sed "s|^AUTH_TOKENS=.*|AUTH_TOKENS=${AUTH_TOKEN}|" "$TARGET_ENV" > "$TMP_ENV" && mv "$TMP_ENV" "$TARGET_ENV"
+        sed "s|^AUTH_TOKENS=.*|AUTH_TOKENS=$(esc_val "$AUTH_TOKEN")|" "$TARGET_ENV" > "$TMP_ENV" && mv "$TMP_ENV" "$TARGET_ENV"
       fi
       ok "  Appended to: $TARGET_ENV"
     else

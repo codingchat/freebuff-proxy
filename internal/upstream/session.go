@@ -194,11 +194,6 @@ func (c *Client) ProbeAccount(ctx context.Context) (*SessionState, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Ask the upstream to include the unused rate limits in the response so
-	// the probe observes accessTier/glmPromo/resetAt/rateLimitsByModel for
-	// dashboard display without consuming anything (mirrors
-	// reference/freebuff2api-netroindonesia/quota.js).
-	req.Header.Set("x-freebuff-include-unused-rate-limits", "1")
 	state, err := c.sessionCall(req)
 	if err != nil {
 		return nil, err

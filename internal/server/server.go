@@ -190,6 +190,13 @@ func (s *Server) Handler() http.Handler {
 	// lock the victim out of the dashboard (5 fails → 1-minute lockout,
 	// repeatable).
 	mux.HandleFunc("POST /admin/login", s.adminCSRF(http.HandlerFunc(s.handleAdminLogin)))
+	// GET /admin/logout clears the session cookie and returns to the login
+	// page; POST /admin/logout does the same but answers JSON {"ok":true}.
+	// Logout deliberately runs WITHOUT a valid cookie (expired sessions must
+	// still be logged out) and is NOT wrapped in adminSensitive — it exposes
+	// nothing and must work for anyone capable of reaching /admin/login.
+	mux.HandleFunc("GET /admin/logout", s.handleAdminLogout)
+	mux.HandleFunc("POST /admin/logout", s.handleAdminLogout)
 	// Admin dashboard API routes (JSON)
 	mux.Handle("GET /admin/api/overview", s.dashboardAuth(s.dash.APIHandler("overview")))
 	mux.Handle("GET /admin/api/tokens", s.dashboardAuth(s.dash.APIHandler("tokens")))

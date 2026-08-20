@@ -157,16 +157,22 @@ const defaultReasoningEffort = "high"
 // expose [low, high, max] (Pro gained low on 08/13; medium intentionally
 // absent — rewritten to high, see normalizeReasoning), gpt-5.6-luna
 // EFFORTS_THROUGH_MAX low..max (xhigh included), muse-spark
-// EFFORTS_THROUGH_XHIGH minimal..xhigh. Models absent from the table get the
-// full ladder (no clamping). The table is refreshable at runtime via
-// SetModelEffortLookup.
+// EFFORTS_THROUGH_XHIGH minimal..xhigh. The provisioned -max variants
+// (deepseek-v4-flash-max, deepseek-v4-pro-max, gpt-5.6-luna-max) mirror
+// their base model's ladder — same lanes, higher provisioning tier. Models
+// absent from the table get the full ladder (no clamping): kimi/glm are
+// deliberately absent (CrofAI ignores reasoning_effort) and gemini rows
+// are absent (helper models, no upstream restriction). The table is
+// refreshable at runtime via SetModelEffortLookup.
 var modelReasoningEfforts = map[string][]string{
 	"deepseek/deepseek-v4-flash":      {"low", "high", "max"},
 	"deepseek/deepseek-v4-pro":        {"low", "high", "max"},
+	"deepseek/deepseek-v4-flash-max":  {"low", "high", "max"},
+	"deepseek/deepseek-v4-pro-max":    {"low", "high", "max"},
 	"mimo/mimo-v2.5":                  {"high"},
-	"mimo/mimo-v2.5-pro":              {"high"},
 	"anthropic/claude-fable-5":        {"low", "medium", "high", "xhigh", "max"},
 	"openai/gpt-5.6-luna":             {"low", "medium", "high", "xhigh", "max"},
+	"openai/gpt-5.6-luna-max":         {"low", "medium", "high", "xhigh", "max"},
 	"meta/muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
 }
 
@@ -268,9 +274,14 @@ func clampReasoningEffort(requested string, allowed []string, fallback string) s
 // isDeepSeekModel reports whether the route is one of the DeepSeek V4 models.
 // DeepSeek routes accept prompt-cache hints (#84) and rewrite requested
 // "medium" to "high" (#112). Tolerates both the registry's full ids and bare
-// model ids.
+// model ids, and the provisioned `-max` variants (which upstream routes to the
+// same DeepSeek lanes).
 func isDeepSeekModel(model string) bool {
-	return strings.HasSuffix(model, "deepseek-v4-flash") || strings.HasSuffix(model, "deepseek-v4-pro")
+	m := strings.ToLower(model)
+	return strings.HasSuffix(m, "deepseek-v4-flash") ||
+		strings.HasSuffix(m, "deepseek-v4-pro") ||
+		strings.HasSuffix(m, "deepseek-v4-flash-max") ||
+		strings.HasSuffix(m, "deepseek-v4-pro-max")
 }
 
 // isStrictReasoningModel reports whether the model requires an explicit reasoning_content

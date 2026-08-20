@@ -53,7 +53,7 @@
           update_url: data.update_url || '',
         };
       })
-      .catch(() => {});
+      .catch((e) => console.warn('version check failed', e));
 
     return () => {
       window.removeEventListener('hashchange', syncTabFromURL);
@@ -62,11 +62,17 @@
 </script>
 
 <div class="min-h-screen bg-[var(--fp-bg)] text-[var(--fp-text)] flex flex-col font-sans selection:bg-[var(--fp-amber)]/30 selection:text-white">
+  <a
+    href="#main-content"
+    class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[60] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-[var(--fp-amber)] focus:text-[#1A1A1A] focus:font-semibold focus:text-sm"
+  >
+    Skip to content
+  </a>
   {#if activeTab !== 'login'}
     <Navbar bind:activeTab {versionInfo} />
   {/if}
 
-  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+  <main id="main-content" class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
     {#if activeTab === 'overview'}
       <Overview />
     {:else if activeTab === 'tokens'}

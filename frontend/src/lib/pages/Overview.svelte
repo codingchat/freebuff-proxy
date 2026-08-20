@@ -1,7 +1,8 @@
 <script>
-  import { Shield, AlertTriangle, Play, RefreshCw, CheckCircle2, XCircle } from '@lucide/svelte';
+  import { Shield, AlertTriangle, Play, RefreshCw, CheckCircle2, XCircle, Settings } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
+  import Alert from '../components/Alert.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import { fetchAPI, postAPI } from '../utils/api.js';
@@ -28,7 +29,7 @@
         smokeModel = preferred;
       }
     } catch (e) {
-      error = e.message || 'Failed to fetch overview data';
+      error = e.message || 'Could not reach the proxy API. Check that the server is running; retrying automatically.';
     } finally {
       loading = false;
     }
@@ -147,7 +148,7 @@
         <button
           type="submit"
           disabled={smokeRunning || !smokeModel}
-          class="w-full h-full min-h-[38px] fp-btn-primary"
+          class="w-full h-full min-h-11 fp-btn-primary"
         >
           {#if smokeRunning}
             <RefreshCw size={14} class="animate-spin" />
@@ -188,6 +189,11 @@
     {/if}
   </div>
 
+  <!-- Fetch error banner -->
+  {#if error}
+    <Alert variant="error" message={error} dismissable={false} />
+  {/if}
+
   <!-- Bridge / Empty / Token Cards -->
   {#if data?.in_bridge}
     <div class="fp-card p-5 border-[var(--fp-blue)]/30">
@@ -196,13 +202,18 @@
         Upstream tokens are relayed directly per client request ({data.bridge_tokens || 0} active bridge client{data.bridge_tokens === 1 ? '' : 's'}). Session pools and quota tracking are client-scoped.
       </p>
     </div>
-  {:else if !data?.has_tokens}
+  {:else if data && !data.has_tokens}
     <EmptyState
       icon={AlertTriangle}
       title="No Upstream Tokens Configured"
       description="Add tokens to AUTH_TOKENS in Config or Setup to start the pooled relay."
-    />
-  {:else}
+    >
+      <a href="#config" class="fp-btn-secondary min-h-11">
+        <Settings size={14} />
+        <span>Go to Config</span>
+      </a>
+    </EmptyState>
+  {:else if data}
     <!-- Token Cards Grid -->
     <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
       {#each data?.tokens || [] as token}

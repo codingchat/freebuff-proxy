@@ -1646,6 +1646,17 @@ func TestNormalizeRequestCacheControlInjection(t *testing.T) {
 		}
 	})
 
+	t.Run("on for deepseek -max variant", func(t *testing.T) {
+		t.Setenv("CACHE_CONTROL_INJECTION", "")
+		out, err := NormalizeRequest(mustJSON(t, mkBody("deepseek/deepseek-v4-pro-max")), "")
+		if err != nil {
+			t.Fatalf("NormalizeRequest: %v", err)
+		}
+		if !hasHints(out) {
+			t.Error("deepseek -max request without cache_control hints")
+		}
+	})
+
 	t.Run("disabled via env", func(t *testing.T) {
 		t.Setenv("CACHE_CONTROL_INJECTION", "false")
 		out, err := NormalizeRequest(mustJSON(t, mkBody("deepseek/deepseek-v4-flash")), "")
@@ -1689,6 +1700,10 @@ func TestDeepSeekPlainReasoningEffort(t *testing.T) {
 		{"pro medium rewrites to high", "deepseek/deepseek-v4-pro", "medium", "high"},
 		{"pro max stays max", "deepseek/deepseek-v4-pro", "max", "max"},
 		{"bare model id tolerated", "deepseek-v4-flash", "max", "max"},
+		{"flash-max medium rewrites to high", "deepseek/deepseek-v4-flash-max", "medium", "high"},
+		{"flash-max max stays max", "deepseek/deepseek-v4-flash-max", "max", "max"},
+		{"pro-max medium rewrites to high", "deepseek/deepseek-v4-pro-max", "medium", "high"},
+		{"pro-max high stays high", "deepseek/deepseek-v4-pro-max", "high", "high"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1811,9 +1826,24 @@ func TestEffortsForModel(t *testing.T) {
 	if got := effortsForModel("meta/muse-spark-1.2-contributor"); !reflect.DeepEqual(got, []string{"minimal", "low", "medium", "high", "xhigh"}) {
 		t.Errorf("muse efforts = %v", got)
 	}
+	// Provisioned -max variants share their base model's ladder.
+	if got := effortsForModel("deepseek/deepseek-v4-flash-max"); !reflect.DeepEqual(got, []string{"low", "high", "max"}) {
+		t.Errorf("flash-max efforts = %v", got)
+	}
+	if got := effortsForModel("deepseek/deepseek-v4-pro-max"); !reflect.DeepEqual(got, []string{"low", "high", "max"}) {
+		t.Errorf("pro-max efforts = %v", got)
+	}
+	if got := effortsForModel("openai/gpt-5.6-luna-max"); !reflect.DeepEqual(got, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Errorf("luna-max efforts = %v", got)
+	}
 	// Unlisted models get the full ladder (no clamping).
 	if got := effortsForModel("minimax/minimax-m3"); !reflect.DeepEqual(got, reasoningLadder[:]) {
 		t.Errorf("unlisted efforts = %v, want full ladder", got)
+	}
+	// mimo-v2.5-pro was removed from free mode 2026-08-04 (paid-only in
+	// model-config.ts) — it must NOT pretend to be a free-catalog row.
+	if got := effortsForModel("mimo/mimo-v2.5-pro"); !reflect.DeepEqual(got, reasoningLadder[:]) {
+		t.Errorf("mimo-v2.5-pro efforts = %v, want full ladder (removed model)", got)
 	}
 
 	// Runtime override (registry data when present), nil → hardcoded table.
@@ -1862,6 +1892,16 @@ func TestNormalizeRequestEffortClamp(t *testing.T) {
 	// never down to low.
 	if got := effortFor("deepseek/deepseek-v4-flash", "medium"); got != "high" {
 		t.Errorf("deepseek-v4-flash medium = %q, want high", got)
+	}
+	// -max variants clamp like their base models.
+	if got := effortFor("deepseek/deepseek-v4-pro-max", "medium"); got != "high" {
+		t.Errorf("deepseek-v4-pro-max medium = %q, want high", got)
+	}
+	if got := effortFor("deepseek/deepseek-v4-pro-max", "xhigh"); got != "high" {
+		t.Errorf("deepseek-v4-pro-max xhigh = %q, want high", got)
+	}
+	if got := effortFor("openai/gpt-5.6-luna-max", "xhigh"); got != "xhigh" {
+		t.Errorf("gpt-5.6-luna-max xhigh = %q, want xhigh", got)
 	}
 	// Unlisted models pass every rung through.
 	if got := effortFor("minimax/minimax-m3", "ultra"); got != "ultra" {
@@ -2668,7 +2708,7 @@ func TestNormalizeRequest_ReasoningLookupRestoration(t *testing.T) {
 }
 
 func TestNormalizeRequest_MiMoReasoningLadder(t *testing.T) {
-	for _, model := range []string{"mimo/mimo-v2.5", "mimo/mimo-v2.5-pro"} {
+	for _, model := range []string{"mimo/mimo-v2.5"} {
 		for _, reqEffort := range []string{"low", "medium", "high", "max"} {
 			body := map[string]any{
 				"model":            model,

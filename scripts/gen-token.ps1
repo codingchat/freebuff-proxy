@@ -2,6 +2,7 @@
 param(
     [switch]$Save,
     [switch]$ToClipboard,
+    [switch]$Incognito,
     [switch]$Append,
     [string]$EnvFile = "",
     [string]$BaseUrl = "https://www.codebuff.com",

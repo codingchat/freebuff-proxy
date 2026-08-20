@@ -25,6 +25,7 @@ dist/
 out/
 bin/
 tmp/
+uicheck/
 freebuff-proxy
 freebuff-proxy.exe
 *.test

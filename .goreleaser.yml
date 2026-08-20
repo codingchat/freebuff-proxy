@@ -1,4 +1,6 @@
-# GoReleaser configuration (v2) — cross-compiled release binaries + SBOM.
+# GoReleaser configuration (v2) — cross-compiled release binaries +
+# checksums.txt. Per-asset SLSA build provenance is attached post-release
+# by .github/workflows/release.yml (actions/attest); no SBOM is produced.
 # Docs: https://goreleaser.com
 version: 2
 

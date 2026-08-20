@@ -2,6 +2,7 @@
   import { ListFilter, Search, RefreshCw, AlertCircle, AlertTriangle, CheckCircle2, Info, X } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
+  import Alert from '../components/Alert.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import Pagination from '../components/Pagination.svelte';
   import { fetchAPI } from '../utils/api.js';
@@ -10,6 +11,7 @@
 
   let data = $state(null);
   let loading = $state(true);
+  let error = $state('');
   let filterLevel = $state('');
   let filterMsg = $state('');
   let page = $state(0);
@@ -29,8 +31,18 @@
       if (filterLevel) query.set('level', filterLevel);
       if (filterMsg.trim()) query.set('msg', filterMsg.trim());
       data = await fetchAPI(`/admin/api/logs?${query.toString()}`);
-      page = 0;
-    } catch { /* ignore */ } finally { loading = false; }
+      error = '';
+      // Keep the user's page across polls; clamp only when the dataset
+      // shrank below the current page.
+      const tp = Math.ceil((data?.entries?.length || 0) / PAGE_SIZE);
+      if (page > tp - 1) page = 0;
+    } catch (e) {
+      error = e.message
+        ? `Could not load log entries: ${e.message}. Polling retries automatically.`
+        : 'Could not load log entries. Polling retries automatically.';
+    } finally {
+      loading = false;
+    }
   }
 
   function handleFilterChange() { page = 0; fetchLogs(); }

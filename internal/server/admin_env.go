@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"freebuff-proxy/internal/config"
@@ -252,7 +253,92 @@ func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("dashboard config saved and reloaded",
 		"remote", remoteHost(r), "changed_keys", changedConfigKeys(oldCfg, &newCfg),
 		"auth_tokens", len(newCfg.AuthTokens), "safe_mode", newCfg.SafeMode)
+	if keys := envOverrideKeys(content); len(keys) > 0 {
+		// The file was written and the config reloaded, but a real process
+		// environment variable outranks the .env file (precedence
+		// env > .env > JSON), so those values are in force from the
+		// environment, NOT from the saved file. Report fail-loud but keep
+		// the 200 status: the write itself succeeded and rolling back could
+		// not beat the environment (matching the token-path semantics).
+		message := fmt.Sprintf("saved, but these keys are overridden by the process environment and will only apply after restart: %s",
+			strings.Join(keys, ", "))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "message": message})
+		return
+	}
 	s.dash.RenderConfigResult(w, r, true, "Saved and reloaded — effective configuration updated.")
+}
+
+// parseEnvContent is a lenient dotenv parser: the dashboard's textarea posts
+// raw .env text, and we re-parse the SAME bytes just written to report which
+// keys the process environment silently overrides. BOM, blank lines,
+// comments, single/double quotes, and inline # comments are handled; export
+// prefixes and interpolated vars (foo=$bar) are intentionally not resolved —
+// a literal-of-a-variable is not an override worth reporting.
+func parseEnvContent(data []byte) map[string]string {
+	out := make(map[string]string)
+	// Strip a leading UTF-8 BOM so the first key is not corrupted.
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		quoted := false
+		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') {
+			if end := strings.IndexByte(value[1:], value[0]); end >= 0 {
+				value = value[1 : 1+end]
+				quoted = true
+			}
+		}
+		if !quoted {
+			if idx := strings.IndexByte(value, '#'); idx >= 0 {
+				value = strings.TrimSpace(value[:idx])
+			}
+		}
+		out[key] = value
+	}
+	return out
+}
+
+// envOverrideKeys reports which keys in just-written .env content are
+// silently overridden by the actual process environment (precedence
+// env > .env > JSON). A key counts as overridden only when the environment
+// value differs from the written value — or, for AUTH_TOKENS, simply when a
+// real env var exists at all (presence wins regardless of emptiness under
+// the config loader).
+func envOverrideKeys(content []byte) []string {
+	written := parseEnvContent(content)
+	keys := make([]string, 0, len(written))
+	for key, writtenVal := range written {
+		envVal, ok := os.LookupEnv(key)
+		if !ok {
+			continue
+		}
+		envVal = strings.TrimSpace(envVal)
+		writtenVal = strings.TrimSpace(writtenVal)
+		switch {
+		case key == "AUTH_TOKENS":
+			// Presence wins even with an empty value; equality means the
+			// written list landed and there is nothing to report.
+			if envVal != writtenVal {
+				keys = append(keys, key)
+			}
+		case envVal != "" && envVal != writtenVal:
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func effectiveConfigKV(cfg *config.Config) map[string]string {

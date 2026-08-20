@@ -3,7 +3,7 @@
 </script>
 
 <footer class="border-t border-[var(--fp-border)] mt-12">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between text-xs text-[var(--fp-dim)]">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between text-xs text-[var(--fp-muted)]">
     <span class="font-mono">freebuff-proxy</span>
     <div class="flex items-center gap-4">
       <a
