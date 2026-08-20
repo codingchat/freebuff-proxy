@@ -64,7 +64,7 @@ The proxy is **direct-egress only** — there is no HTTP/SOCKS proxy support (th
 **Option C — Multi-token pooling (no VPN needed):**
 Stay on limited tier but maximize throughput. Set `AUTH_TOKENS=token1,token2,token3,token4,token5` in `.env` with 4-5 accounts. Each gets 3 sessions/day on `mimo/mimo-v2.5` (base; the 0.0.150 trust-level ladder can raise a token up to 7/day), giving you ~12-15 usable sessions per day.
 
-See the [Model Translation Layer](model-translation-layer.md) for the per-model quota pools and effort ladders in the 0.0.150 catalog.
+See the [Getting Started — Access Tiers](#access-tiers--workarounds) section for per-model quota pools and effort ladders.
 
 **Do NOT use any of these — they trigger the restricted cohort or an outright ban:**
 - Commercial VPN (NordVPN, ExpressVPN, Surfshark, etc.)

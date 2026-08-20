@@ -53,6 +53,7 @@ Desktop.ini
 uicheck/
 scripts/token_ref/
 frontend/verify-ui.mjs
+.worktrees/
 
 # ── misc ──
 node_modules/

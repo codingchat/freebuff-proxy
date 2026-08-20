@@ -586,6 +586,51 @@ func TestSnapshotQuotaByModel(t *testing.T) {
 	}
 }
 
+// TestCommitPreservesQuotaAcrossReAdmit verifies issue #146: when a session
+// is re-admitted and the upstream response omits rateLimitsByModel, the
+// previously-seen quota map is preserved so the dashboard quota table stays
+// visible between quota-carrying responses.
+func TestCommitPreservesQuotaAcrossReAdmit(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.RateLimitsByModel = map[string]any{
+		"z-ai/glm-5.2": map[string]any{
+			"model":       "z-ai/glm-5.2",
+			"limit":       5,
+			"recentCount": 2,
+			"period":      "pacific_day",
+		},
+	}
+	mgr := newTestManager(t, mock)
+
+	// First admission: quota data is populated.
+	if _, err := mgr.EnsureSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snap := mgr.Snapshot()
+	if q, ok := snap.QuotaByModel["z-ai/glm-5.2"]; !ok || q.Limit != 5 {
+		t.Fatalf("first admission quota = %+v, want z-ai/glm-5.2 limit=5", snap.QuotaByModel)
+	}
+
+	// Invalidate and clear upstream quota data to simulate a re-admit
+	// where the upstream omits rateLimitsByModel.
+	mgr.Invalidate()
+	mock.RateLimitsByModel = nil // second response carries no quota
+	if _, err := mgr.EnsureSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The previously-seen quota must survive the re-admit.
+	snap2 := mgr.Snapshot()
+	q, ok := snap2.QuotaByModel["z-ai/glm-5.2"]
+	if !ok {
+		t.Fatalf("quota lost after re-admit without upstream quota: QuotaByModel = %+v", snap2.QuotaByModel)
+	}
+	if q.Limit != 5 || q.RecentCount != 2 {
+		t.Errorf("preserved quota = limit=%v recent=%v, want 5/2", q.Limit, q.RecentCount)
+	}
+}
+
 func TestPoll(t *testing.T) {
 	t.Run("inactive session returns nil", func(t *testing.T) {
 		mock := testutil.NewMock()

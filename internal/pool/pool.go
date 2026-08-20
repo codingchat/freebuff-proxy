@@ -310,7 +310,8 @@ type Pool struct {
 	// notify fires best-effort webhook alerts (issue #48): pool_exhausted
 	// when every token is rate-limited, token_banned when a ban is
 	// classified. nil disables. Wired by main from WEBHOOK_URL.
-	notify *notify.Sender
+	notify   *notify.Sender
+	notifyMu sync.Mutex // guards notify reads/writes (P2-1 data race)
 
 	// storeSessionPersist and storeStateFile record the persistence config
 	// the store was created with (captured by SetSessionStore), so SetConfig
@@ -508,6 +509,8 @@ func (p *Pool) SetSessionStore(store *session.Store) {
 // SetNotifier wires the best-effort webhook sender (issue #48, WEBHOOK_URL);
 // nil disables alerts. Safe to call at runtime (nil-friendly).
 func (p *Pool) SetNotifier(n *notify.Sender) {
+	p.notifyMu.Lock()
+	defer p.notifyMu.Unlock()
 	p.notify = n
 }
 
@@ -807,6 +810,11 @@ func sessionPollBackoffDelay(failures int, retryAfter time.Duration) time.Durati
 	}
 	d = d/2 + time.Duration(sessionRand()%uint64(d/2))
 	if retryAfter > 0 {
+		// Floor retryAfter to avoid uint64(0) modulo panic when the
+		// server's Retry-After is absurdly small (1ns). P2-5.
+		if retryAfter < 5*time.Nanosecond {
+			retryAfter = 5 * time.Nanosecond
+		}
 		ra := retryAfter - retryAfter/5 + time.Duration(sessionRand()%uint64(2*retryAfter/5))
 		if ra > d {
 			d = ra

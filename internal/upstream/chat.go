@@ -150,6 +150,8 @@ func (c *Client) ChatCompletions(ctx context.Context, opts ChatOptions, body []b
 			}
 			return nil, cerr
 		}
+		// Callers MUST close the returned body to release the timeout
+		// context; abandoning it leaks the timer goroutine until it fires.
 		return &cancelBody{ReadCloser: resp.Body, cancel: cancel}, nil
 	}
 }

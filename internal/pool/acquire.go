@@ -418,8 +418,11 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		// this is the "all tokens are at their quota/window limit" state the
 		// operator wants to be alerted about. Fire-and-forget webhook
 		// (throttled per event type); the 429 still surfaces as usual.
-		if p.notify != nil {
-			p.notify.Send(notify.Event{Event: "pool_exhausted", TokenIndex: 0, Model: model,
+		p.notifyMu.Lock()
+		n := p.notify
+		p.notifyMu.Unlock()
+		if n != nil {
+			n.Send(notify.Event{Event: "pool_exhausted", TokenIndex: 0, Model: model,
 				Message: "all tokens are rate-limited; the pool cannot serve the request"})
 		}
 		return nil, bestRateLimit(rateLimited)

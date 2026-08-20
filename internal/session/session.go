@@ -120,6 +120,12 @@ type Manager struct {
 	// redundant poll GET within the TTL.
 	probeTTL     time.Duration
 	lastAdmitted time.Time
+	// savedQuota preserves the most recent non-nil quota map across
+	// invalidation/re-admission cycles (issue #146).  When commit(nil)
+	// drops the cached state, the quota map is stashed here; a later
+	// commit(non-nil) without fresh quota restores it so the dashboard
+	// quota table stays visible between quota-carrying responses.
+	savedQuota map[string]upstream.ModelQuota
 
 	// adopt is the issue #97 CLI-session adoption mode (ADOPT_CLI_SESSION):
 	// nil (default) = create sessions normally. When set, the manager adopts
@@ -380,6 +386,18 @@ func (m *Manager) commit(cs *cachedState) {
 	oldInstance := ""
 	if m.state != nil {
 		oldInstance = m.state.instanceID
+		// Stash the quota map before dropping state so it survives
+		// invalidation (commit(nil)) and later re-admission (issue #146).
+		if m.state.quotaByModel != nil {
+			m.savedQuota = m.state.quotaByModel
+		}
+	}
+	// Restore the previously-seen quota map when the new state omits
+	// rateLimitsByModel (the upstream intermittently drops the field on
+	// re-admission or compact polls — issue #146).  This keeps the
+	// dashboard quota table visible between quota-carrying responses.
+	if cs != nil && cs.quotaByModel == nil && m.savedQuota != nil {
+		cs.quotaByModel = m.savedQuota
 	}
 	m.state = cs
 	if m.store != nil && m.key != "" {
@@ -962,6 +980,11 @@ func (m *Manager) Snapshot() SessionSnapshot {
 			Entitlement: q.Entitlement,
 		}
 	}
+	var sigs []string
+	if len(m.state.ipPrivacySignals) > 0 {
+		sigs = make([]string, len(m.state.ipPrivacySignals))
+		copy(sigs, m.state.ipPrivacySignals)
+	}
 	return SessionSnapshot{
 		Status:             m.state.status,
 		InstanceID:         m.state.instanceID,
@@ -973,7 +996,7 @@ func (m *Manager) Snapshot() SessionSnapshot {
 		TierCountry:        m.state.countryCode,
 		CountryBlockReason: m.state.countryBlockReason,
 		ActiveUsersForIP:   m.state.activeUsersForIP,
-		IPPrivacySignals:   m.state.ipPrivacySignals,
+		IPPrivacySignals:   sigs,
 		Limit:              m.state.limit,
 		ExpiresAt:          m.state.expiresAt,
 		GracePeriodEndsAt:  m.state.gracePeriodEndsAt,
@@ -1023,11 +1046,13 @@ func (m *Manager) InvalidateInstance(instanceID string) {
 		return
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.state == nil || m.state.instanceID != instanceID {
+		m.mu.Unlock()
 		return
 	}
 	m.commit(nil)
+	m.mu.Unlock()
+	m.recordInvalidation("instance_invalidated")
 	slog.Debug("session invalidated", "instance_id", instanceID)
 }
 
