@@ -215,11 +215,11 @@ func (p *Pool) RemoveLastToken() error {
 	next := append([]*tokenEntry{}, (*toks)[:len(*toks)-1]...)
 	p.toks.Store(&next)
 	p.usageMu.Lock()
+	defer p.usageMu.Unlock()
 	p.msgsPerToken = p.msgsPerToken[:len(p.msgsPerToken)-1]
-	p.usageMu.Unlock()
 	p.spendMu.Lock()
+	defer p.spendMu.Unlock()
 	p.spendPerToken = p.spendPerToken[:len(p.spendPerToken)-1]
-	p.spendMu.Unlock()
 
 	// The busy check above and the swap are TOCTOU: an Acquire that loaded
 	// the pre-removal snapshot can lease the removed token in between. Park
@@ -255,8 +255,8 @@ func (p *Pool) drainRemovedToken(entry *tokenEntry) {
 		entry.runs.FinishAllRuns(ctx)
 		_ = entry.session.EndSession(ctx)
 		p.retiredMu.Lock()
+		defer p.retiredMu.Unlock()
 		delete(p.retired, entry)
-		p.retiredMu.Unlock()
 	})
 }
 
@@ -267,15 +267,16 @@ func (p *Pool) RemoveAllTokens(ctx context.Context) {
 	toks := p.toks.Load()
 	for _, t := range *toks {
 		t.runs.FinishAllRuns(ctx)
+		_ = t.session.EndSession(ctx)
 	}
 	empty := make([]*tokenEntry, 0)
 	p.toks.Store(&empty)
 	p.usageMu.Lock()
+	defer p.usageMu.Unlock()
 	p.msgsPerToken = nil
-	p.usageMu.Unlock()
 	p.spendMu.Lock()
+	defer p.spendMu.Unlock()
 	p.spendPerToken = nil
-	p.spendMu.Unlock()
 }
 
 // FinishTokenRuns finishes all active runs of token (dashboard action).
@@ -317,11 +318,11 @@ func (p *Pool) Shutdown(ctx context.Context) {
 	// Drain the cached bridge entries best-effort. The maintain loop is
 	// already stopped (wg.Wait above), so the entry list is stable.
 	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
 	entries := make([]*bridgeEntry, 0, len(p.bridge))
 	for _, entry := range p.bridge {
 		entries = append(entries, entry)
 	}
-	p.bridgeMu.Unlock()
 	for _, entry := range entries {
 		entryCtx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 		entry.runs.FinishAllRuns(entryCtx)
@@ -343,6 +344,11 @@ func (p *Pool) Shutdown(ctx context.Context) {
 // parked past the drain grace (their runs were already finished at removal
 // or on the last release). Entries still carrying a lease stay until
 // LeaseRelease drains them.
+//
+// NOTE: pruneRetired only deletes entries with InflightCount==0 (no active
+// leases) and after the drain grace period. The drained sync.Once in
+// drainRemovedToken guards against double-drain when LeaseRelease and
+// pruneRetired race on the same retired entry.
 func (p *Pool) pruneRetired() {
 	p.retiredMu.Lock()
 	defer p.retiredMu.Unlock()

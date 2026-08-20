@@ -31,8 +31,8 @@ func (p *Pool) CooldownTokenRateLimit(token int, rle *upstream.RateLimitError) {
 	(*toks)[token].runs.CooldownRateLimit(rle)
 	if rle.Status == "spend_limited" {
 		p.spendMu.Lock()
+		defer p.spendMu.Unlock()
 		p.recordSpendLimited(token)
-		p.spendMu.Unlock()
 	}
 }
 
@@ -94,8 +94,8 @@ func (p *Pool) CooldownBridgeRateLimit(lease *Lease, rle *upstream.RateLimitErro
 	lease.Bridge.runs.CooldownRateLimit(rle)
 	if rle.Status == "spend_limited" {
 		p.bridgeMu.Lock()
+		defer p.bridgeMu.Unlock()
 		p.bridgeRecordSpendLimited(lease.Bridge)
-		p.bridgeMu.Unlock()
 	}
 }
 
@@ -134,10 +134,13 @@ func (p *Pool) CooldownBridgeCountryBlocked(lease *Lease, cbe *upstream.CountryB
 // 1-based pooled token index (0 = bridge). model is the requested model
 // when the caller knows it ("" otherwise). Throttled by the sender.
 func (p *Pool) notifyBan(tokenIndex int, model string) {
-	if p.notify == nil {
+	p.notifyMu.Lock()
+	defer p.notifyMu.Unlock()
+	n := p.notify
+	if n == nil {
 		return
 	}
-	p.notify.Send(notify.Event{Event: "token_banned", TokenIndex: tokenIndex, Model: model,
+	n.Send(notify.Event{Event: "token_banned", TokenIndex: tokenIndex, Model: model,
 		Message: "a FreeBuff token was classified banned upstream (403)"})
 }
 

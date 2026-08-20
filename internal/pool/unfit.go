@@ -46,16 +46,16 @@ func (p *Pool) MarkModelUnfit(model string, lie *upstream.LimitedIpError) {
 	}
 	now := time.Now()
 	p.unfitMu.Lock()
+	defer p.unfitMu.Unlock()
 	p.unfit[unfitKey{egress: unfitEgress, model: model}] = unfitEntry{created: now, until: now.Add(modelUnfitTTL), err: stored}
-	p.unfitMu.Unlock()
 	p.logger.Debug("pool: model marked unfit on egress", "egress", unfitEgress, "model", model, "until", now.Add(modelUnfitTTL).Format(time.RFC3339))
 }
 
 // ClearModelUnfit removes the unfit mark for model unconditionally.
 func (p *Pool) ClearModelUnfit(model string) {
 	p.unfitMu.Lock()
+	defer p.unfitMu.Unlock()
 	delete(p.unfit, unfitKey{egress: unfitEgress, model: model})
-	p.unfitMu.Unlock()
 	p.logger.Debug("pool: model unfit mark cleared", "egress", unfitEgress, "model", model)
 }
 
