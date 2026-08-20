@@ -230,6 +230,62 @@ func TestBridgeDailyMessageCap(t *testing.T) {
 	}
 }
 
+// TestBridgeDailyUsageCounter verifies that the global bridgeDailyUsage
+// counter is incremented by bridgeRecordChat and reset by bridgeMaintain.
+func TestBridgeDailyUsageCounter(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.ChatBody = testutil.SSEEvent(`{"id":"chatcmpl-b1","object":"chat.completion.chunk","created":1,"model":"` + modelA + `","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`)
+	p := newBridgePool(t, mock)
+
+	// Create a bridge entry and record 5 chats.
+	lease, err := p.AcquireBridge(context.Background(), "counter-client", modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		chatOnce(t, p, lease)
+	}
+	p.LeaseRelease(lease)
+
+	// Verify global counter matches per-entry usage.
+	p.bridgeMu.Lock()
+	got := p.bridgeDailyUsage
+	p.bridgeMu.Unlock()
+	if got != 5 {
+		t.Fatalf("bridgeDailyUsage = %d, want 5", got)
+	}
+	entry := p.bridgeToken("counter-client")
+	if got := p.bridgeUsageCount(entry); got != 5 {
+		t.Fatalf("per-entry usage = %d, want 5", got)
+	}
+
+	// Set BridgeDailyLimit=3; AcquireBridge must return an error.
+	cfg := p.cfg.Load()
+	cfg.BridgeDailyLimit = 3
+	p.cfg.Store(cfg)
+	_, err = p.AcquireBridge(context.Background(), "counter-client", modelA)
+	if err == nil {
+		t.Fatal("expected error for bridge daily limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "daily limit") {
+		t.Fatalf("error = %q, want substring 'daily limit'", err)
+	}
+
+	// Run bridgeMaintain to trigger the counter reset (no entries evict
+	// since the entry was just used). The counter should recompute from
+	// live entries (still 5, all within the 24h window).
+	p.bridgeMaintain(context.Background(), false)
+	p.bridgeMu.Lock()
+	got = p.bridgeDailyUsage
+	p.bridgeMu.Unlock()
+	if got != 5 {
+		t.Fatalf("after maintain: bridgeDailyUsage = %d, want 5", got)
+	}
+}
+
+// TestBridgeIdlePause is the regression guard for the P1 bridge idle bug:
+
 // TestBridgeIdlePause is the regression guard for the P1 bridge idle bug:
 // AcquireBridge never updated p.lastActive, so IDLE_ROTATION_TIMEOUT was
 // dead config in bridge mode — lastActive stayed zero, the pool never

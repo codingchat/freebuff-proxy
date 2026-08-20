@@ -216,6 +216,7 @@ func (p *Pool) bridgeRecordChat(entry *bridgeEntry) {
 		first++
 	}
 	entry.usage = append(history[first:], time.Now())
+	p.bridgeDailyUsage++
 }
 
 // bridgeUsageCount returns how many successful chats the bridge entry sent

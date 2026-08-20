@@ -517,10 +517,6 @@ func (p *Pool) SetNotifier(n *notify.Sender) {
 // the returned body.
 // multi-token failover: a single token either yields a lease or its error
 // is returned as-is. Registry misses pass through.
-// Chat sends a chat-completion request through the leased token's upstream
-// client, returning the raw SSE body reader on 2xx. The caller must release
-// the lease (LeaseRelease) once the request completes or fails, and close
-// the returned body.
 func (p *Pool) Chat(ctx context.Context, lease *Lease, opts upstream.ChatOptions, body []byte) (io.ReadCloser, error) {
 	if lease == nil {
 		return nil, errors.New("pool: chat: invalid lease")

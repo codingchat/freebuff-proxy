@@ -487,7 +487,7 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 		return eligible(idx)
 	}
 
-	var hotBuf [32]int // stack-allocated, max tokens
+	var hotBuf [32]int // stack-allocated hot-set buffer; >32 tokens spill to heap
 	hot := hotBuf[:0]
 	for offset := 0; offset < len(*toks); offset++ {
 		idx := (start + offset) % len(*toks)
@@ -532,16 +532,16 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 	// Cold fallback: the remaining eligible tokens from the round-robin
 	// start, excluding the hot tokens already attempted this pass (each
 	// token is attempted at most once, as in the historical failover).
-	var attemptedBuf [32]bool // stack-allocated, max tokens
+	attemptedBuf := make([]bool, len(*toks))
 	for _, idx := range hot {
-		if idx >= 0 && idx < 32 {
+		if idx >= 0 && idx < len(*toks) {
 			attemptedBuf[idx] = true
 		}
 	}
 	order := hot
 	for offset := 0; offset < len(*toks); offset++ {
 		idx := (start + offset) % len(*toks)
-		if (idx >= 0 && idx < 32 && attemptedBuf[idx]) || !eligible(idx) {
+		if idx >= 0 && idx < len(*toks) && attemptedBuf[idx] || !eligible(idx) {
 			continue
 		}
 		order = append(order, idx)

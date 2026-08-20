@@ -521,6 +521,23 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 			toMaintain = append(toMaintain, entry)
 		}
 	}
+
+	// Recompute bridgeDailyUsage from live entries: each entry's usage
+	// slice is pruned to the 24h window, so summing their lengths gives
+	// the correct rolling total (mirrors bridgeUsageCount per-entry).
+	total := 0
+	for _, entry := range p.bridge {
+		cutoff := now.Add(-usageWindow)
+		history := entry.usage
+		first := 0
+		for first < len(history) && history[first].Before(cutoff) {
+			first++
+		}
+		entry.usage = history[first:]
+		total += len(entry.usage)
+	}
+	p.bridgeDailyUsage = total
+
 	p.bridgeMu.Unlock()
 
 	for _, entry := range toEvict {
