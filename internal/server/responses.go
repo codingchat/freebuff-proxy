@@ -426,6 +426,53 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 	relayed := time.Now()
 	first := true
 	endTurnCallIndexes := make(map[int]bool)
+	// XML tool-call extractor: models such as MiMo/Hermes/Qwen emit tool
+	// calls as XML/JSON text blocks inline in delta.content instead of
+	// native delta.tool_calls. One instance per stream; Feed every content
+	// delta in order; Flush once before the terminal frame.
+	xmlExtractor := &convert.XMLToolCallExtractor{}
+	xmlCallIndex := 0 // sequential synthetic tool-call indexes for extracted calls
+	lastID := ""
+
+	// flushXMLCalls releases any still-open candidate block at stream end:
+	// extracted calls become native tool_calls fragments (with sequential
+	// synthetic indexes) and any scrubbed text is relayed as a content
+	// delta, so accumulateResponsesChunk creates the items and the terminal
+	// frame carries complete output.
+	flushXMLCalls := func() {
+		ft, fc := xmlExtractor.Flush()
+		if ft == "" && len(fc) == 0 {
+			return
+		}
+		delta := make(map[string]any, 2)
+		if ft != "" {
+			delta["content"] = ft
+		}
+		if len(fc) > 0 {
+			frags := make([]any, 0, len(fc))
+			for _, call := range fc {
+				frags = append(frags, convert.ToolCallDeltaFragment(xmlCallIndex, call))
+				xmlCallIndex++
+			}
+			delta["tool_calls"] = frags
+		}
+		id := "chatcmpl-flush"
+		if lastID != "" {
+			id = lastID
+		}
+		mdl := ""
+		if st.model != "" {
+			mdl = st.model
+		}
+		synthetic := map[string]any{
+			"id":      id,
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   mdl,
+			"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}},
+		}
+		s.accumulateResponsesChunk(st, synthetic, send)
+	}
 
 	for {
 		select {
@@ -441,11 +488,13 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 			if lc.err != nil {
 				if ctx.Err() == nil {
 					s.logger.Warn("responses upstream stream error", "err", lc.err)
+					flushXMLCalls()
 					s.endResponsesStream(w, send, st, model, respID, createdAt, true, nil)
 				}
 				return
 			}
 			if lc.done {
+				flushXMLCalls()
 				s.endResponsesStream(w, send, st, model, respID, createdAt, false, nil)
 				return
 			}
@@ -457,6 +506,38 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 			var chunk map[string]any
 			if err := json.Unmarshal(clean, &chunk); err != nil {
 				continue
+			}
+			// --- XML tool calls embedded in content ---
+			// Feed each content delta through the stream extractor: safe text
+			// is relayed as-is, extracted calls become native tool_calls
+			// fragments with sequential synthetic indexes (existing native
+			// indexes stay untouched). The rest of the pipeline
+			// (StripEndTurnToolCalls + accumulateResponsesChunk) translates
+			// the mutated chunk as usual.
+			if rawChoices, ok := chunk["choices"].([]any); ok && len(rawChoices) > 0 {
+				choice, _ := rawChoices[0].(map[string]any)
+				delta, _ := choice["delta"].(map[string]any)
+				if content, ok := delta["content"].(string); ok && content != "" {
+					text, calls := xmlExtractor.Feed(content)
+					if text != content {
+						if text == "" {
+							delete(delta, "content")
+						} else {
+							delta["content"] = text
+						}
+					}
+					if len(calls) > 0 {
+						tcs, _ := delta["tool_calls"].([]any)
+						if tcs == nil {
+							tcs = make([]any, 0, len(calls))
+						}
+						for _, call := range calls {
+							tcs = append(tcs, convert.ToolCallDeltaFragment(xmlCallIndex, call))
+							xmlCallIndex++
+						}
+						delta["tool_calls"] = tcs
+					}
+				}
 			}
 			// --- end_turn pseudo-tool-call filtering ---
 			// Record end_turn indexes before stripping to catch continuation fragments.
@@ -591,6 +672,9 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 			stats.bytes += len(clean)
 			if m, _ := chunk["model"].(string); m != "" {
 				st.model = m
+			}
+			if id, _ := chunk["id"].(string); id != "" {
+				lastID = id
 			}
 			if usage, ok := chunk["usage"]; ok && usage != nil {
 				st.usage = usage

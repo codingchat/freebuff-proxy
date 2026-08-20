@@ -2409,6 +2409,199 @@ func TestAccumulatorXMLToolCallFinish(t *testing.T) {
 	}
 }
 
+// feedAll runs fragments through one XMLToolCallExtractor (Feed in order,
+// Flush at end), concatenating safe text and calls in stream order.
+func feedAll(t *testing.T, frags ...string) (string, []*toolCall) {
+	t.Helper()
+	var x XMLToolCallExtractor
+	var text strings.Builder
+	var calls []*toolCall
+	for _, f := range frags {
+		tt, cc := x.Feed(f)
+		text.WriteString(tt)
+		calls = append(calls, cc...)
+	}
+	ft, fc := x.Flush()
+	text.WriteString(ft)
+	calls = append(calls, fc...)
+	return text.String(), calls
+}
+
+func TestXMLStreamExtractor(t *testing.T) {
+	t.Run("complete block in one fragment", func(t *testing.T) {
+		text, calls := feedAll(t, "Let me run the command:\n<tool_call>\n<function=bash>\n<parameter=command>rtk --version 2>&1</parameter>\n</function>\n</tool_call>")
+		if text != "Let me run the command:\n" {
+			t.Errorf("text = %q, want 'Let me run the command:\\n'", text)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("calls len = %d, want 1", len(calls))
+		}
+		if calls[0].Function.Name != "bash" {
+			t.Errorf("name = %q, want 'bash'", calls[0].Function.Name)
+		}
+		var args map[string]any
+		if err := json.Unmarshal([]byte(calls[0].Function.Arguments), &args); err != nil {
+			t.Fatalf("arguments not JSON: %v", err)
+		}
+		if args["command"] != "rtk --version 2>&1" {
+			t.Errorf("command arg = %v, want 'rtk --version 2>&1'", args["command"])
+		}
+	})
+
+	t.Run("block split across fragments", func(t *testing.T) {
+		text, calls := feedAll(t,
+			"Let me check:\n<tool_call>",
+			"\n<function=bash>",
+			"\n<parameter=command>pwd</parameter>",
+			"\n</function>\n</tool_call>",
+			"\nDone.",
+		)
+		if text != "Let me check:\n\nDone." {
+			t.Errorf("text = %q, want 'Let me check:\\n\\nDone.'", text)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("calls len = %d, want 1", len(calls))
+		}
+		if calls[0].Function.Name != "bash" {
+			t.Errorf("name = %q, want 'bash'", calls[0].Function.Name)
+		}
+	})
+
+	t.Run("text before block emitted immediately while block held", func(t *testing.T) {
+		var x XMLToolCallExtractor
+		tt, cc := x.Feed("intro <tool_call>")
+		if tt != "intro " {
+			t.Errorf("first Feed text = %q, want 'intro '", tt)
+		}
+		if len(cc) != 0 {
+			t.Errorf("first Feed calls = %d, want 0", len(cc))
+		}
+		tt, cc = x.Feed("<function=bash><parameter=cmd>ls</parameter></function></tool_call>")
+		if tt != "" {
+			t.Errorf("second Feed text = %q, want ''", tt)
+		}
+		if len(cc) != 1 {
+			t.Fatalf("second Feed calls = %d, want 1", len(cc))
+		}
+	})
+
+	t.Run("two blocks in one fragment", func(t *testing.T) {
+		text, calls := feedAll(t, "first:\n<tool_call>{\"name\":\"a\",\"arguments\":{}}</tool_call>\nsecond:\n<codebuff_tool_call>{\"name\":\"b\",\"arguments\":{}}</codebuff_tool_call>")
+		if text != "first:\n\nsecond:\n" {
+			t.Errorf("text = %q, want 'first:\\n\\nsecond:\\n'", text)
+		}
+		if len(calls) != 2 {
+			t.Fatalf("calls len = %d, want 2", len(calls))
+		}
+		if calls[0].Function.Name != "a" || calls[1].Function.Name != "b" {
+			t.Errorf("names = %q,%q want a,b", calls[0].Function.Name, calls[1].Function.Name)
+		}
+	})
+
+	t.Run("pipe form", func(t *testing.T) {
+		text, calls := feedAll(t, "I will help:\n<|tool_call_start|>\n<function=bash>\n<parameter=command>echo hi</parameter>\n</function>\n<|tool_call_end|>")
+		if text != "I will help:\n" {
+			t.Errorf("text = %q, want 'I will help:\\n'", text)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("calls len = %d, want 1", len(calls))
+		}
+		if calls[0].Function.Name != "bash" {
+			t.Errorf("name = %q, want 'bash'", calls[0].Function.Name)
+		}
+	})
+
+	t.Run("fenced json block", func(t *testing.T) {
+		text, calls := feedAll(t, "I will list the directory:\n```tool_call\n{\"name\": \"bash\", \"arguments\": {\"command\": \"ls -la\"}}\n```")
+		if text != "I will list the directory:\n" {
+			t.Errorf("text = %q, want 'I will list the directory:\\n'", text)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("calls len = %d, want 1", len(calls))
+		}
+		if calls[0].Function.Name != "bash" {
+			t.Errorf("name = %q, want 'bash'", calls[0].Function.Name)
+		}
+	})
+
+	t.Run("plain code fence without brace passes through", func(t *testing.T) {
+		text, calls := feedAll(t, "example:\n```go\nfunc main() {}\n```")
+		if text != "example:\n```go\nfunc main() {}\n```" {
+			t.Errorf("text = %q, want unchanged", text)
+		}
+		if len(calls) != 0 {
+			t.Errorf("calls = %d, want 0", len(calls))
+		}
+	})
+
+	t.Run("false positive block kept as text", func(t *testing.T) {
+		text, calls := feedAll(t, "The tag <function_call>not a tool call</function_call> is literal.")
+		if text != "The tag <function_call>not a tool call</function_call> is literal." {
+			t.Errorf("text = %q, want unchanged", text)
+		}
+		if len(calls) != 0 {
+			t.Errorf("calls = %d, want 0", len(calls))
+		}
+	})
+
+	t.Run("unclosed block flushed scrubbed at stream end", func(t *testing.T) {
+		text, calls := feedAll(t, "cut off mid:\n<tool_call>\n<function=bash>")
+		if text != "cut off mid:\n\n" {
+			t.Errorf("text = %q, want 'cut off mid:\\n\\n' with dangling tags scrubbed", text)
+		}
+		if strings.Contains(text, "<tool_call>") || strings.Contains(text, "<function") {
+			t.Errorf("text = %q, dangling tags not scrubbed", text)
+		}
+		if len(calls) != 0 {
+			t.Errorf("calls = %d, want 0", len(calls))
+		}
+	})
+
+	t.Run("buffer bound flushes false positive", func(t *testing.T) {
+		old := maxStreamXMLBuffer
+		maxStreamXMLBuffer = 64
+		t.Cleanup(func() { maxStreamXMLBuffer = old })
+		var x XMLToolCallExtractor
+		text, calls := x.Feed("prose <tool_call> " + strings.Repeat("x", 100))
+		if len(calls) != 0 {
+			t.Fatalf("calls = %d, want 0", len(calls))
+		}
+		if text != "prose <tool_call> "+strings.Repeat("x", 100) {
+			t.Errorf("text = %q, want full prose flushed at bound", text)
+		}
+	})
+
+	t.Run("flush of open block yields no calls and scrubbed text", func(t *testing.T) {
+		var x XMLToolCallExtractor
+		tt, cc := x.Feed("<tool_call>")
+		if tt != "" || len(cc) != 0 {
+			t.Fatalf("Feed = (%q, %d), want ('', 0)", tt, len(cc))
+		}
+		text, calls := x.Flush()
+		if len(calls) != 0 {
+			t.Fatalf("Flush calls = %d, want 0", len(calls))
+		}
+		if text != "" {
+			t.Errorf("text = %q, want ''", text)
+		}
+	})
+}
+
+func TestToolCallDeltaFragment(t *testing.T) {
+	tc := &toolCall{ID: "call_x", Type: "function", Function: toolFunction{Name: "bash", Arguments: `{"command":"pwd"}`}}
+	got := ToolCallDeltaFragment(3, tc)
+	want := map[string]any{
+		"index": 3,
+		"id":    "call_x",
+		"type":  "function",
+		"function": map[string]any{
+			"name":      "bash",
+			"arguments": `{"command":"pwd"}`,
+		},
+	}
+	assertJSONEq(t, mustJSON(t, got), want)
+}
+
 func TestNormalizeRequest_AssistantToolCallContentNull(t *testing.T) {
 	t.Run("empty string content with tool_calls becomes null", func(t *testing.T) {
 		body := map[string]any{

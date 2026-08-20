@@ -391,6 +391,52 @@ func TestResponsesStreamToolCall(t *testing.T) {
 	}
 }
 
+// TestResponsesStreamXMLToolCallInContent verifies that XML tool calls
+// emitted inline in delta.content (MiMo/Hermes/Qwen style, split across
+// fragments) are extracted into native function_call output items instead
+// of leaking as text.
+func TestResponsesStreamXMLToolCallInContent(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.ChatBody = testutil.SSEEvent(chunk("chatcmpl-r4", 103,
+		`"choices":[{"index":0,"delta":{"content":"Let me check.\n<tool_call>"},"finish_reason":null}]`)) +
+		testutil.SSEEvent(chunk("chatcmpl-r4", 103,
+			`"choices":[{"index":0,"delta":{"content":"<function=bash><parameter=command>pwd</parameter></function>"},"finish_reason":null}]`)) +
+		testutil.SSEEvent(chunk("chatcmpl-r4", 103,
+			`"choices":[{"index":0,"delta":{"content":"</tool_call>"},"finish_reason":null}]`)) +
+		testutil.SSEEvent(chunk("chatcmpl-r4", 103, `"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]`))
+	ts, _ := newTestServer(t, nil, mock)
+
+	body := `{"model":"` + modelA + `","input":"run pwd","stream":true}`
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/responses", []byte(body), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.StatusCode, truncate(string(data), 300))
+	}
+	sse := string(data)
+	for _, want := range []string{
+		`"type":"response.output_item.added"`,
+		`"type":"function_call"`,
+		`"type":"response.function_call_arguments.delta"`,
+		`"delta":"{\"command\":\"pwd\"}"`,
+		`"type":"response.output_item.done"`,
+		`"type":"response.completed"`,
+		`"name":"bash"`,
+		`"arguments":"{\"command\":\"pwd\"}"`,
+	} {
+		if !strings.Contains(sse, want) {
+			t.Errorf("stream missing %s", want)
+		}
+	}
+	// Plain text before the XML block survives as an output text delta...
+	if !strings.Contains(sse, `"delta":"Let me check.\n"`) {
+		t.Error("stream missing leading plain-text delta before the XML block")
+	}
+	// ...and the raw XML must never reach the client.
+	if strings.Contains(sse, "<tool_call>") {
+		t.Error("stream leaked raw <tool_call> XML into output")
+	}
+}
+
 // --- #57 Anthropic Messages API ---
 
 // anthropicTextChunks renders an upstream chat stream with reasoning +
@@ -613,6 +659,49 @@ func TestMessagesStreamToolUse(t *testing.T) {
 		if !strings.Contains(sse, want) {
 			t.Errorf("stream missing %s", want)
 		}
+	}
+}
+
+// TestMessagesStreamXMLToolCall wires the streaming XML tool-call extractor
+// into the Anthropic relay: an upstream delta.content carrying a
+// fragment-SPLIT <codebuff_tool_call> block must surface as a native
+// tool_use block (content_block_start + input_json_delta) with the raw XML
+// text absent from content.
+func TestMessagesStreamXMLToolCall(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	// The codebuff_tool_call block is split across three content deltas so
+	// no single fragment contains the complete block.
+	mock.ChatBody = testutil.SSEEvent(chunk("chatcmpl-a4", 202,
+		`"choices":[{"index":0,"delta":{"content":"<codebuff_tool_call>"},"finish_reason":null}]`)) +
+		testutil.SSEEvent(chunk("chatcmpl-a4", 202,
+			`"choices":[{"index":0,"delta":{"content":"\n<function=bash>\n<parameter=command>pwd</parameter>\n</function>"},"finish_reason":null}]`)) +
+		testutil.SSEEvent(chunk("chatcmpl-a4", 202,
+			`"choices":[{"index":0,"delta":{"content":"\n</codebuff_tool_call>"},"finish_reason":null}]`)) +
+		testutil.SSEEvent(chunk("chatcmpl-a4", 202, `"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]`))
+	ts, _ := newTestServer(t, nil, mock)
+
+	body := `{"model":"` + modelA + `","messages":[{"role":"user","content":"run pwd"}],"stream":true}`
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/messages", []byte(body), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.StatusCode, truncate(string(data), 300))
+	}
+	sse := string(data)
+	for _, want := range []string{
+		`"type":"content_block_start"`,
+		`"type":"tool_use"`,
+		`"name":"bash"`,
+		`"type":"input_json_delta"`,
+		`"partial_json":"{\"command\":\"pwd\"}"`,
+		`"stop_reason":"tool_use"`,
+		`"type":"message_stop"`,
+	} {
+		if !strings.Contains(sse, want) {
+			t.Errorf("stream missing %s", want)
+		}
+	}
+	if strings.Contains(sse, "<codebuff_tool_call>") {
+		t.Error("stream leaked raw XML tool-call text in content")
 	}
 }
 

@@ -739,6 +739,15 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 		toolCalls:    make(map[int]*anthropicToolState),
 		finishReason: "end_turn",
 	}
+	// Streaming XML tool-call extraction: MiMo/Hermes/Qwen/CodeBuff models
+	// emit <tool_call>/<codebuff_tool_call>/<function_call> blocks inline in
+	// delta.content; the extractor converts them to native tool-call
+	// fragments the existing accumulateAnthropicChunk translates into
+	// tool_use blocks. One instance per stream; xmlCallIndex keeps the
+	// synthetic fragment indexes sequential so they cannot collide with
+	// upstream indexes.
+	xmlExtractor := &convert.XMLToolCallExtractor{}
+	xmlCallIndex := 0
 	send := func(ev map[string]any) {
 		b, _ := json.Marshal(ev)
 		_, _ = io.WriteString(w, "event: "+stringValue(ev["type"])+"\n")
@@ -768,11 +777,13 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 			if lc.err != nil {
 				if ctx.Err() == nil {
 					s.logger.Warn("anthropic upstream stream error", "err", lc.err)
+					s.flushAnthropicXMLToolCalls(send, st, xmlExtractor, &xmlCallIndex)
 					s.finalizeAnthropicStream(send, st)
 				}
 				return
 			}
 			if lc.done {
+				s.flushAnthropicXMLToolCalls(send, st, xmlExtractor, &xmlCallIndex)
 				s.finalizeAnthropicStream(send, st)
 				return
 			}
@@ -801,9 +812,86 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 					stats.usageTokens = usageTotalTokens(um) // #122 spend ledger
 				}
 			}
+			// Rewrite XML tool calls out of content before translation.
+			feedAnthropicXMLToolCalls(xmlExtractor, chunk, &xmlCallIndex)
 			s.accumulateAnthropicChunk(send, st, chunk)
 		}
 	}
+}
+
+// feedAnthropicXMLToolCalls feeds one upstream content delta through the
+// stream's XML tool-call extractor and rewrites the delta in place: withheld
+// block text is removed from content (the key is dropped when empty) and any
+// completed calls are appended as native tool-call fragments with per-stream
+// sequential indexes so they cannot collide with upstream indexes. Existing
+// native tool_calls fragments are left untouched. The delta is only rewritten
+// when the extractor actually withheld or consumed text.
+func feedAnthropicXMLToolCalls(xmlExtractor *convert.XMLToolCallExtractor, chunk map[string]any, xmlCallIndex *int) {
+	choices, _ := chunk["choices"].([]any)
+	if len(choices) == 0 {
+		return
+	}
+	choice, ok := choices[0].(map[string]any)
+	if !ok || choice == nil {
+		return
+	}
+	delta, ok := choice["delta"].(map[string]any)
+	if !ok || delta == nil {
+		return
+	}
+	content, ok := delta["content"].(string)
+	if !ok || content == "" {
+		return
+	}
+	text, calls := xmlExtractor.Feed(content)
+	if text == content {
+		return
+	}
+	if text == "" {
+		delete(delta, "content")
+	} else {
+		delta["content"] = text
+	}
+	if len(calls) == 0 {
+		return
+	}
+	tcs, _ := delta["tool_calls"].([]any)
+	for _, call := range calls {
+		tcs = append(tcs, convert.ToolCallDeltaFragment(*xmlCallIndex, call))
+		*xmlCallIndex++
+	}
+	delta["tool_calls"] = tcs
+}
+
+// flushAnthropicXMLToolCalls releases any still-open XML candidate block at
+// stream end through the same accumulation path (trailing text and/or native
+// tool-call fragments continuing the stream's sequential indexes) so text
+// and tool_use blocks emit normally before finalize. No-op when nothing was
+// buffered.
+func (s *Server) flushAnthropicXMLToolCalls(send func(map[string]any), st *anthropicStreamState, xmlExtractor *convert.XMLToolCallExtractor, xmlCallIndex *int) {
+	ft, fc := xmlExtractor.Flush()
+	if ft == "" && len(fc) == 0 {
+		return
+	}
+	delta := make(map[string]any)
+	if ft != "" {
+		delta["content"] = ft
+	}
+	if len(fc) > 0 {
+		tcs := make([]any, 0, len(fc))
+		for _, call := range fc {
+			tcs = append(tcs, convert.ToolCallDeltaFragment(*xmlCallIndex, call))
+			*xmlCallIndex++
+		}
+		delta["tool_calls"] = tcs
+	}
+	s.accumulateAnthropicChunk(send, st, map[string]any{
+		"id":      "chatcmpl-flush",
+		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
+		"model":   st.model,
+		"choices": []any{map[string]any{"delta": delta}},
+	})
 }
 
 // sendAnthropicMessageStart emits the message_start event.
