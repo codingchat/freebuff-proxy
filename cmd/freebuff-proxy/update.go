@@ -128,11 +128,12 @@ func runUpdate() {
 	req.Header.Set("User-Agent", "freebuff-proxy/"+version)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	// No per-request timeout: the request context (30s) bounds the whole
-	// update, and a fixed 15s timeout would abort a slow-but-healthy
-	// download of the 64MB release asset (~4.3MB/s floor). The release
-	// metadata, asset, and checksums requests all share this same bounded
-	// budget.
+	// No per-request timeout: each request is bounded by its own context
+	// rather than a fixed timeout that would abort a slow-but-healthy
+	// download. The release metadata and checksums.txt share the 30s
+	// context above; the asset download gets a separate, longer budget
+	// (below) so a slow link can finish the 64MB file without dead-lining
+	// mid-download.
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -182,7 +183,17 @@ func runUpdate() {
 	}
 
 	fmt.Printf("Downloading %s ...\n", assetURL)
-	assetBytes, err := downloadURL(ctx, client, assetURL)
+	// Independent deadline for the asset download: the 30s context above
+	// stays with the release metadata fetch and the checksums verify, while
+	// the up-to-64MB asset gets its own 5-minute window derived from
+	// context.Background() so an exhausted metadata budget cannot kill the
+	// download that the metadata already approved mid-transfer. All other
+	// safety properties are unchanged: the body is still size-capped (S7),
+	// the checksum is bound to the filename before any install, and the
+	// temp-file swap runs on the same volume as the executable.
+	assetCtx, assetCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer assetCancel()
+	assetBytes, err := downloadURL(assetCtx, client, assetURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: download asset: %v\n", err)
 		os.Exit(1)

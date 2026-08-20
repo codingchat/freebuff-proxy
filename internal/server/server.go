@@ -221,6 +221,13 @@ func (s *Server) Handler() http.Handler {
 	// lock the victim out of the dashboard (5 fails → 1-minute lockout,
 	// repeatable).
 	mux.HandleFunc("POST /admin/login", s.adminCSRF(http.HandlerFunc(s.handleAdminLogin)))
+	// GET /admin/logout clears the session cookie and returns to the login
+	// page; POST /admin/logout does the same but answers JSON {"ok":true}.
+	// Logout deliberately runs WITHOUT a valid cookie (expired sessions must
+	// still be logged out) and is NOT wrapped in adminSensitive — it exposes
+	// nothing and must work for anyone capable of reaching /admin/login.
+	mux.HandleFunc("GET /admin/logout", s.handleAdminLogout)
+	mux.HandleFunc("POST /admin/logout", s.handleAdminLogout)
 	// Admin dashboard API routes (JSON)
 	mux.Handle("GET /admin/api/overview", s.dashboardAuth(s.dash.APIHandler("overview")))
 	mux.Handle("GET /admin/api/tokens", s.dashboardAuth(s.dash.APIHandler("tokens")))
@@ -717,17 +724,58 @@ func (s *Server) dashboardAuth(next http.Handler) http.Handler {
 // logs) in the default-open mode: when ADMIN_TOKEN is unset, only loopback
 // clients may access them, so a remotely reachable proxy cannot leak or let
 // anyone rewrite the .env. With ADMIN_TOKEN set the cookie gate already ran
-// (this middleware is wrapped inside dashboardAuth). The Host header must
+// (this middleware is wrapped inside dashboardAuth), so the loopback
+// restriction only applies in the default-open mode. The Host header must
 // also be loopback-named: a DNS-rebinding page (attacker.com → 127.0.0.1)
 // arrives from a loopback RemoteAddr while its Host stays attacker-owned,
 // which would otherwise defeat the gate (SEC-2).
-// adminSensitive gates secret-bearing admin routes. When ADMIN_TOKEN is set,
-// dashboardAuth validates the session cookie. When ADMIN_TOKEN is unset
-// (optional auth), all admin routes are open to facilitate easy monitoring.
 func (s *Server) adminSensitive(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.cfg.Load()
+		if cfg.AdminToken == "" && (!isLoopbackAddr(r.RemoteAddr) || !isLoopbackHost(r.Host)) {
+			http.Error(w, "forbidden: admin config requires a loopback client", http.StatusForbidden)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isLoopbackAddr reports whether remoteAddr's host part is a loopback
+// address (127.0.0.0/8 or ::1). Both "127.0.0.1:1234" and "[::1]:1234" forms
+// are accepted, as is a port-less remoteAddr; anything else — attacker
+// source IPs included — is not loopback.
+func isLoopbackAddr(remoteAddr string) bool {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// isLoopbackHost reports whether an HTTP Host header names a loopback
+// destination: a loopback IP (loopback port form, optional port) or the
+// exact DNS name "localhost" (case-insensitive, optional trailing dot).
+// Port stripping is best-effort: net.SplitHostPort handles "127.0.0.1:3457"
+// and "[::1]:3457"; on failure the last ":port" is stripped only when one
+// is present. An unbracketed IPv6 literal is never mangled into a loopback
+// name by that fallback (the residue still has to parse as a loopback IP or
+// equal "localhost"), so the safe direction — reject — holds for any
+// malformed or attacker-supplied Host.
+func isLoopbackHost(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	} else if idx := strings.LastIndex(host, ":"); idx > 0 {
+		host = host[:idx]
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return host == "localhost"
 }
 
 // adminCSRF rejects cross-origin mutating admin requests. Browsers send
@@ -817,6 +865,28 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dash.RenderLogin(w, r, "")
+}
+
+// handleAdminLogout clears the fb_admin session cookie (MaxAge=-1, same
+// name/Path/SameSite as the login cookie) and answers: 302 → /admin/login
+// on GET, JSON {"ok":true} on POST. It does NOT require a valid cookie —
+// logging out an already-expired session must work — and it is not wrapped
+// in adminSensitive because it exposes nothing.
+func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminCookieName,
+		Value:    "",
+		Path:     "/admin",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+	if r.Method == http.MethodPost {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		return
+	}
+	http.Redirect(w, r, "/admin/login", http.StatusFound)
 }
 
 // maxEnvSize caps the .env editor payload (64KB is generous for a config file).
@@ -1924,7 +1994,96 @@ func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("dashboard config saved and reloaded",
 		"remote", remoteHost(r), "changed_keys", changedConfigKeys(oldCfg, &newCfg),
 		"auth_tokens", len(newCfg.AuthTokens), "safe_mode", newCfg.SafeMode)
+	if keys := envOverrideKeys(content); len(keys) > 0 {
+		// The file was written and the config reloaded, but a real process
+		// environment variable outranks the .env file (precedence
+		// env > .env > JSON), so those values are in force from the
+		// environment, NOT from the saved file. Report fail-loud but keep
+		// the 200 status: the write itself succeeded and rolling back could
+		// not beat the environment (matching the token-path semantics).
+		message := fmt.Sprintf("saved, but these keys are overridden by the process environment and will only apply after restart: %s",
+			strings.Join(keys, ", "))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "message": message})
+		return
+	}
 	s.dash.RenderConfigResult(w, r, true, "Saved and reloaded — effective configuration updated.")
+}
+
+// parseEnvContent extracts KEY→value pairs from .env content using the same
+// lenient rules as config's dotenv parser (blank lines and # comments
+// skipped, surrounding whitespace trimmed, quotes stripped from a matching
+// pair, inline # comments trimmed from unquoted values), so the override
+// check keys the same surface the operator sees in the editor.
+func parseEnvContent(data []byte) map[string]string {
+	out := make(map[string]string)
+	// Strip a leading UTF-8 BOM so the first key is not corrupted.
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		quoted := false
+		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') {
+			if end := strings.IndexByte(value[1:], value[0]); end >= 0 {
+				value = value[1 : 1+end]
+				quoted = true
+			}
+		}
+		if !quoted {
+			if idx := strings.IndexByte(value, '#'); idx >= 0 {
+				value = strings.TrimSpace(value[:idx])
+			}
+		}
+		out[key] = value
+	}
+	return out
+}
+
+// envOverrideKeys reports which keys in just-written .env content are
+// shadowed by real process environment variables: config precedence is
+// env > .env > JSON, so those written values did NOT land in the effective
+// config and will only apply after a restart (without that environment).
+// AUTH_TOKENS is presence-sensitive — even an empty environment value is an
+// explicit bridge-mode marker that wins. Every other key counts as
+// overridden only when the environment variable is present, non-empty, and
+// differs from the written value, so a save that agrees with the
+// environment is not falsely flagged. Unknown keys are ignored by
+// config.Load entirely, so this list is advisory: the file is already
+// written and is not rolled back.
+func envOverrideKeys(content []byte) []string {
+	written := parseEnvContent(content)
+	keys := make([]string, 0, len(written))
+	for key, writtenVal := range written {
+		envVal, ok := os.LookupEnv(key)
+		if !ok {
+			continue
+		}
+		envVal = strings.TrimSpace(envVal)
+		writtenVal = strings.TrimSpace(writtenVal)
+		switch {
+		case key == "AUTH_TOKENS":
+			// Presence wins even with an empty value; equality means the
+			// written list landed and there is nothing to report.
+			if envVal != writtenVal {
+				keys = append(keys, key)
+			}
+		case envVal != "" && envVal != writtenVal:
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // effectiveConfigKV renders cfg as a key→normalized-value map of the

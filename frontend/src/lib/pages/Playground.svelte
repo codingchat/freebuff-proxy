@@ -13,19 +13,23 @@
   let reasoning = $state('');
   let streaming = $state(false);
   let errorMsg = $state('');
+  let modelsError = $state('');
   let abortController = null;
 
   async function fetchModels() {
     try {
       const data = await fetchAPI('/admin/api/models');
       models = data.models.map(m => m.id);
+      modelsError = '';
       if (models.length > 0 && !selectedModel) {
         const preferred = models.find(m => m === 'deepseek/deepseek-v4-flash') ||
                           models.find(m => m.includes('deepseek-v4-flash')) ||
                           models[0];
         selectedModel = preferred;
       }
-    } catch { /* ignore */ }
+    } catch {
+      modelsError = "Couldn't load the model list. Check the server connection and retry, or refresh the page.";
+    }
   }
 
   async function sendPrompt(e) {
@@ -137,12 +141,17 @@
             {/each}
           </select>
           <CopyButton text={selectedModel} variant="icon" />
+          {#if modelsError}
+            <button type="button" onclick={fetchModels} class="fp-btn-secondary text-xs px-2.5 py-1">Retry</button>
+          {/if}
         </div>
       </div>
       <span class="text-xs text-[var(--fp-dim)] font-mono">Press Ctrl+Enter to send</span>
     </div>
 
+    <label for="pg-prompt" class="sr-only">Prompt</label>
     <textarea
+      id="pg-prompt"
       bind:value={prompt}
       onkeydown={handleKeydown}
       rows="5"
@@ -171,6 +180,7 @@
   </div>
 
   <!-- Error -->
+  <Alert variant="error" message={modelsError} dismissable={true} ondismiss={() => (modelsError = '')} />
   <Alert variant="error" message={errorMsg} dismissable={false} />
 
   <!-- Reasoning -->

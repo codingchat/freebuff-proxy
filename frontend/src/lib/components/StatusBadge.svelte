@@ -11,7 +11,7 @@
   const styles = {
     amber:  'bg-[var(--fp-amber)]/15 text-[var(--fp-amber)] border-[var(--fp-amber)]/30',
     teal:   'bg-[var(--fp-teal)]/15 text-[var(--fp-teal)] border-[var(--fp-teal)]/30',
-    red:    'bg-[var(--fp-red)]/15 text-[var(--fp-red)] border-[var(--fp-red)]/30',
+    red:    'bg-[var(--fp-red)]/15 text-[#F87171] border-[var(--fp-red)]/30',
     blue:   'bg-[#60A5FA]/15 text-[#60A5FA] border-[#60A5FA]/30',
     purple: 'bg-[#AC94FA]/15 text-[#AC94FA] border-[#AC94FA]/30',
     muted:  'bg-[var(--fp-border)] text-[var(--fp-muted)] border-[var(--fp-border-bright)]',

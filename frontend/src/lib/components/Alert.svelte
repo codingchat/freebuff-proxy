@@ -34,7 +34,7 @@
     {#if dismissable && ondismiss}
       <button
         onclick={ondismiss}
-        class="text-xs opacity-70 hover:opacity-100 underline shrink-0"
+        class="text-xs opacity-90 hover:opacity-100 underline shrink-0"
         aria-label="Dismiss alert"
       >
         Dismiss

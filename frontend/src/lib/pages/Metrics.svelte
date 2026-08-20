@@ -1,5 +1,6 @@
 <script>
   import { Radio, ExternalLink } from '@lucide/svelte';
+  import Alert from '../components/Alert.svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import StatCard from '../components/StatCard.svelte';
@@ -13,8 +14,10 @@
   async function fetchMetrics() {
     try {
       data = await fetchAPI('/admin/api/metrics');
+      error = '';
     } catch (e) {
-      error = e.message || 'Failed to fetch metrics';
+      const detail = e?.message || '';
+      error = detail ? `Could not load metrics: ${detail}. Retrying every 5 seconds.` : 'Could not load metrics. Retrying every 5 seconds.';
     } finally {
       loading = false;
     }
@@ -30,6 +33,11 @@
       <StatusBadge variant="muted" mono>{data.sample_count} samples cached</StatusBadge>
     {/if}
   </PageHeader>
+
+  <!-- Error State -->
+  {#if error}
+    <Alert variant="error" message={error} dismissable={false} />
+  {/if}
 
   <!-- Loading Skeleton -->
   {#if loading}

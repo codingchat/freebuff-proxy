@@ -20,7 +20,7 @@
   let saving = $state(false);
   let saveResult = $state(null);
   let originalContent = $state('');
-  let hasUnsavedChanges = $derived(envContent !== originalContent && envContent !== '');
+  let hasUnsavedChanges = $derived(envContent !== originalContent);
 
   let searchQuery = $state('');
   let selectedSettingKey = $state('SAFE_MODE');
@@ -155,7 +155,7 @@
     },
     CLI_VERSION: {
       name: 'Emulated CLI Version',
-      desc: 'The User-Agent / X-Codebuff-Version header sent upstream.',
+      desc: 'Informational only — shown on the dashboard; the proxy pins the CLI-parity User-Agent on the wire and does not send this value.',
       defaultValue: '0.10.7',
       category: 'Stealth & Safety',
       type: 'string',
@@ -186,7 +186,8 @@
   const presets = [
     {
       id: 'stealth',
-      label: '🛡️ Stealth Anti-Ban',
+      label: 'Stealth Anti-Ban',
+      icon: Shield,
       desc: 'Recommended safe defaults (TLS Auto, Jitter 2s, SafeMode true, Cost free)',
       apply: () => {
         setEnvValue('SAFE_MODE', 'true');
@@ -198,7 +199,8 @@
     },
     {
       id: 'fast',
-      label: '⚡ Maximum Speed (0 Jitter)',
+      label: 'Maximum Speed (0 Jitter)',
+      icon: Zap,
       desc: 'Minimal latency for local development (Jitter 0s, SafeMode false, Retries 0)',
       apply: () => {
         setEnvValue('REQUEST_JITTER', '0s');
@@ -208,7 +210,8 @@
     },
     {
       id: 'debug',
-      label: '🐞 Deep Debugging',
+      label: 'Deep Debugging',
+      icon: Bug,
       desc: 'Enables debug logging and raw JSON payload dumps',
       apply: () => {
         setEnvValue('LOG_LEVEL', 'debug');
@@ -217,7 +220,8 @@
     },
     {
       id: 'hybrid',
-      label: '🔄 Hybrid Relay',
+      label: 'Hybrid Relay',
+      icon: RefreshCw,
       desc: 'Relays client credentials alongside the shared server pool',
       apply: () => {
         setEnvValue('HYBRID_MODE', 'true');
@@ -376,7 +380,7 @@
     name: selectedSettingKey,
     desc: 'Configuration parameter for freebuff-proxy.',
     category: 'General',
-    defaultValue: '—'
+    defaultValue: 'n/a'
   });
 
   onMount(() => {
@@ -416,6 +420,15 @@
     />
   {/if}
 
+  <!-- Load Error Alert -->
+  {#if error}
+    <Alert
+      variant="error"
+      message={error}
+      ondismiss={() => error = ''}
+    />
+  {/if}
+
   <!-- Preset Applied Micro-Toast Alert -->
   {#if presetToast}
     <div class="p-3 rounded-lg bg-[var(--fp-amber)]/15 border border-[var(--fp-amber)]/30 text-white text-xs flex items-center justify-between animate-fadeIn">
@@ -452,7 +465,12 @@
           class="p-3 rounded-lg fp-inset hover:border-[var(--fp-amber)]/40 focus-visible:ring-2 focus-visible:ring-[var(--fp-amber)] focus-visible:outline-none transition-all text-left group flex flex-col justify-between"
         >
           <div>
-            <div class="text-xs font-bold text-white group-hover:text-[var(--fp-amber)] transition-colors">{preset.label}</div>
+            <div class="text-xs font-bold text-white group-hover:text-[var(--fp-amber)] transition-colors flex items-center gap-1.5">
+              {#if preset.icon}
+                <svelte:component this={preset.icon} size={13} class="text-[var(--fp-amber)] shrink-0" />
+              {/if}
+              <span>{preset.label}</span>
+            </div>
             <p class="text-[11px] text-[var(--fp-muted)] mt-1 line-clamp-2 leading-relaxed">{preset.desc}</p>
           </div>
           <div class="text-[10px] text-[var(--fp-amber)] font-medium mt-2 flex items-center gap-1 opacity-80 group-hover:opacity-100">
@@ -562,7 +580,7 @@
                           type="button"
                           onclick={(e) => { e.stopPropagation(); setEnvValue(kv.key, 'false'); }}
                           class="px-2 py-0.5 rounded text-[11px] font-mono font-semibold transition-all focus-visible:ring-1 focus-visible:ring-[var(--fp-red)]
-                            {curVal === 'false' ? 'bg-[var(--fp-red)] text-white' : 'text-[var(--fp-muted)] hover:text-white'}"
+                            {curVal === 'false' ? 'bg-[var(--fp-red-deep)] text-white' : 'text-[var(--fp-muted)] hover:text-white'}"
                         >
                           false
                         </button>
@@ -661,7 +679,7 @@
               class="fp-btn-primary text-xs py-1.5 px-3 flex items-center gap-1.5"
             >
               <Zap size={13} />
-              <span>⚡ Generate Random API Key</span>
+              <span>Generate Random API Key</span>
             </button>
           </div>
         {:else if selectedSettingKey === 'ADMIN_TOKEN'}
@@ -672,7 +690,7 @@
               class="fp-btn-primary text-xs py-1.5 px-3 flex items-center gap-1.5"
             >
               <Zap size={13} />
-              <span>⚡ Generate Random Admin Token</span>
+              <span>Generate Random Admin Token</span>
             </button>
           </div>
         {/if}
@@ -711,7 +729,9 @@
 
           <div class="flex items-center justify-between pt-1">
             <span class="text-xs font-mono text-[var(--fp-dim)]">
-              {#if hasUnsavedChanges}
+              {#if envContent === '' && hasUnsavedChanges}
+                <span class="text-[var(--fp-red)] font-semibold">● Editor is empty, not saved</span>
+              {:else if hasUnsavedChanges}
                 <span class="text-[var(--fp-red)] font-semibold">● Unsaved changes</span>
               {:else}
                 <span class="text-[var(--fp-teal)]">✓ In sync with disk</span>

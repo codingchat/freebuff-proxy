@@ -223,15 +223,204 @@ func TestDashboardAssetsPublic(t *testing.T) {
 	}
 }
 
-// With ADMIN_TOKEN unset (optional), config is accessible without 403.
-func TestDashboardConfigOpenWhenUnset(t *testing.T) {
+// With ADMIN_TOKEN unset (optional auth), the secret-bearing admin routes
+// are loopback-only (SEC-2): a remote client gets 403, not 200, even when
+// its Host header is loopback-named.
+func TestDashboardConfigRemoteForbiddenWhenUnset(t *testing.T) {
 	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) { c.AdminToken = "" }, testutil.NewMock())
 	req := httptest.NewRequest(http.MethodGet, "/admin/config", nil)
 	req.RemoteAddr = "203.0.113.9:1234"
+	req.Host = "127.0.0.1:3457"
+	rec := httptest.NewRecorder()
+	ts.Config.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("remote config status = %d, want 403 (loopback-only when ADMIN_TOKEN unset)", rec.Code)
+	}
+}
+
+// TestDashboardConfigLoopbackAllowedWhenUnset: a genuine loopback client can
+// read the config page and API and save a new .env when ADMIN_TOKEN is unset.
+func TestDashboardConfigLoopbackAllowedWhenUnset(t *testing.T) {
+	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) { c.AdminToken = "" }, testutil.NewMock())
+
+	// The SPA config editor page.
+	page := httptest.NewRequest(http.MethodGet, "/admin/config", nil)
+	page.RemoteAddr = "127.0.0.1:1234"
+	page.Host = "127.0.0.1:3457"
+	rec := httptest.NewRecorder()
+	ts.Config.Handler.ServeHTTP(rec, page)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("loopback config page status = %d, want 200", rec.Code)
+	}
+
+	// The JSON config API.
+	api := httptest.NewRequest(http.MethodGet, "/admin/api/config", nil)
+	api.RemoteAddr = "127.0.0.1:1234"
+	api.Host = "127.0.0.1:3457"
+	rec = httptest.NewRecorder()
+	ts.Config.Handler.ServeHTTP(rec, api)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("loopback config API status = %d, want 200", rec.Code)
+	}
+
+	// A save from a loopback client succeeds (temp dir: never touch a repo
+	// .env). No process env override (TestMain strips ambient config env).
+	t.Chdir(t.TempDir())
+	body := "SAFE_MODE=false\nMAX_MESSAGES_PER_DAY=7\n"
+	save := httptest.NewRequest(http.MethodPost, "/admin/config", strings.NewReader(body))
+	save.Header.Set("Content-Type", "text/plain")
+	save.RemoteAddr = "127.0.0.1:1234"
+	save.Host = "127.0.0.1:3457"
+	rec = httptest.NewRecorder()
+	ts.Config.Handler.ServeHTTP(rec, save)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("loopback config save status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if respBody := rec.Body.String(); !strings.Contains(respBody, `"ok":true`) {
+		t.Errorf("loopback config save body = %q, want ok:true", respBody)
+	}
+}
+
+// TestDashboardConfigDNSRebindForbidden: a DNS-rebinding page resolves an
+// attacker domain to 127.0.0.1, so it arrives with a loopback RemoteAddr —
+// the loopback-named Host check must still reject it (SEC-2).
+func TestDashboardConfigDNSRebindForbidden(t *testing.T) {
+	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) { c.AdminToken = "" }, testutil.NewMock())
+	req := httptest.NewRequest(http.MethodGet, "/admin/config", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Host = "evil.example"
+	rec := httptest.NewRecorder()
+	ts.Config.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("DNS-rebinding config status = %d, want 403 (loopback addr + attacker Host)", rec.Code)
+	}
+}
+
+// TestDashboardConfigIPv6LoopbackAllowed: the IPv6 loopback form
+// ([::1]:port) passes the gate on both RemoteAddr and Host.
+func TestDashboardConfigIPv6LoopbackAllowed(t *testing.T) {
+	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) { c.AdminToken = "" }, testutil.NewMock())
+	req := httptest.NewRequest(http.MethodGet, "/admin/config", nil)
+	req.RemoteAddr = "[::1]:1234"
+	req.Host = "[::1]:3457"
 	rec := httptest.NewRecorder()
 	ts.Config.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("remote config status = %d, want 200 (auth optional)", rec.Code)
+		t.Fatalf("IPv6 loopback config status = %d, want 200", rec.Code)
+	}
+}
+
+// TestDashboardLogsRemoteForbiddenWhenUnset: the logs API carries the same
+// loopback-only gate as config when ADMIN_TOKEN is unset.
+func TestDashboardLogsRemoteForbiddenWhenUnset(t *testing.T) {
+	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) { c.AdminToken = "" }, testutil.NewMock())
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/logs", nil)
+	req.RemoteAddr = "203.0.113.9:1234"
+	req.Host = "127.0.0.1:3457"
+	rec := httptest.NewRecorder()
+	ts.Config.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("remote logs status = %d, want 403", rec.Code)
+	}
+}
+
+// TestDashboardConfigSaveEnvOverrideReported pins the fail-loud behavior: a
+// save whose keys are shadowed by real process environment variables
+// (precedence env > .env > JSON) still persists the file but reports
+// ok:false with the overridden key names instead of a green all-clear.
+func TestDashboardConfigSaveEnvOverrideReported(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("AUTH_TOKENS", "env-token")
+	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) { c.AdminToken = "" }, testutil.NewMock())
+
+	body := "AUTH_TOKENS=file-token\nSAFE_MODE=false\n"
+	req := httptest.NewRequest(http.MethodPost, "/admin/config", strings.NewReader(body))
+	req.Header.Set("Content-Type", "text/plain")
+	req.RemoteAddr = "127.0.0.1:1234" // loopback client: the open-mode gate
+	req.Host = "127.0.0.1:3457"
+	rec := httptest.NewRecorder()
+	ts.Config.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config save status = %d, want 200 (write succeeded): %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		OK      bool   `json:"ok"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.OK {
+		t.Fatalf("save reported ok:true, want ok:false (AUTH_TOKENS env override): %q", out.Message)
+	}
+	if !strings.Contains(out.Message, "AUTH_TOKENS") {
+		t.Errorf("override message = %q, want it to list AUTH_TOKENS", out.Message)
+	}
+	if strings.Contains(out.Message, "SAFE_MODE") {
+		t.Errorf("override message = %q, must not list SAFE_MODE (no env var set for it)", out.Message)
+	}
+	// The file is still persisted — env outranks .env, so no rollback.
+	env, err := os.ReadFile(".env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(env) != body {
+		t.Errorf(".env after override save = %q, want %q (persisted, not rolled back)", env, body)
+	}
+}
+
+// TestDashboardLogoutClearsCookie: GET /admin/logout clears the fb_admin
+// cookie (MaxAge<0) and bounces to the login page; a session-less client is
+// then back behind the cookie gate; POST /admin/logout answers JSON
+// ok:true. Logout must work without a valid cookie (expired sessions).
+func TestDashboardLogoutClearsCookie(t *testing.T) {
+	ts := dashboardServer(t, "secret", nil)
+	cookie := authedCookie(t, ts)
+
+	resp := get(t, ts.URL+"/admin/logout", cookie)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("logout GET status = %d, want 302", resp.StatusCode)
+	}
+	cleared := false
+	for _, c := range resp.Cookies() {
+		if c.Name == "fb_admin" {
+			cleared = true
+			if c.MaxAge >= 0 {
+				t.Errorf("logout cookie MaxAge = %d, want < 0 (expired)", c.MaxAge)
+			}
+		}
+	}
+	if !cleared {
+		t.Fatal("logout response did not set an expiring fb_admin cookie")
+	}
+
+	// Without the cookie the sensitive API is behind the gate again.
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/config", nil)
+	rec := httptest.NewRecorder()
+	ts.Config.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("config after logout status = %d, want 302 login redirect", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/admin/login" {
+		t.Errorf("config-after-logout Location = %q, want /admin/login", loc)
+	}
+
+	// POST logout clears the cookie too and answers JSON ok:true.
+	req2, err := http.NewRequest(http.MethodPost, ts.URL+"/admin/logout", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2, err := noRedirectClient().Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("logout POST status = %d, want 200", resp2.StatusCode)
+	}
+	if b := bodyOf(t, resp2); !strings.Contains(b, `"ok":true`) {
+		t.Errorf("logout POST body = %q, want ok:true JSON", b)
 	}
 }
 

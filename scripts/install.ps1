@@ -24,6 +24,9 @@ param(
 $ErrorActionPreference = "Stop"
 $Repo = "trefeon/freebuff-proxy"
 $CliUserAgent = "ai-sdk/openai-compatible/1.0.0/codebuff"
+# Windows PowerShell 5.1 does not load System.Net.Http into the default
+# AppDomain; Invoke-FreebuffApi's HttpClient needs it. No-op on PS 7.
+Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
 
 function Find-CredentialsFile {
   $candidates = @(
@@ -82,6 +85,47 @@ $token = $null
 $creds = Find-CredentialsFile
 if ($creds) { $token = Get-AuthToken $creds }
 
+# Invoke-RestMethod on PowerShell 7 validates the User-Agent header against
+# .NET's product/version grammar and refuses "ai-sdk/openai-compatible/1.0.0/codebuff"
+# ("The format of value ... is invalid"). The upstream gate fingerprints that
+# exact UA (wire parity with the proxy's cliUserAgent), so send it raw via
+# HttpClient + TryAddWithoutValidation, which works on both PS 5.1 and 7.
+# Throws on HTTP >= 400 with an HttpStatusCode property the poll loop reads.
+# (Same helper as gen-freebuff-token.ps1 so a consolidation is trivial.)
+function Invoke-FreebuffApi {
+    param(
+        [string]$Uri,
+        [string]$Method = "GET",
+        [hashtable]$Headers = @{},
+        [object]$Body = $null,
+        [int]$TimeoutSec = 30
+    )
+    $client = [System.Net.Http.HttpClient]::new()
+    try {
+        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+        $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new($Method), $Uri)
+        foreach ($k in $Headers.Keys) {
+            $null = $req.Headers.TryAddWithoutValidation([string]$k, [string]$Headers[$k])
+        }
+        if ($null -ne $Body) {
+            $json = if ($Body -is [string]) { $Body } else { $Body | ConvertTo-Json -Compress }
+            $req.Content = [System.Net.Http.StringContent]::new($json, [System.Text.Encoding]::UTF8, "application/json")
+        }
+        $resp = $client.SendAsync($req).GetAwaiter().GetResult()
+        $status = [int]$resp.StatusCode
+        if ($status -ge 400) {
+            $ex = [System.Net.Http.HttpRequestException]::new("HTTP error $status")
+            $ex | Add-Member -NotePropertyName HttpStatusCode -NotePropertyValue $status -Force
+            throw $ex
+        }
+        $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        return ($text | ConvertFrom-Json)
+    } finally {
+        $client.Dispose()
+    }
+}
+
 function Get-HeadlessToken {
   Write-Host "Requesting login URL for browser authentication..." -ForegroundColor Cyan
   $bytes = New-Object byte[] 32
@@ -99,8 +143,8 @@ function Get-HeadlessToken {
 
   try {
     $codeBody = @{ fingerprintId = $fingerprintId } | ConvertTo-Json
-    $codeResp = Invoke-RestMethod -Uri "https://www.codebuff.com/api/auth/cli/code" `
-      -Method POST -Headers $headers -ContentType "application/json" -Body $codeBody
+    $codeResp = Invoke-FreebuffApi -Uri "https://www.codebuff.com/api/auth/cli/code" `
+      -Method POST -Headers $headers -Body $codeBody
   } catch {
     Write-Host "Failed to get login URL: $_" -ForegroundColor Red
     return $null
@@ -129,7 +173,7 @@ function Get-HeadlessToken {
     try {
       $query = "fingerprintId=$([Uri]::EscapeDataString($fingerprintId))&fingerprintHash=$([Uri]::EscapeDataString($fingerprintHash))&expiresAt=$([Uri]::EscapeDataString([string]$expiresAt))"
       $statusUri = "https://www.codebuff.com/api/auth/cli/status?$query"
-      $statusResp = Invoke-RestMethod -Uri $statusUri -Method GET -Headers $headers
+      $statusResp = Invoke-FreebuffApi -Uri $statusUri -Method GET -Headers $headers
       if ($statusResp.user -and $statusResp.user.authToken) {
         Write-Host "Authentication successful! Token acquired." -ForegroundColor Green
         return [string]$statusResp.user.authToken
@@ -138,7 +182,10 @@ function Get-HeadlessToken {
         Write-Host "Authentication successful! Token acquired." -ForegroundColor Green
         return [string]$statusResp.authToken
       }
-    } catch {}
+    } catch {
+      # 401/404 = not yet authenticated upstream; a transient network blip
+      # must not abort the whole login either — keep polling either way.
+    }
   }
   Write-Host "Login timed out after 300s." -ForegroundColor Red
   return $null
@@ -203,6 +250,7 @@ if (-not (Test-Path -LiteralPath $exe) -or $Force) {
   $asset = $release.assets | Where-Object { $_.name -eq $want } | Select-Object -First 1
   $checksumAsset = $release.assets | Where-Object { $_.name -eq "checksums.txt" } | Select-Object -First 1
   if (-not $asset) { Write-Host "ERROR: asset $want not found in the release." -ForegroundColor Red; exit 1 }
+  if (-not $checksumAsset) { Write-Host "ERROR: release has no checksums.txt — refusing to install" -ForegroundColor Red; exit 1 }
 
   # --- 5. download + verify ----------------------------------------------------
   $tmp = Join-Path $env:TEMP "freebuff-proxy-install"
@@ -272,7 +320,10 @@ function Set-EnvValue([string]$key, [string]$value) {
   if ($NoEnv) { return }
   $content = if (Test-Path -LiteralPath $envPath) { [System.IO.File]::ReadAllText($envPath, [System.Text.Encoding]::UTF8) } else { "" }
   if ($content -match "(?m)^$([regex]::Escape($key))=.*$") {
-    $content = $content -replace "(?m)^$([regex]::Escape($key))=.*$", "$key=$value"
+    # `-replace` treats $& / $1 / $$ in the *replacement* as match/group
+    # tokens; a token value containing those would corrupt the line. Use a
+    # MatchEvaluator that emits the literal value instead.
+    $content = [regex]::Replace($content, "(?m)^$([regex]::Escape($key))=.*$", { param($m) "$key=$value" })
   } else {
     $content = $content.TrimEnd() + "`n$key=$value`n"
   }

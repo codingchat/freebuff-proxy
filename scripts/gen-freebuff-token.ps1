@@ -1,28 +1,5 @@
 # gen-freebuff-token.ps1 - Generate a FreeBuff auth token via headless login flow
-#
-# Usage:
-#   .\gen-freebuff-token.ps1                  # interactive: recommends options; Enter = auto-append to .\.env
-#   .\gen-freebuff-token.ps1 -ToClipboard     # generate token and copy to clipboard
-#   .\gen-freebuff-token.ps1 -Incognito       # do NOT auto-open the browser: print the login URL and wait
-#                                             # for you to open it in a private/incognito window manually
-#                                             # (prevents an existing logged-in GitHub session from being reused)
-#   .\gen-freebuff-token.ps1 -Save            # save to ~/.config/manicode/credentials.json
-#   .\gen-freebuff-token.ps1 -Append          # append to .env AUTH_TOKENS (auto-copies .env.example if missing)
-#   .\gen-freebuff-token.ps1 -EnvFile D:\.env # target .env file for -Append
-#
-# Flow:
-#   1. POST /api/auth/cli/code  → gets loginUrl + fingerprintHash
-#   2. Opens browser for GitHub OAuth login
-#   3. Polls /api/auth/cli/status until authenticated (5min timeout)
-#   4. Extracts authToken and saves/prints it
-#
-# Each run generates a unique fingerprintId so multiple accounts can coexist.
-# Log into a DIFFERENT GitHub account in your browser before running to get
-# a token for that account.
-#
-# WARNING: Using FreeBuff tokens through a proxy violates FreeBuff/Codebuff
-# terms of service. Accounts may be suspended or banned. You accept this risk.
-
+[CmdletBinding()]
 param(
     [switch]$Save,
     [switch]$ToClipboard,
@@ -34,44 +11,167 @@ param(
     [int]$PollIntervalMs = 5000
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1 does not load System.Net.Http into the default
+# AppDomain; Invoke-FreebuffApi's HttpClient needs it. No-op on PS 7.
+Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+$BaseUrl = $BaseUrl.TrimEnd('/')
 
 # --- helpers -----------------------------------------------------------------
-function Generate-FingerprintId {
-    $bytes = New-Object byte[] 32
-    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-    # CLI-parity base64url (43 chars) — same charset as the official CLI's
-    # calculateEnhancedFingerprint (SHA-256 base64url). Fresh per run by design.
-    $hash = ([Convert]::ToBase64String($bytes) -replace '\+', '-' -replace '/', '_' -replace '=', '')
-    return "enhanced-$($hash.Substring(0, [Math]::Min(43, $hash.Length)))"
+function Get-HomeDirectory {
+    if ($env:HOME) { return $env:HOME }
+    if ($env:USERPROFILE) { return $env:USERPROFILE }
+    return [Environment]::GetFolderPath("UserProfile")
 }
 
 function Get-ConfigDir {
-    return Join-Path $env:USERPROFILE ".config\manicode"
+    if ($env:XDG_CONFIG_HOME -and $env:XDG_CONFIG_HOME.Trim()) {
+        return Join-Path $env:XDG_CONFIG_HOME "manicode"
+    }
+    return Join-Path (Join-Path (Get-HomeDirectory) ".config") "manicode"
 }
 
 function Get-CredentialsPath {
     return Join-Path (Get-ConfigDir) "credentials.json"
 }
 
+function Generate-FingerprintId {
+    $bytes = [byte[]]::new(32)
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    $b64 = [Convert]::ToBase64String($bytes).Replace('+','-').Replace('/','_').TrimEnd('=')
+    # 32 bytes -> 43 chars base64url
+    return "enhanced-$b64"
+}
+
+# Invoke-RestMethod on PowerShell 7 validates the User-Agent header against
+# .NET's product/version grammar and refuses "ai-sdk/openai-compatible/1.0.0/codebuff"
+# ("The format of value ... is invalid"). The upstream gate fingerprints that
+# exact UA (wire parity with the proxy's cliUserAgent), so send it raw via
+# HttpClient + TryAddWithoutValidation, which works on both PS 5.1 and 7.
+# Throws on HTTP >= 400 with an HttpStatusCode property the poll loop reads.
+function Invoke-FreebuffApi {
+    param(
+        [string]$Uri,
+        [string]$Method = "GET",
+        [hashtable]$Headers = @{},
+        [object]$Body = $null,
+        [int]$TimeoutSec = 30
+    )
+    $client = [System.Net.Http.HttpClient]::new()
+    try {
+        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+        $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new($Method), $Uri)
+        foreach ($k in $Headers.Keys) {
+            $null = $req.Headers.TryAddWithoutValidation([string]$k, [string]$Headers[$k])
+        }
+        if ($null -ne $Body) {
+            $json = if ($Body -is [string]) { $Body } else { $Body | ConvertTo-Json -Compress }
+            $req.Content = [System.Net.Http.StringContent]::new($json, [System.Text.Encoding]::UTF8, "application/json")
+        }
+        $resp = $client.SendAsync($req).GetAwaiter().GetResult()
+        $status = [int]$resp.StatusCode
+        if ($status -ge 400) {
+            $ex = [System.Net.Http.HttpRequestException]::new("HTTP error $status")
+            $ex | Add-Member -NotePropertyName HttpStatusCode -NotePropertyValue $status -Force
+            throw $ex
+        }
+        $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        return ($text | ConvertFrom-Json)
+    } finally {
+        $client.Dispose()
+    }
+}
+
 function Ensure-EnvFile {
     param([string]$Path)
-    if (Test-Path $Path) { return }
-    $scriptDir = $PSScriptRoot
+    if (Test-Path -LiteralPath $Path) { return }
+    $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
     $candidates = @(
         (Join-Path $scriptDir ".env.example"),
-        (Join-Path (Split-Path -Parent $scriptDir) ".env.example"),
-        (Join-Path (Get-Location) ".env.example")
+        (Join-Path (Split-Path -Parent $scriptDir -ErrorAction SilentlyContinue) ".env.example"),
+        (Join-Path (Get-Location).Path ".env.example")
     )
-    foreach ($candidate in $candidates) {
-        if (Test-Path $candidate) {
-            Copy-Item $candidate $Path
-            Write-Host "  No .env found; created $Path from $candidate" -ForegroundColor Yellow
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) {
+            Copy-Item -LiteralPath $c -Destination $Path -Force
+            Write-Host " No .env found; created $Path from $c" -ForegroundColor Yellow
             return
         }
     }
     New-Item -ItemType File -Path $Path -Force | Out-Null
-    Write-Host "  No .env found; created empty $Path" -ForegroundColor Yellow
+    Write-Host " No .env found; created empty $Path" -ForegroundColor Yellow
+}
+
+function Resolve-TargetEnvPath {
+    param([string]$CustomPath)
+    if ($CustomPath -and $CustomPath.Trim()) {
+        $p = $CustomPath.Trim()
+        # Join-Path glues an absolute -EnvFile onto the CWD ("D:\x" -> "C:\cwd\D:\x"),
+        # and GetFullPath then rejects the embedded drive colon. Use absolute
+        # paths as-is; only relative ones join the working directory.
+        if ([System.IO.Path]::IsPathRooted($p)) {
+            return [System.IO.Path]::GetFullPath($p)
+        }
+        return [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $p))
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path ".env"))
+}
+
+function Copy-TokenToClipboard {
+    param([string]$Token)
+    try {
+        if (Get-Command Set-Clipboard -ErrorAction SilentlyContinue) {
+            Set-Clipboard -Value $Token
+            return $true
+        }
+    } catch {}
+    # Fallbacks for macOS / Linux
+    try {
+        if (Get-Command pbcopy -ErrorAction SilentlyContinue) { $Token | pbcopy; return $true }
+        if (Get-Command wl-copy -ErrorAction SilentlyContinue) { $Token | wl-copy; return $true }
+        if (Get-Command xclip -ErrorAction SilentlyContinue) { $Token | xclip -selection clipboard; return $true }
+        if (Get-Command xsel -ErrorAction SilentlyContinue) { $Token | xsel --clipboard --input; return $true }
+    } catch {}
+    return $false
+}
+
+function Update-EnvFileWithToken {
+    param([string]$EnvPath, [string]$Token)
+
+    Ensure-EnvFile -Path $EnvPath
+    $content = ""
+    try { $content = [System.IO.File]::ReadAllText($EnvPath, [System.Text.Encoding]::UTF8) } catch { $content = "" }
+    if (-not $content) { $content = "" }
+
+    if ($content.Contains($Token)) {
+        Write-Host " Token already present in $EnvPath; skipped." -ForegroundColor DarkGray
+        return
+    }
+
+    if ($content -match '(?m)^\s*AUTH_TOKENS\s*=\s*(.*)$') {
+        # (.*) can capture an inline comment ("AUTH_TOKENS= # note") or — when
+        # the value line is empty and followed by a blank line then a comment —
+        # the comment itself; strip any trailing # comment before appending.
+        $existingRaw = ($Matches[1] -replace '\s*#.*$', '').Trim().Trim('"').Trim("'")
+        $newValue = if ($existingRaw) { "$existingRaw,$Token" } else { $Token }
+        # clean double commas / spaces
+        $newValue = ($newValue -replace ',\s*,', ',' -replace '^\s*,|,\s*$', '').Trim()
+        # MatchEvaluator: a $-interpolated replacement string would let a token
+        # containing $&/$1/$$ be re-expanded as match/group tokens and corrupt
+        # AUTH_TOKENS. The delegate emits the literal value.
+        $newContent = [regex]::Replace($content, '(?m)^\s*AUTH_TOKENS\s*=.*$', { param($m) "AUTH_TOKENS=" + $newValue })
+        [System.IO.File]::WriteAllText($EnvPath, $newContent, (New-Object System.Text.UTF8Encoding($false)))
+    } else {
+        # Plain string concatenation (no regex substitution semantics), so a
+        # token containing $&/$1/$$/backtick is written verbatim.
+        $sep = if ($content.EndsWith("`n") -or $content -eq "") { "" } else { "`n" }
+        $content = $content + "$sep`AUTH_TOKENS=$Token`n"
+        [System.IO.File]::WriteAllText($EnvPath, $content, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    Write-Host " Appended to: $EnvPath" -ForegroundColor Green
 }
 
 # --- 0. warning --------------------------------------------------------------
@@ -81,18 +181,17 @@ Write-Host "WARNING: Using tokens through a proxy violates FreeBuff ToS." -Foreg
 Write-Host "Accounts may be suspended or banned. You accept this risk." -ForegroundColor Yellow
 Write-Host ""
 
-# --- 0.5 recommend options for easier usage ----------------------------------
+# --- 0.5 recommend options ---------------------------------------------------
 if (-not $Save -and -not $ToClipboard -and -not $Append -and -not $Incognito) {
     if ([Console]::IsInputRedirected) {
-        # Non-interactive (piped/CI): auto-append to the current .env
         $Append = $true
     } else {
         Write-Host "Recommended options:" -ForegroundColor Cyan
-        Write-Host "  [Enter]  Append token to .\.env (auto-copy .env.example if missing)" -ForegroundColor Green
-        Write-Host "  1)       Copy token to clipboard" -ForegroundColor Gray
-        Write-Host "  2)       Save to ~/.config/manicode/credentials.json" -ForegroundColor Gray
-        Write-Host "  3)       Print token only" -ForegroundColor Gray
-        Write-Host "  4)       Incognito login (no auto-open; use a private window)" -ForegroundColor Gray
+        Write-Host " [Enter] Append token to .\.env (auto-copy .env.example if missing)" -ForegroundColor Green
+        Write-Host " 1) Copy token to clipboard" -ForegroundColor Gray
+        Write-Host " 2) Save to ~/.config/manicode/credentials.json" -ForegroundColor Gray
+        Write-Host " 3) Print token only" -ForegroundColor Gray
+        Write-Host " 4) Incognito login (no auto-open; use a private window)" -ForegroundColor Gray
         $choice = Read-Host "Choose [Enter]"
         switch ($choice.Trim().ToLower()) {
             { $_ -in "", "append", "a" } { $Append = $true }
@@ -112,179 +211,163 @@ if (-not $Save -and -not $ToClipboard -and -not $Append -and -not $Incognito) {
 # --- 1. generate fingerprint + request login URL -----------------------------
 $fingerprintId = Generate-FingerprintId
 Write-Host "Fingerprint: $fingerprintId" -ForegroundColor DarkGray
-
 Write-Host "Requesting login URL..." -ForegroundColor Cyan
-$codeHeaders = @{ "User-Agent" = "ai-sdk/openai-compatible/1.0.0/codebuff" }
+
+$codeHeaders = @{
+    "User-Agent" = "ai-sdk/openai-compatible/1.0.0/codebuff"
+    "Accept" = "application/json"
+}
+
 try {
-    $codeBody = @{ fingerprintId = $fingerprintId } | ConvertTo-Json
-    $codeResp = Invoke-RestMethod -Uri "$BaseUrl/api/auth/cli/code" `
-        -Method POST `
-        -Headers $codeHeaders `
-        -ContentType "application/json" `
-        -Body $codeBody
+    $codeBody = @{ fingerprintId = $fingerprintId } | ConvertTo-Json -Compress
+    $codeResp = Invoke-FreebuffApi -Uri "$BaseUrl/api/auth/cli/code" -Method POST -Headers $codeHeaders -Body $codeBody
 } catch {
-    Write-Host "Failed to get login URL: $_" -ForegroundColor Red
+    $errMsg = try { $_.Exception.Message } catch { "$_" }
+    Write-Host "Failed to get login URL: $errMsg" -ForegroundColor Red
+    if ($_.ErrorDetails -and $_.ErrorDetails.Message) { Write-Host $_.ErrorDetails.Message -ForegroundColor DarkGray }
     exit 1
 }
 
-$loginUrl = $codeResp.loginUrl
-$fingerprintHash = $codeResp.fingerprintHash
-$expiresAt = $codeResp.expiresAt
+$loginUrl = try { [string]$codeResp.loginUrl } catch { "" }
+if (-not $loginUrl) { $loginUrl = try { [string]$codeResp.login_url } catch { "" } }
+$fingerprintHash = try { [string]$codeResp.fingerprintHash } catch { "" }
+$expiresAt = try { [string]$codeResp.expiresAt } catch { "" }
 
 if (-not $loginUrl) {
     Write-Host "No loginUrl in response. Server may be down." -ForegroundColor Red
+    Write-Host ($codeResp | ConvertTo-Json -Depth 4) -ForegroundColor DarkGray
     exit 1
 }
 
 # --- 2. open browser ---------------------------------------------------------
 Write-Host ""
 if ($Incognito) {
-    # Issue #43: never auto-open — the default browser may reuse an existing
-    # logged-in GitHub session, minting a token for the WRONG account. The
-    # user opens the URL in a private/incognito window manually; the longer
-    # timeout accounts for the manual step.
     $TimeoutSeconds = 600
     Write-Host "Incognito mode: open the URL below in a PRIVATE/INCOGNITO window manually." -ForegroundColor Cyan
-    Write-Host "URL: $loginUrl" -ForegroundColor DarkGray
+    Write-Host "URL: $loginUrl" -ForegroundColor White
     Write-Host ""
-    Write-Host "  -> Open the URL in a private/incognito window (Ctrl+Shift+N / Cmd+Shift+N)." -ForegroundColor Yellow
-    Write-Host "  -> Log in with the GitHub account you want a token for." -ForegroundColor Yellow
-    Write-Host "  -> This run waits up to ${TimeoutSeconds}s for you." -ForegroundColor Yellow
+    Write-Host " -> Ctrl+Shift+N / Cmd+Shift+N for private window" -ForegroundColor Yellow
+    Write-Host " -> Log in with the GitHub account you want a token for." -ForegroundColor Yellow
+    Write-Host " -> Waiting up to ${TimeoutSeconds}s" -ForegroundColor Yellow
     Write-Host ""
 } else {
     Write-Host "Opening browser for GitHub login..." -ForegroundColor Green
     Write-Host "URL: $loginUrl" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "  -> Log in with the GitHub account you want a token for." -ForegroundColor Yellow
-    Write-Host "  -> If you want a DIFFERENT account, sign out of GitHub first!" -ForegroundColor Yellow
+    Write-Host " -> Log in with the GitHub account you want a token for." -ForegroundColor Yellow
+    Write-Host " -> If you want a DIFFERENT account, sign out of GitHub first!" -ForegroundColor Yellow
     Write-Host ""
-    Start-Process $loginUrl
+    try { Start-Process $loginUrl -ErrorAction Stop | Out-Null } catch { Write-Host "Could not auto-open browser. Please open URL manually." -ForegroundColor Yellow }
 }
 
 # --- 3. poll for auth completion ---------------------------------------------
 Write-Host "Waiting for login (timeout: ${TimeoutSeconds}s)..." -ForegroundColor Cyan
-$startTime = Get-Date
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
 $attempts = 0
+$user = $null
 
 while ($true) {
-    $elapsed = ((Get-Date) - $startTime).TotalSeconds
-    if ($elapsed -ge $TimeoutSeconds) {
+    if ($sw.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
         Write-Host "Login timed out after ${TimeoutSeconds}s." -ForegroundColor Red
         exit 1
     }
-
     $attempts++
     Start-Sleep -Milliseconds $PollIntervalMs
 
     try {
-        $query = "fingerprintId=$([Uri]::EscapeDataString($fingerprintId))&fingerprintHash=$([Uri]::EscapeDataString($fingerprintHash))&expiresAt=$([Uri]::EscapeDataString($expiresAt))"
-        $statusResp = Invoke-RestMethod -Uri "$BaseUrl/api/auth/cli/status?$query" `
-            -Method GET `
-            -Headers $codeHeaders `
-            -ErrorAction SilentlyContinue
+        $qs = @("fingerprintId=$([Uri]::EscapeDataString($fingerprintId))")
+        if ($fingerprintHash) { $qs += "fingerprintHash=$([Uri]::EscapeDataString("$fingerprintHash"))" }
+        if ($expiresAt) { $qs += "expiresAt=$([Uri]::EscapeDataString("$expiresAt"))" }
+        $query = $qs -join "&"
+
+        $statusResp = Invoke-FreebuffApi -Uri "$BaseUrl/api/auth/cli/status?$query" -Method GET -Headers $codeHeaders
+
+        # Handle different response shapes (StrictMode-safe: a 200 without
+        # "user" must not throw PropertyNotFound, just keep polling).
+        $candidate = $null
+        try {
+            if ($statusResp.user -and $statusResp.user.authToken) { $candidate = $statusResp.user }
+            elseif ($statusResp.user -and $statusResp.user.token) { $candidate = $statusResp.user; $candidate | Add-Member -NotePropertyName authToken -NotePropertyValue $statusResp.user.token -Force }
+            elseif ($statusResp.authToken) { $candidate = @{ authToken = $statusResp.authToken; id = $statusResp.id; name = $statusResp.name; email = $statusResp.email } }
+        } catch { $candidate = $null }
+
+        if ($candidate -and $candidate.authToken) {
+            $user = $candidate
+            break
+        }
+        Write-Host " Polling ($attempts)... waiting for browser login" -ForegroundColor DarkGray
     } catch {
-        $statusCode = $_.Exception.Response.StatusCode.value__
-        if ($statusCode -eq 401) {
-            # Not yet authenticated - keep polling
-            Write-Host "  Polling ($attempts)... not yet authenticated" -ForegroundColor DarkGray
+        $statusCode = $null
+        try { $statusCode = $_.Exception.HttpStatusCode } catch {}
+        if ($statusCode -eq 401 -or $statusCode -eq 404) {
+            Write-Host " Polling ($attempts)... not yet authenticated" -ForegroundColor DarkGray
             continue
         }
-        Write-Host "  Polling error ($attempts): $_" -ForegroundColor DarkGray
+        Write-Host " Polling error ($attempts): $($_.Exception.Message)" -ForegroundColor DarkGray
         continue
     }
-
-    if ($statusResp.user -and $statusResp.user.authToken) {
-        $user = $statusResp.user
-        break
-    }
-    Write-Host "  Polling ($attempts)... waiting for browser login" -ForegroundColor DarkGray
 }
 
 # --- 4. extract token --------------------------------------------------------
-$authToken = $user.authToken
-$userName = if ($user.name) { $user.name } else { "unknown" }
-$userEmail = if ($user.email) { $user.email } else { "unknown" }
+# Normalize to strings first: StrictMode throws on missing object properties
+# and the login response shape does not guarantee id/name/email (observed:
+# user.authToken only). Hashtable keys read as $null, PSObject gaps throw —
+# both collapse to "".
+$authToken = try { [string]$user.authToken } catch { "" }
+$userName = try { [string]$user.name } catch { "" }
+if (-not $userName) { $userName = "unknown" }
+$userEmail = try { [string]$user.email } catch { "" }
+if (-not $userEmail) { $userEmail = "unknown" }
+$userId = try { [string]$user.id } catch { "" }
 
 Write-Host ""
 Write-Host "Login successful!" -ForegroundColor Green
-Write-Host "  Account: $userName ($userEmail)" -ForegroundColor Cyan
-Write-Host "  Token:   $authToken" -ForegroundColor White
+Write-Host " Account: $userName ($userEmail)" -ForegroundColor Cyan
+Write-Host " Token: $authToken" -ForegroundColor White
 
-# --- 4.5 zero-cost post-auth verification (anti-ban) -------------------------
-# Probe /api/v1/freebuff/session WITHOUT x-freebuff-instance-id so no session
-# slot is claimed. Refuses banned accounts — a dead-token check here beats
-# discovering it in a chat after it burned pool cooldowns.
+# --- 4.5 zero-cost post-auth verification ------------------------------------
 try {
-    $probeResp = Invoke-RestMethod -Uri "$BaseUrl/api/v1/freebuff/session" `
-        -Method GET `
-        -Headers @{ "Authorization" = "Bearer $authToken"; "User-Agent" = "ai-sdk/openai-compatible/1.0.0/codebuff" } `
-        -TimeoutSec 15 `
-        -ErrorAction Stop
-    $probeStatus = [string]$probeResp.status
-    $probeTier = [string]$probeResp.accessTier
-    $probeRisk = [string]$probeResp.currentRiskScore
+    $probeResp = Invoke-FreebuffApi -Uri "$BaseUrl/api/v1/freebuff/session" -Method GET -Headers @{ "Authorization" = "Bearer $authToken"; "User-Agent" = "ai-sdk/openai-compatible/1.0.0/codebuff" } -TimeoutSec 15
+    # StrictMode-safe reads: the live session response carries status +
+    # accessTier but not always currentRiskScore (observed: status=active,
+    # accessTier=full, no risk field) — a missing key must not abort the
+    # confirmation line.
+    $probeStatus = try { [string]$probeResp.status } catch { "" }
+    $probeTier = try { [string]$probeResp.accessTier } catch { "" }
+    $probeRisk = try { [string]$probeResp.currentRiskScore } catch { "" }
     if ($probeStatus -eq "banned") {
         Write-Host "ABORT: this account is BANNED upstream. Refusing to save the token." -ForegroundColor Red
         exit 1
     }
     Write-Host "Account check: status=$probeStatus tier=$(if ($probeTier) { $probeTier } else { '?' }) risk=$(if ($probeRisk) { $probeRisk } else { '?' })" -ForegroundColor Cyan
 } catch {
-    Write-Host "Probe response unreadable; continuing without tier confirmation: $_" -ForegroundColor Yellow
+    Write-Host "Probe unreadable; continuing without tier confirmation: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
-# --- 5. save credentials locally (opt-in only with -Save) ---------------------
+# --- 5. save credentials locally ---------------------------------------------
 if ($Save) {
     $configDir = Get-ConfigDir
-    if (-not (Test-Path $configDir)) {
-        New-Item -ItemType Directory -Path $configDir -Force | Out-Null
-    }
+    if (-not (Test-Path -LiteralPath $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
     $credPath = Get-CredentialsPath
-    $credData = @{
-        default = @{
-            id = $user.id
-            name = $userName
-            email = $userEmail
-            authToken = $authToken
-            fingerprintId = $fingerprintId
-            fingerprintHash = $fingerprintHash
-        }
-    } | ConvertTo-Json -Depth 5
+    $credData = @{ default = @{ id = $userId; name = $userName; email = $userEmail; authToken = $authToken; fingerprintId = $fingerprintId; fingerprintHash = $fingerprintHash } } | ConvertTo-Json -Depth 5
     [System.IO.File]::WriteAllText($credPath, $credData, (New-Object System.Text.UTF8Encoding($false)))
-    Write-Host "  Saved to: $credPath" -ForegroundColor DarkGray
+    Write-Host " Saved to: $credPath" -ForegroundColor DarkGray
 }
 
 # --- 6. output options -------------------------------------------------------
-# Incognito is a browser-flow mode, not an output mode: after the login
-# completes, behave like the recommended default (append to .\.env).
 if ($Incognito -and -not $ToClipboard -and -not $Save) { $Append = $true }
+
 if ($ToClipboard) {
-    Set-Clipboard -Value $authToken
-    Write-Host "  Copied to clipboard!" -ForegroundColor Green
+    if (Copy-TokenToClipboard -Token $authToken) {
+        Write-Host " Copied to clipboard!" -ForegroundColor Green
+    } else {
+        Write-Host " Could not copy to clipboard (no clipboard tool found)" -ForegroundColor Yellow
+    }
 }
 
 if ($Append) {
-    $targetEnv = if ($EnvFile) { $EnvFile } else { Join-Path (Get-Location) ".env" }
-    if (-not (Test-Path $targetEnv)) {
-        Ensure-EnvFile -Path $targetEnv
-    }
-    $content = [System.IO.File]::ReadAllText($targetEnv, [System.Text.Encoding]::UTF8)
-    if ($authToken -and $content -like "*$authToken*") {
-        Write-Host "  Token already present in $targetEnv; skipped." -ForegroundColor DarkGray
-    } elseif ($content -match '(?m)^AUTH_TOKENS=(.*)$') {
-        $existing = $Matches[1].Trim()
-        if ($existing -and $existing -ne "") {
-            $newValue = "$existing,$authToken"
-        } else {
-            $newValue = $authToken
-        }
-        $content = $content -replace '(?m)^AUTH_TOKENS=.*$', "AUTH_TOKENS=$newValue"
-        [System.IO.File]::WriteAllText($targetEnv, $content, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Host "  Appended to: $targetEnv" -ForegroundColor Green
-    } else {
-        $content += "`nAUTH_TOKENS=$authToken`n"
-        [System.IO.File]::WriteAllText($targetEnv, $content, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Host "  Appended to: $targetEnv" -ForegroundColor Green
-    }
+    $targetEnv = Resolve-TargetEnvPath -CustomPath $EnvFile
+    Update-EnvFileWithToken -EnvPath $targetEnv -Token $authToken
 }
 
 Write-Host ""

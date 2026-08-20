@@ -426,9 +426,10 @@ func (m *MockUpstream) handleProbe(w http.ResponseWriter) {
 		"instanceId":        instanceID,
 		"rateLimitsByModel": limits,
 	}
-	// The real probe (x-freebuff-include-unused-rate-limits) carries the
-	// account tier/region state too; mirror that so probe tests can assert
-	// accessTier capture without a custom SessionHandler.
+	// The probe mirrors the full admission shape (tier/region state
+	// included — the vendored CLI's session GET serves the same without any
+	// fingerprint header, #140), so probe tests can assert accessTier
+	// capture without a custom SessionHandler.
 	if tier != "" {
 		body["accessTier"] = tier
 	}

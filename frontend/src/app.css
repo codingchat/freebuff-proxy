@@ -16,7 +16,6 @@
   --fp-surface-2:    #151C28;
   --fp-surface-3:    #1C2536;
   --fp-input-bg:     #0C1220;
-  --fp-card-bg:      #111827;
 
   /* Borders */
   --fp-border:       #1E293B;
@@ -26,22 +25,21 @@
   /* Text */
   --fp-text:         #F1F5F9;
   --fp-muted:        #8B9EB7;
-  --fp-dim:          #5C6B82;
+  --fp-dim:          #93A3BB;
 
   /* Accents */
   --fp-amber:        #DCA86A;
   --fp-amber-hover:  #E8BC82;
-  --fp-amber-muted:  #8B7340;
-  --fp-amber-subtle: rgba(220, 168, 106, 0.08);
+  --fp-amber-subtle: rgba(220, 168, 106, 0.35);
   --fp-teal:         #34D399;
   --fp-red:          #EF4444;
+  --fp-red-deep:     #B91C1C;
   --fp-blue:         #60A5FA;
 
   /* Radii */
   --fp-radius-sm:    6px;
   --fp-radius:       10px;
   --fp-radius-lg:    14px;
-  --fp-radius-xl:    18px;
 
   /* Transitions */
   --fp-ease:         cubic-bezier(0.23, 1, 0.32, 1);
@@ -51,7 +49,6 @@
   /* Shadows */
   --fp-shadow-card:  0 1px 3px rgba(0,0,0,0.3), 0 0 0 1px var(--fp-border);
   --fp-shadow-lg:    0 4px 20px rgba(0,0,0,0.4), 0 0 0 1px var(--fp-border);
-  --fp-glow-amber:   0 0 24px rgba(220,168,106,0.08);
 }
 
 /* ── Base ─────────────────────────────────────────────────────── */
@@ -126,7 +123,7 @@ code, pre, .font-mono {
 
 /* ── Reusable card surface ────────────────────────────────────── */
 .fp-card {
-  background: var(--fp-card-bg);
+  background: var(--fp-surface);
   border: 1px solid var(--fp-border);
   border-radius: var(--fp-radius-lg);
   box-shadow: var(--fp-shadow-card);
@@ -158,6 +155,7 @@ code, pre, .font-mono {
   font-size: 0.875rem;
   border-radius: var(--fp-radius);
   padding: 0.5rem 1.25rem;
+  min-height: 44px;
   transition: all var(--fp-duration) var(--fp-ease);
   display: inline-flex;
   align-items: center;
@@ -204,7 +202,7 @@ code, pre, .font-mono {
 
 .fp-btn-danger {
   background: rgba(239, 68, 68, 0.12);
-  color: var(--fp-red);
+  color: #F87171;
   font-weight: 600;
   font-size: 0.75rem;
   border: 1px solid rgba(239, 68, 68, 0.3);

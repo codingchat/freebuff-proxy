@@ -4,6 +4,7 @@
   import PageHeader from '../components/PageHeader.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import CopyButton from '../components/CopyButton.svelte';
+  import Alert from '../components/Alert.svelte';
   import { fetchAPI } from '../utils/api.js';
   import { copyToClipboard } from '../utils/clipboard.js';
 
@@ -16,7 +17,7 @@
     try {
       data = await fetchAPI('/admin/api/models');
     } catch (e) {
-      error = e.message || 'Failed to fetch models';
+      error = e.message || 'Failed to load the model catalog. The admin API may be unreachable; refresh the page to retry.';
     } finally {
       loading = false;
     }
@@ -41,8 +42,14 @@
     {/if}
   </PageHeader>
 
+  <!-- Fetch Error -->
+  {#if error}
+    <Alert variant="error" message={error} ondismiss={() => error = ''} />
+  {/if}
+
   <!-- Models Table -->
-  <div class="fp-card overflow-hidden">
+  {#if data}
+    <div class="fp-card overflow-hidden">
     <div class="p-4 border-b border-[var(--fp-border)] flex items-center justify-between">
       <div class="flex items-center gap-2">
         <Zap size={18} class="text-[var(--fp-amber)]" />
@@ -75,7 +82,7 @@
                   {/if}
                 </button>
               </td>
-              <td class="text-[var(--fp-muted)]">{m.agent || '—'}</td>
+              <td class="text-[var(--fp-muted)]">{m.agent || 'Unbound'}</td>
               <td class="text-right">
                 <CopyButton text={m.id} variant="labeled" />
               </td>
@@ -85,6 +92,7 @@
       </table>
     </div>
   </div>
+  {/if}
 
   <!-- Model Aliases -->
   {#if data?.has_aliases && data?.aliases?.length > 0}
@@ -93,7 +101,7 @@
         <ArrowRightLeft size={18} class="text-[var(--fp-blue)]" />
         <div>
           <h2 class="text-base font-semibold text-white">Active Model Aliases</h2>
-          <p class="text-xs text-[var(--fp-muted)] mt-0.5">Configured in <code class="text-[var(--fp-amber)]">MODEL_ALIASES</code> — client requests are rewritten to target models.</p>
+          <p class="text-xs text-[var(--fp-muted)] mt-0.5">Configured in <code class="text-[var(--fp-amber)]">MODEL_ALIASES</code>. Client requests are rewritten to their target models.</p>
         </div>
       </div>
       <div class="overflow-x-auto">

@@ -881,6 +881,63 @@ func TestPollDropsRowOnWaitingRoomRequired(t *testing.T) {
 	}
 }
 
+// TestRefreshDropsQueueRowOnWaitingRoomRequired verifies #140 P2: a 428
+// waiting_room_required on the queued row's refresh GET is session-ENDING
+// (same as Poll's #116 handling) — refresh drops the dead queued row so the
+// next EnsureSession re-admits fresh instead of GETting a dead row, and
+// surfaces the typed error for the pool's failover.
+func TestRefreshDropsQueueRowOnWaitingRoomRequired(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mgr := newTestManager(t, mock)
+
+	var creates, polls atomic.Int32
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			// Create #1 returns a queued admission whose pollAt has already
+			// passed so the next iteration advances to the queued-row GET;
+			// the re-admit create after the 428 drop returns an active slot.
+			if creates.Add(1) == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"status":"queued","instanceId":"inst-q","position":1,"queueDepth":2,"estimatedWaitMs":100,"pollAt":"2000-01-01T00:00:00.000Z"}`)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-abc-123","expiresAt":"2030-01-01T00:00:00Z"}`)
+			return
+		}
+		// GET on the dead queued row → 428 waiting_room_required.
+		polls.Add(1)
+		w.WriteHeader(http.StatusTooEarly) // 428
+		_, _ = io.WriteString(w, `{"error":"waiting_room_required"}`)
+	}
+
+	// Call 1: create → queued row cached → its refresh GET 428s → the row
+	// must be dropped and the typed error surfaced.
+	_, err := mgr.EnsureSessionForModel(context.Background(), "model/A")
+	if !errors.Is(err, upstream.ErrWaitingRoomRequired) {
+		t.Fatalf("EnsureSessionForModel error = %v, want ErrWaitingRoomRequired", err)
+	}
+	if snap := mgr.Snapshot(); snap.Status != "" {
+		t.Errorf("status after 428 = %q, want empty (dead queued row dropped)", snap.Status)
+	}
+
+	// Call 2: the drop enables a fresh session CREATE (+1) instead of a
+	// second GET on the dead row.
+	if _, err := mgr.EnsureSessionForModel(context.Background(), "model/A"); err != nil {
+		t.Fatal(err)
+	}
+	if got := creates.Load(); got != 2 {
+		t.Errorf("session creates = %d, want 2 (fresh create after 428 drop)", got)
+	}
+	if got := polls.Load(); got != 1 {
+		t.Errorf("queued-row GETs = %d, want 1 (no second GET on the dead row)", got)
+	}
+	if snap := mgr.Snapshot(); snap.Status != "active" {
+		t.Errorf("status after re-admit = %q, want active", snap.Status)
+	}
+}
+
 // TestModelLockedReleasesOldSlot verifies the model_locked branch releases
 // the OLD upstream slot (SessionEnds == 1) before retrying with the desired
 // model: the model-switch invariant that a locked slot is not leaked.

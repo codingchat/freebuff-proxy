@@ -4,6 +4,7 @@
   import StatusBadge from '../components/StatusBadge.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import Pagination from '../components/Pagination.svelte';
+  import Alert from '../components/Alert.svelte';
   import { fetchAPI } from '../utils/api.js';
   import { usePolling } from '../utils/polling.js';
 
@@ -24,7 +25,11 @@
   async function fetchData() {
     try {
       data = await fetchAPI('/admin/api/traces');
-      page = 0;
+      error = '';
+      // Keep the reader's page across polls; only clamp when the dataset
+      // shrank so the current page no longer exists.
+      const pages = Math.ceil((data?.traces?.length || 0) / PAGE_SIZE);
+      if (page > pages - 1) page = 0;
     } catch (e) {
       error = e.message || 'Failed to fetch traces';
     } finally {
@@ -50,7 +55,9 @@
     {/if}
   </PageHeader>
 
-  {#if !data?.enabled}
+  {#if error}
+    <Alert variant="error" message={error} dismissable={false} />
+  {:else if !data?.enabled}
     <EmptyState icon={Timer} title="Trace Viewer Disabled" description="The trace ring was not initialized (server started without dashboard log handler)." />
   {:else if !data?.traces || data.traces.length === 0}
     <EmptyState icon={Timer} title="No Chat Completions Yet" description="Incoming chat completion requests will appear here automatically." />
@@ -71,14 +78,14 @@
           <tbody>
             {#each pagedTraces() as t}
               <tr class={t.error ? 'bg-[var(--fp-red)]/5' : ''}>
-                <td class="text-[var(--fp-dim)] whitespace-nowrap">{t.time}</td>
+                <td class="text-[var(--fp-muted)] whitespace-nowrap">{t.time}</td>
                 <td class="font-bold text-white whitespace-nowrap">{t.token}</td>
                 <td class="text-[var(--fp-muted)] whitespace-nowrap">{t.model}</td>
                 <td class="whitespace-nowrap">
                   <StatusBadge variant={statusVariant(t.status)}>{t.status}</StatusBadge>
                 </td>
                 <td class="text-white font-semibold whitespace-nowrap tabular-nums">{t.ms}</td>
-                <td class="text-[var(--fp-red)] break-all">{t.error || '—'}</td>
+                <td class="text-[var(--fp-red)] break-all">{t.error || '-'}</td>
               </tr>
             {/each}
           </tbody>

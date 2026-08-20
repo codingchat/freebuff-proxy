@@ -981,16 +981,22 @@ func TestClassifyRateLimit(t *testing.T) {
 		t.Errorf("RetryAfter = %s, want 120s", rleNested.RetryAfter)
 	}
 
-	// Generic 429 without explicit timestamp auto-detects upcoming Pacific midnight
+	// Generic 429 with no timestamp, no period, and no Retry-After header is
+	// an opaque refusal: bounded backoff (#140 P2), never a Pacific-midnight
+	// lock.
 	errGeneric := classifyError(429, `{"status":"rate_limited"}`, http.Header{})
 	var rleGeneric *RateLimitError
-	if errors.As(errGeneric, &rleGeneric) {
-		if rleGeneric.ResetAt.IsZero() {
-			t.Errorf("expected auto-detected ResetAt, got zero")
-		}
-		if !rleGeneric.ResetAt.After(time.Now()) {
-			t.Errorf("expected ResetAt to be in the future, got %v", rleGeneric.ResetAt)
-		}
+	if !errors.As(errGeneric, &rleGeneric) {
+		t.Fatalf("want *RateLimitError, got %v", errGeneric)
+	}
+	if !rleGeneric.ResetAt.IsZero() {
+		t.Errorf("opaque 429 ResetAt = %v, want zero (no Pacific-midnight lock)", rleGeneric.ResetAt)
+	}
+	if rleGeneric.RetryAfter <= 0 || rleGeneric.RetryAfter > 5*time.Minute {
+		t.Errorf("opaque 429 RetryAfter = %s, want bounded >0 and <= 5m", rleGeneric.RetryAfter)
+	}
+	if rleGeneric.RetryAfter != opaqueRateLimitBackoff {
+		t.Errorf("opaque 429 RetryAfter = %s, want %s", rleGeneric.RetryAfter, opaqueRateLimitBackoff)
 	}
 
 	// Header fallback when body has no JSON quota fields.
@@ -3550,16 +3556,20 @@ func TestInjectEnvelopeTraceSessionIDAndFreshClientID(t *testing.T) {
 	}
 }
 
-// TestProbeAccountSendsIncludeUnusedRateLimits verifies #76: the zero-cost
-// GET probe carries x-freebuff-include-unused-rate-limits: 1 so the response
-// includes accessTier/glmPromo/resetAt/rateLimitsByModel for dashboard
-// display, and sessionCall parses the new fields.
-func TestProbeAccountSendsIncludeUnusedRateLimits(t *testing.T) {
+// TestProbeAccountDoesNotSendIncludeUnusedRateLimits verifies #140: the
+// zero-cost GET probe sends NO x-freebuff-include-unused-rate-limits header
+// (a third-party-proxy fingerprint the vendored CLI never sends; its session
+// GET returns the same response shape without it). The probe carries only
+// the standard Authorization + CLI-parity UA, and sessionCall still parses
+// accessTier/glmPromo/rateLimitsByModel when the response includes them.
+func TestProbeAccountDoesNotSendIncludeUnusedRateLimits(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	var gotHeader string
+	var gotHeader, gotAuth, gotUA string
 	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
 		gotHeader = r.Header.Get("x-freebuff-include-unused-rate-limits")
+		gotAuth = r.Header.Get("Authorization")
+		gotUA = r.Header.Get("User-Agent")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-1","accessTier":"limited","glmPromo":{"dailySessions":2,"endsAt":"2026-08-20T07:00:00.000Z"},"rateLimitsByModel":{"deepseek/deepseek-v4-flash":{"model":"deepseek/deepseek-v4-flash","limit":6,"recentCount":2,"period":"pacific_day","resetAt":"2026-08-18T07:00:00.000Z"}}}`)
 	}
@@ -3571,8 +3581,14 @@ func TestProbeAccountSendsIncludeUnusedRateLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotHeader != "1" {
-		t.Errorf("x-freebuff-include-unused-rate-limits = %q, want 1", gotHeader)
+	if gotHeader != "" {
+		t.Errorf("x-freebuff-include-unused-rate-limits = %q, want absent", gotHeader)
+	}
+	if gotAuth != "Bearer tok-a" {
+		t.Errorf("Authorization = %q, want Bearer tok-a", gotAuth)
+	}
+	if gotUA != cliUserAgent {
+		t.Errorf("User-Agent = %q, want %q (CLI-parity UA, no browser persona)", gotUA, cliUserAgent)
 	}
 	if st.AccessTier != "limited" {
 		t.Errorf("AccessTier = %q, want limited", st.AccessTier)
@@ -3689,17 +3705,60 @@ func TestClassifyLoadSheddingAndPeakHours(t *testing.T) {
 		})
 	}
 
-	// The daily-cap path is untouched: a plain rate_limited 429 without the
-	// markers still goes through parseRateLimit's midnight default.
+	// A truly opaque no-timestamp 429 (no resetAt, no period, no Retry-After
+	// header) gets the bounded backoff — never the Pacific-midnight lock
+	// (#140 P2) and never the load-shedding mislabel.
 	err := classifyError(http.StatusTooManyRequests, `{"status":"rate_limited","message":"daily quota"}`, http.Header{})
 	var rle *RateLimitError
 	if !errors.As(err, &rle) {
 		t.Fatalf("plain 429 = %T %v, want *RateLimitError", err, err)
 	}
-	if rle.Status != "" && rle.Status == "load_shedding" {
+	if rle.Status == "load_shedding" {
 		t.Error("plain 429 misclassified as load_shedding")
 	}
-	if rle.ResetAt.IsZero() {
-		t.Error("plain no-timestamp 429 lost the Pacific-midnight lock")
+	if !rle.ResetAt.IsZero() {
+		t.Errorf("plain 429 ResetAt = %v, want zero (bounded backoff, not midnight)", rle.ResetAt)
+	}
+	if rle.RetryAfter != opaqueRateLimitBackoff {
+		t.Errorf("plain 429 RetryAfter = %s, want %s (bounded, not midnight)", rle.RetryAfter, opaqueRateLimitBackoff)
+	}
+
+	// A body that DOES signal a genuine daily reset — a pacific_day quota
+	// period with the counter at/over the limit — still resolves to the
+	// Pacific-midnight lock (#140 pins the daily-cap path).
+	errDaily := classifyError(http.StatusTooManyRequests, `{"status":"rate_limited","period":"pacific_day","limit":6,"recentCount":6}`, http.Header{})
+	var rleDaily *RateLimitError
+	if !errors.As(errDaily, &rleDaily) {
+		t.Fatalf("daily-cap 429 = %T %v, want *RateLimitError", errDaily, errDaily)
+	}
+	next := NextPacificMidnight()
+	if rleDaily.ResetAt.IsZero() {
+		t.Error("daily-cap 429 lost the Pacific-midnight lock")
+	} else if d := rleDaily.ResetAt.Sub(next); d < -time.Second || d > time.Second {
+		t.Errorf("daily-cap 429 ResetAt = %v, want near %v", rleDaily.ResetAt, next)
+	}
+	if rleDaily.RetryAfter <= 0 {
+		t.Error("daily-cap 429 RetryAfter <= 0")
+	}
+}
+
+// TestClassifyOpaqueRateLimitedBoundedBackoff pins #140 P2: a fully opaque
+// rate_limited 429 body with empty headers (no timestamp, no period, no
+// Retry-After) must yield a bounded RetryAfter — a minutes-scale transient
+// is never locked to Pacific midnight.
+func TestClassifyOpaqueRateLimitedBoundedBackoff(t *testing.T) {
+	err := classifyError(http.StatusTooManyRequests, `{"error":{"code":"rate_limited"}}`, http.Header{})
+	var rle *RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("classifyError = %T %v, want *RateLimitError", err, err)
+	}
+	if rle.RetryAfter <= 0 || rle.RetryAfter > 5*time.Minute {
+		t.Errorf("RetryAfter = %s, want bounded >0 and <= 5m", rle.RetryAfter)
+	}
+	if rle.RetryAfter != opaqueRateLimitBackoff {
+		t.Errorf("RetryAfter = %s, want %s", rle.RetryAfter, opaqueRateLimitBackoff)
+	}
+	if !rle.ResetAt.IsZero() {
+		t.Errorf("ResetAt = %v, want zero (opaque body: no midnight lock)", rle.ResetAt)
 	}
 }

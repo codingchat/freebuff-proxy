@@ -195,7 +195,7 @@
     if (targetMode === 'pooled') {
       if (!data.has_tokens) {
         actionOK = false;
-        actionMessage = 'Pooled mode requires at least one token — paste a token into the form below first.';
+        actionMessage = 'Pooled mode requires at least one token. Paste a token into the form below first.';
         return;
       }
       triggerAction('/admin/mode', { mode: 'pooled' }, 'Switch to pooled mode? All client requests will share the server pool.');
@@ -250,6 +250,15 @@
     />
   {/if}
 
+  <!-- Fetch Error: a failed poll must not masquerade as an empty pool -->
+  {#if error}
+    <Alert
+      variant="error"
+      message={error}
+      ondismiss={() => error = ''}
+    />
+  {/if}
+
   <!-- Mode Control & Pool Routing Bar (Always Visible) -->
   <div class="fp-card p-5 space-y-4">
     <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -276,25 +285,27 @@
         <button
           type="button"
           onclick={() => handleModeSwitch('pooled')}
-          class="px-3.5 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5
-            {!data?.in_bridge && data?.mode !== 'hybrid'
+          disabled={!data}
+          class="px-3.5 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-40
+            {data && !data.in_bridge && data.mode !== 'hybrid'
               ? 'bg-[var(--fp-amber)]/20 text-[var(--fp-amber)] border border-[var(--fp-amber)]/50 shadow-sm'
-              : 'bg-[var(--fp-surface-3)] hover:bg-[var(--fp-border-bright)] text-[var(--fp-muted)] hover:text-white border border-[var(--fp-border)]'}"
+              : 'bg-[var(--fp-surface-3)] hover:enabled:bg-[var(--fp-border-bright)] text-[var(--fp-muted)] hover:enabled:text-white border border-[var(--fp-border)]'}"
           title="All requests share the server token pool"
         >
           <Server size={14} />
           <span>Pooled</span>
-          {!data?.in_bridge && data?.mode !== 'hybrid' ? '✓' : ''}
+          {data && !data.in_bridge && data.mode !== 'hybrid' ? '✓' : ''}
         </button>
 
         <!-- Hybrid Mode -->
         <button
           type="button"
           onclick={() => handleModeSwitch('hybrid')}
-          class="px-3.5 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5
+          disabled={!data}
+          class="px-3.5 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-40
             {data?.mode === 'hybrid'
               ? 'bg-[#AC94FA]/20 text-[#AC94FA] border border-[#AC94FA]/50 shadow-sm'
-              : 'bg-[var(--fp-surface-3)] hover:bg-[var(--fp-border-bright)] text-[var(--fp-muted)] hover:text-white border border-[var(--fp-border)]'}"
+              : 'bg-[var(--fp-surface-3)] hover:enabled:bg-[var(--fp-border-bright)] text-[var(--fp-muted)] hover:enabled:text-white border border-[var(--fp-border)]'}"
           title="Relays client tokens when sent, falls back to server pool"
         >
           <Layers size={14} />
@@ -306,10 +317,11 @@
         <button
           type="button"
           onclick={() => handleModeSwitch('bridge')}
-          class="px-3.5 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5
+          disabled={!data}
+          class="px-3.5 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-40
             {data?.in_bridge
               ? 'bg-[#60A5FA]/20 text-[#60A5FA] border border-[#60A5FA]/50 shadow-sm'
-              : 'bg-[var(--fp-surface-3)] hover:bg-[var(--fp-border-bright)] text-[var(--fp-muted)] hover:text-white border border-[var(--fp-border)]'}"
+              : 'bg-[var(--fp-surface-3)] hover:enabled:bg-[var(--fp-border-bright)] text-[var(--fp-muted)] hover:enabled:text-white border border-[var(--fp-border)]'}"
           title="Stateless mode: clients provide their own tokens"
         >
           <Network size={14} />
@@ -350,9 +362,13 @@
         <span class="text-[var(--fp-muted)]">
           <strong class="text-[#AC94FA]">Hybrid Mode Active:</strong> Client-provided tokens relay directly; token-less requests safely use the {data?.token_count || 0} server pool token(s).
         </span>
+      {:else if data}
+        <span class="text-[var(--fp-muted)]">
+          <strong class="text-[var(--fp-amber)]">Pooled Mode Active:</strong> All client requests share the {data.token_count || 0} server token(s) with automatic load rotation and anti-ban safeguards.
+        </span>
       {:else}
         <span class="text-[var(--fp-muted)]">
-          <strong class="text-[var(--fp-amber)]">Pooled Mode Active:</strong> All client requests share the {data?.token_count || 0} server token(s) with automatic load rotation and anti-ban safeguards.
+          {loading ? 'Loading pool data...' : 'Pool data unavailable right now.'}
         </span>
       {/if}
     </div>
@@ -367,7 +383,7 @@
       </div>
     </div>
     <p class="text-xs text-[var(--fp-muted)]">
-      Generate FreeBuff credentials directly in your browser without installing the Codebuff CLI. The token is automatically verified, added to the live pool, and saved to <code class="text-[var(--fp-amber)] font-mono">.env</code>.
+      Generate FreeBuff credentials directly in your browser without installing the Codebuff CLI. The token is validated against upstream, then added to the pool and saved to <code class="text-[var(--fp-amber)] font-mono">.env</code>.
     </p>
 
     <button
@@ -411,7 +427,7 @@
 
     {#if apiKeys.length > 0}
       <div class="space-y-2 mb-3">
-        <p class="text-[10px] uppercase tracking-wider text-[var(--fp-dim)] font-semibold">Existing keys — click to copy for another client</p>
+        <p class="text-[10px] uppercase tracking-wider text-[var(--fp-dim)] font-semibold">Existing keys, click to copy for another client</p>
         {#each apiKeys as key, idx}
           <button
             type="button"
@@ -444,7 +460,7 @@
   <!-- Add Token Card -->
   <div class="fp-card p-5 border-[var(--fp-amber)]/30">
     <h2 class="text-base font-semibold text-white mb-1">Add Token to Pool</h2>
-    <p class="text-xs text-[var(--fp-muted)] mb-3">Paste a FreeBuff token (<code class="font-mono text-[var(--fp-amber)]">cb_...</code>) — dynamically validated, added to pool, and saved to <code class="font-mono text-[var(--fp-amber)]">.env</code>.</p>
+    <p class="text-xs text-[var(--fp-muted)] mb-3">Paste a FreeBuff token (<code class="font-mono text-[var(--fp-amber)]">cb_...</code>). Validated against upstream, then added to the pool and saved to <code class="font-mono text-[var(--fp-amber)]">.env</code>.</p>
     <form onsubmit={addToken} class="flex flex-col sm:flex-row gap-2">
       <input
         type="text"

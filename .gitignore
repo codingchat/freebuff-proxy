@@ -49,6 +49,11 @@ Desktop.ini
 .worktrees/
 .superpowers/
 
+# ── dev tooling & verification (local only, not published) ──
+.codegraph/
+uicheck/
+frontend/verify-ui.mjs
+
 # ── misc ──
 node_modules/
 *.tmp

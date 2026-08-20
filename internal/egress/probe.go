@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,10 @@ func Probe(ctx context.Context, dialer func(ctx context.Context, network, addr s
 	// Dedicated transport without ProxyFromEnvironment: the probe must go
 	// through exactly the dialer given, not whatever env proxies exist.
 	tr := &http.Transport{
+		// Explicit proxy disable: a nil Proxy field would resolve to
+		// http.ProxyFromEnvironment and silently route region reads through
+		// env proxies, contradicting the dialer-bound guarantee above.
+		Proxy:               func(*http.Request) (*url.URL, error) { return nil, nil },
 		DialContext:         dialer,
 		MaxIdleConns:        1,
 		IdleConnTimeout:     DefaultTTL,

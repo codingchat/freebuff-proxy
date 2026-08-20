@@ -23,6 +23,7 @@
   async function fetchData() {
     try {
       data = await fetchAPI('/admin/api/setup');
+      error = '';
     } catch (e) {
       error = e.message || 'Failed to fetch setup data';
     } finally {
@@ -59,7 +60,7 @@
 
 <div class="space-y-6 page-enter">
   <!-- Page Header -->
-  <PageHeader title="Client Setup & Tool Integration" subtitle="Connect your favorite AI coding extensions and tools in seconds">
+  <PageHeader title="Client Setup & Tool Integration" subtitle="Copy a config block for your AI coding tool.">
     {#if data}
       <StatusBadge variant="muted" mono>{data.base_url}</StatusBadge>
       <StatusBadge variant={data.bridge ? 'blue' : 'amber'}>
@@ -67,6 +68,16 @@
       </StatusBadge>
     {/if}
   </PageHeader>
+
+  <!-- Fetch Error -->
+  {#if error}
+    <div class="space-y-3">
+      <Alert variant="error" message={error} dismissable={false} />
+      <button type="button" onclick={fetchData} class="fp-btn-secondary text-xs py-1.5 px-3">
+        Retry loading setup data
+      </button>
+    </div>
+  {/if}
 
   <!-- Universal Config (Top-Level Reference) -->
   {#if data}
@@ -100,6 +111,9 @@
         >
           <span class="text-[10px] uppercase font-semibold text-[var(--fp-dim)] tracking-wider">API Key</span>
           <span class="font-mono text-sm text-[var(--fp-amber)] group-hover:text-[var(--fp-amber-hover)] transition-colors truncate w-full">{customApiKey}</span>
+          {#if customApiKey === 'not-needed'}
+            <span class="text-[10px] text-[var(--fp-dim)]">Bridge mode: no key needed</span>
+          {/if}
           <span class="text-[10px] text-[var(--fp-dim)] flex items-center gap-1 mt-1">
             {#if copiedIdx === 'apikey'}
               <Check size={10} class="text-[var(--fp-teal)]" /> <span class="text-[var(--fp-teal)]">Copied</span>

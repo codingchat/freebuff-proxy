@@ -770,6 +770,24 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 			st, err = m.adoptOrCreate(ctx, targetModel)
 		}
 		if err != nil {
+			// #140 P2: a 428 waiting_room_required on the queued row's
+			// refresh GET is session-ENDING (endsTheSession:true — the seat
+			// is gone, same as Poll's #116 handling). Drop the dead queued
+			// row (instance-guarded) so the next EnsureSession re-admits
+			// fresh, then return the error for the pool's failover.
+			if errors.Is(err, upstream.ErrWaitingRoomRequired) {
+				dropped := false
+				m.mu.Lock()
+				if m.state != nil && m.state.instanceID == cached.instanceID {
+					m.commit(nil)
+					dropped = true
+				}
+				m.mu.Unlock()
+				if dropped {
+					m.recordInvalidation(reasonPoll)
+					slog.Warn("session dropped on queued refresh", "reason", reasonPoll, "status", "waiting_room_required", "instance_id", cached.instanceID)
+				}
+			}
 			return err
 		}
 

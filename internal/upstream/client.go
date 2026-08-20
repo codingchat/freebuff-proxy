@@ -217,6 +217,10 @@ type RateLimitError struct {
 	Limit       float64
 	RecentCount float64
 	ResetAt     time.Time
+	// Period is the quota period parsed from the body ("pacific_day" /
+	// "pacific_week"), when present — a daily/weekly reset signal once the
+	// recent counter is at/over the limit.
+	Period string
 	// Window is the T7 ledger window for this refusal (body "1 minute"/
 	// "30 minutes" text, else "reset" when ResetAt is set, else
 	// "retry-after" when RetryAfter is set, else "none") — reused by the
@@ -986,9 +990,11 @@ func (c *Client) GetSessionWithOpts(ctx context.Context, instanceID string, comp
 // ProbeAccount validates the token with a zero-cost GET /api/v1/freebuff/session
 // that carries NO x-freebuff-instance-id header, so unlike CreateSession it
 // claims no session slot and burns none of the daily session allowance. The
-// response carries the live per-model quota (RateLimitsByModel) plus the
-// account/session state, which callers surface for token checks and doctor
-// diagnostics.
+// request sends the standard Authorization + CLI-parity UA only — no
+// third-party fingerprint headers (#140: the vendored CLI's session GET needs
+// none). The response carries the per-model quota (RateLimitsByModel) and the
+// account/session state when the upstream includes them, which callers
+// surface for token checks and doctor diagnostics.
 //
 // A probe 404 maps (via sessionCall) to Status "ended"; that — or a 200 with
 // status "ended" — means the token has no active session, returned as
@@ -1005,11 +1011,6 @@ func (c *Client) ProbeAccount(ctx context.Context) (*SessionState, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Ask the upstream to include the unused rate limits in the response so
-	// the probe observes accessTier/glmPromo/resetAt/rateLimitsByModel for
-	// dashboard display without consuming anything (mirrors
-	// reference/freebuff2api-netroindonesia/quota.js).
-	req.Header.Set("x-freebuff-include-unused-rate-limits", "1")
 	state, err := c.sessionCall(req)
 	if err != nil {
 		return nil, err
@@ -2605,10 +2606,19 @@ const LoadShedCooldown = 90 * time.Second
 // have lifted.
 const PeakHoursCooldown = 30 * time.Minute
 
+// opaqueRateLimitBackoff bounds a 429 with no timestamp, no daily-reset
+// signal, and no Retry-After header (issue #140 P2): a fully opaque body
+// must never lock the token until Pacific midnight over a minutes-scale
+// transient, so it gets the same bounded cooldown the other no-timestamp
+// refusals get.
+const opaqueRateLimitBackoff = 60 * time.Second
+
 // parseRateLimit builds a RateLimitError from a 429 body, extracting
-// retryAfterMs/resetAt/limit/recentCount best-effort across multiple JSON schemas.
-// Falls back to the Retry-After header or automatically computes the upcoming
-// Pacific midnight (07:00 UTC) when no explicit timestamp is provided.
+// retryAfterMs/resetAt/limit/recentCount/period best-effort across multiple
+// JSON schemas. Falls back to the Retry-After header; a body with no
+// timestamp/period and no header delay is bounded to opaqueRateLimitBackoff,
+// except a genuine daily-cap body (resetAt or an at-cap daily/weekly period)
+// which locks until the upcoming Pacific midnight (07:00 UTC).
 func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 	rle := &RateLimitError{Body: truncate(body, 200), RetryAfter: headerRetryAfter}
 
@@ -2638,6 +2648,9 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 		if st, ok := target["status"].(string); ok {
 			rle.Status = st
 		}
+		if period, ok := target["period"].(string); ok {
+			rle.Period = period
+		}
 	}
 
 	if !rle.ResetAt.IsZero() && rle.ResetAt.After(time.Now()) {
@@ -2645,21 +2658,43 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 			rle.RetryAfter = time.Until(rle.ResetAt)
 		}
 	} else if rle.RetryAfter <= 0 {
-		// When rate-limited without a specific retry delay or timestamp,
-		// auto-detect the next Pacific reset window (07:00 UTC).
-		nextReset := NextPacificMidnight()
-		rle.ResetAt = nextReset
-		rle.RetryAfter = time.Until(nextReset)
+		// No timestamp and no header delay: lock until the next Pacific
+		// reset window (07:00 UTC) ONLY when the body signals a genuine
+		// daily reset — a parsed resetAt (handled above) or a daily/weekly
+		// quota period whose counter is at/over the limit (the daily-cap
+		// bodies). Every other opaque 429 gets a bounded backoff so a
+		// minutes-scale transient is never treated as a full-day lock
+		// (issue #140 P2).
+		if isDailyCapReset(rle) {
+			nextReset := NextPacificMidnight()
+			rle.ResetAt = nextReset
+			rle.RetryAfter = time.Until(nextReset)
+		} else {
+			rle.RetryAfter = opaqueRateLimitBackoff
+		}
 	}
 
 	if rle.RetryAfter <= 0 {
 		rle.RetryAfter = 60 * time.Second
 	}
 	// T7 ledger window, computed after ResetAt/RetryAfter are finalized
-	// (the Pacific-midnight fallback above sets ResetAt, so the window is
-	// "reset" for timestamp-less 429s).
+	// (the daily-cap fallback above sets ResetAt so the window is "reset"
+	// for daily-cap timestamp-less 429s; opaque ones carry just
+	// RetryAfter → "retry-after").
 	rle.Window = rateLimitWindow(body, rle)
 	return rle
+}
+
+// isDailyCapReset reports whether a no-timestamp 429 body signals a genuine
+// daily-cap reset: the quota period is pacific_day/pacific_week AND the
+// recent counter is at/over the limit (the session-quota bodies the CLI
+// serves on daily-cap refusals). Only these lock until the next Pacific
+// midnight; truly opaque bodies get opaqueRateLimitBackoff.
+func isDailyCapReset(rle *RateLimitError) bool {
+	if rle.Period != "pacific_day" && rle.Period != "pacific_week" {
+		return false
+	}
+	return rle.Limit > 0 && rle.RecentCount >= rle.Limit
 }
 
 // parseBan builds a BanError from a 403 banned body, extracting the

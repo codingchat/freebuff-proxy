@@ -19,7 +19,7 @@
         type="button"
         onclick={() => onchange(Math.max(0, page - 1))}
         disabled={page === 0}
-        class="px-3 py-1.5 rounded-lg bg-[var(--fp-surface-3)] hover:bg-[var(--fp-border-bright)] text-white border border-[var(--fp-border-bright)] disabled:opacity-30 transition-colors"
+        class="px-3 py-1.5 min-h-11 rounded-lg bg-[var(--fp-surface-3)] hover:bg-[var(--fp-border-bright)] text-white border border-[var(--fp-border-bright)] disabled:opacity-30 transition-colors"
       >
         Previous
       </button>
@@ -27,7 +27,7 @@
         type="button"
         onclick={() => onchange(Math.min(totalPages - 1, page + 1))}
         disabled={page >= totalPages - 1}
-        class="px-3 py-1.5 rounded-lg bg-[var(--fp-surface-3)] hover:bg-[var(--fp-border-bright)] text-white border border-[var(--fp-border-bright)] disabled:opacity-30 transition-colors"
+        class="px-3 py-1.5 min-h-11 rounded-lg bg-[var(--fp-surface-3)] hover:bg-[var(--fp-border-bright)] text-white border border-[var(--fp-border-bright)] disabled:opacity-30 transition-colors"
       >
         Next
       </button>

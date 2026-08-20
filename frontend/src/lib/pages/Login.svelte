@@ -6,6 +6,24 @@
   let errorMsg = $state('');
   let loading = $state(false);
 
+  const GENERIC_LOGIN_ERROR = 'Invalid password.';
+
+  // The server replies to failed logins with {"error":"..."} JSON, but a
+  // proxy or error page in front of it can return HTML or an empty body.
+  // Only surface a clean message; never dump the raw response body.
+  function cleanLoginError(body) {
+    if (!body) return GENERIC_LOGIN_ERROR;
+    try {
+      const data = JSON.parse(body);
+      const err = data?.error;
+      const msg = typeof err === 'string' ? err : err?.message;
+      if (typeof msg !== 'string' || !msg.trim()) return GENERIC_LOGIN_ERROR;
+      return msg.trim();
+    } catch {
+      return GENERIC_LOGIN_ERROR;
+    }
+  }
+
   async function handleLogin(e) {
     e.preventDefault();
     if (!token.trim() || loading) return;
@@ -22,11 +40,10 @@
       if (res.ok || res.redirected) {
         window.location.href = '/admin';
       } else {
-        const text = await res.text();
-        errorMsg = text || 'Invalid admin token.';
+        errorMsg = cleanLoginError(await res.text());
       }
     } catch (e) {
-      errorMsg = e.message || 'Network error signing in';
+      errorMsg = 'Could not reach the server. Check the connection and try again.';
     } finally {
       loading = false;
     }
