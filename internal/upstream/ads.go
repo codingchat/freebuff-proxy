@@ -19,6 +19,11 @@ import (
 // "Freebuff-CLI/<CODEBUFF_CLI_VERSION>"; 0.0.150 = the vendored binary).
 const freebuffCliUA = "Freebuff-CLI/0.0.150"
 
+const (
+	// maxAdResponseRead caps the ad response body read.
+	maxAdResponseRead = 512
+)
+
 // adUserAgents maps runtime.GOOS to the browser-like Chrome-124 UA sent to
 // ad providers for targeting/fraud screening (#124). The CLI ships one entry
 // per platform (reference common/src/util/ad-user-agent.ts: darwin/win32/
@@ -111,7 +116,7 @@ func (c *Client) requestAds(ctx context.Context, provider string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxAdResponseRead))
 		return fmt.Errorf("ads status %d: %s", resp.StatusCode, truncate(string(raw), 200))
 	}
 	return nil
@@ -194,7 +199,7 @@ func (c *Client) getStreak(ctx context.Context) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxAdResponseRead))
 		return fmt.Errorf("streak status %d: %s", resp.StatusCode, truncate(string(raw), 200))
 	}
 	return nil

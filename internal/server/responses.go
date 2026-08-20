@@ -669,7 +669,10 @@ func (s *Server) accumulateResponsesChunk(st *responsesStreamState, chunk map[st
 	if len(choices) == 0 {
 		return
 	}
-	choice, _ := choices[0].(map[string]any)
+	choice, ok := choices[0].(map[string]any)
+	if !ok || choice == nil {
+		return
+	}
 	delta, _ := choice["delta"].(map[string]any)
 	if delta == nil {
 		return

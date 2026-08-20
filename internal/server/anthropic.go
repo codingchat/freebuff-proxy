@@ -830,7 +830,10 @@ func (s *Server) accumulateAnthropicChunk(send func(map[string]any), st *anthrop
 	if len(choices) == 0 {
 		return
 	}
-	choice, _ := choices[0].(map[string]any)
+	choice, ok := choices[0].(map[string]any)
+	if !ok || choice == nil {
+		return
+	}
 	if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
 		st.setStopReason(fr)
 	}
@@ -1265,41 +1268,43 @@ func anthropicMessageFromCompletion(completion map[string]any, requestedModel st
 	hasToolCall := false
 	choices, _ := completion["choices"].([]any)
 	if len(choices) > 0 {
-		choice, _ := choices[0].(map[string]any)
-		msg, _ := choice["message"].(map[string]any)
-		if msg != nil {
-			content := []any{}
-			if rc, ok := msg["reasoning_content"].(string); ok && rc != "" {
-				content = append(content, map[string]any{"type": "thinking", "thinking": rc})
-			}
-			if text, ok := msg["content"].(string); ok && text != "" {
-				content = append(content, map[string]any{"type": "text", "text": text})
-			}
-			if tcs, ok := msg["tool_calls"].([]any); ok {
-				for _, raw := range tcs {
-					tc, ok := raw.(map[string]any)
-					if !ok {
-						continue
-					}
-					fn, _ := tc["function"].(map[string]any)
-					name, _ := fn["name"].(string)
-					args, _ := fn["arguments"].(string)
-					toolID, _ := tc["id"].(string)
-					if toolID == "" {
-						toolID = "toolu_" + randHexString(6)
-					}
-					hasToolCall = true
-					content = append(content, map[string]any{
-						"type":  "tool_use",
-						"id":    sanitizeToolID(toolID),
-						"name":  name,
-						"input": parseJSONArgs(args),
-					})
+		choice, ok := choices[0].(map[string]any)
+		if ok && choice != nil {
+			msg, _ := choice["message"].(map[string]any)
+			if msg != nil {
+				content := []any{}
+				if rc, ok := msg["reasoning_content"].(string); ok && rc != "" {
+					content = append(content, map[string]any{"type": "thinking", "thinking": rc})
 				}
-			}
-			message["content"] = content
-			if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
-				message["stop_reason"] = anthropicStopReason(fr, hasToolCall)
+				if text, ok := msg["content"].(string); ok && text != "" {
+					content = append(content, map[string]any{"type": "text", "text": text})
+				}
+				if tcs, ok := msg["tool_calls"].([]any); ok {
+					for _, raw := range tcs {
+						tc, ok := raw.(map[string]any)
+						if !ok {
+							continue
+						}
+						fn, _ := tc["function"].(map[string]any)
+						name, _ := fn["name"].(string)
+						args, _ := fn["arguments"].(string)
+						toolID, _ := tc["id"].(string)
+						if toolID == "" {
+							toolID = "toolu_" + randHexString(6)
+						}
+						hasToolCall = true
+						content = append(content, map[string]any{
+							"type":  "tool_use",
+							"id":    sanitizeToolID(toolID),
+							"name":  name,
+							"input": parseJSONArgs(args),
+						})
+					}
+				}
+				message["content"] = content
+				if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
+					message["stop_reason"] = anthropicStopReason(fr, hasToolCall)
+				}
 			}
 		}
 	}

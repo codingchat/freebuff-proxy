@@ -845,7 +845,10 @@ type relayStats struct {
 // (total_tokens, falling back to prompt+completion). Returns 0 when absent.
 // Feeds the per-token spend ledger (#122).
 func usageTotalTokens(usage any) int64 {
-	u, _ := usage.(map[string]any)
+	u, ok := usage.(map[string]any)
+	if !ok || u == nil {
+		return 0
+	}
 	if total, ok := intOf(u["total_tokens"]); ok && total > 0 {
 		return total
 	}

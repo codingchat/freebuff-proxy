@@ -134,6 +134,14 @@ func (c *Client) TokenKey() string {
 // agent-runs) sends this UA — no browser persona (#108/#109).
 const cliUserAgent = "ai-sdk/openai-compatible/1.0.0/codebuff"
 
+const (
+	// maxErrorBodyRead caps the upstream error response body read for
+	// classification and logging.
+	maxErrorBodyRead = 2048
+	// maxDumpRead caps the debug dump body read.
+	maxDumpRead = 51200
+)
+
 // New builds the client for one token.
 func New(token string, cfg *config.Config) (*Client, error) {
 	return NewWithIndex(token, 0, cfg)
@@ -201,7 +209,7 @@ func NewWithIndex(token string, tokenIndex int, cfg *config.Config) (*Client, er
 		// when the http2 transport below is registered, h1 otherwise.
 		alpn := []string{"http/1.1"}
 		if c.http2Upstream {
-			alpn = h2ALPN
+			alpn = h2ALPN()
 		}
 		transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return stealth.Dialer(c.dialProfileFor(ctx), baseDial, false, alpn)(ctx, network, addr)
@@ -230,7 +238,7 @@ func NewWithIndex(token string, tokenIndex int, cfg *config.Config) (*Client, er
 		if stealthProf != nil {
 			h2t := &http2.Transport{
 				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-					return stealth.Dialer(c.dialProfileFor(ctx), baseDial, false, h2ALPN)(ctx, network, addr)
+					return stealth.Dialer(c.dialProfileFor(ctx), baseDial, false, h2ALPN())(ctx, network, addr)
 				},
 				MaxDecoderHeaderTableSize: 65536,   // Chrome SETTINGS_HEADER_TABLE_SIZE
 				MaxHeaderListSize:         262_144, // Chrome SETTINGS_MAX_HEADER_LIST_SIZE
@@ -427,7 +435,7 @@ func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, c
 				// re-wrapped so the caller's classification parses the same
 				// body. Never logged as `upstream ok` — a transport-level
 				// 200 and an upstream 429 are different classes of event.
-				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyRead))
 				_ = resp.Body.Close()
 				bodyText := telemetry.RedactSecrets(string(bodyBytes))
 				class := errClassName(classifyError(resp.StatusCode, bodyText, resp.Header))
@@ -530,9 +538,11 @@ func (c *Client) dialProfileFor(ctx context.Context) *stealth.Profile {
 	return profile
 }
 
-// h2ALPN is the ALPN list a real browser advertises — the JA4-correct
+// h2ALPN returns the ALPN list a real browser advertises — the JA4-correct
 // fingerprint for HTTP/2 upstreams (#51).
-var h2ALPN = []string{"h2", "http/1.1"}
+var _h2ALPN = [2]string{"h2", "http/1.1"}
+
+func h2ALPN() []string { return _h2ALPN[:] }
 
 // TransientRetries returns how many transient transport failures were
 // retried by this client (pool snapshot /metrics aggregation).
@@ -868,7 +878,7 @@ func padBase36(id string) string {
 }
 
 func drainBody(r io.Reader) string {
-	data, _ := io.ReadAll(io.LimitReader(r, 51200))
+	data, _ := io.ReadAll(io.LimitReader(r, maxDumpRead))
 	return string(data)
 }
 

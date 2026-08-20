@@ -56,6 +56,8 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	// B5: Global bridge daily limit check — before per-entry check, reject
 	// if the total across ALL bridge entries exceeds BRIDGE_DAILY_LIMIT.
 	if cfg.BridgeDailyLimit > 0 {
+		// TOCTOU: snapshot read, then compare after unlock. Worst case: one
+		// extra request past the limit. Acceptable for a best-effort cap.
 		p.bridgeMu.Lock()
 		total := p.bridgeDailyUsage
 		p.bridgeMu.Unlock()
@@ -299,7 +301,9 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	defer func() { <-p.bridgeCreateGate }()
 
 	// Double-check: another goroutine may have created the entry while we
-	// were waiting for the gate and building the client.
+	// were waiting for the gate. Release bridgeMu before calling upstream.New
+	// (DNS + TLS handshake can be slow; holding bridgeMu blocks every other
+	// bridge operation).
 	p.bridgeMu.Lock()
 	if entry, ok := p.bridge[key]; ok {
 		entry.lastUsed = time.Now()
@@ -307,11 +311,19 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 		p.bridgeMu.Unlock()
 		return entry, nil
 	}
+	p.bridgeMu.Unlock()
 
+	// Create the client outside bridgeMu (B2).
 	client, err := upstream.New(clientToken, p.cfg.Load())
 	if err != nil {
-		p.bridgeMu.Unlock()
 		return nil, fmt.Errorf("bridge: %w", err)
+	}
+
+	// Re-acquire lock and insert; another creator may have raced us.
+	p.bridgeMu.Lock()
+	if entry, ok := p.bridge[key]; ok {
+		p.bridgeMu.Unlock()
+		return entry, nil
 	}
 	entry := &bridgeEntry{token: clientToken, client: client, spend: newSpendLedger()}
 	cfg := p.cfg.Load()
@@ -331,8 +343,10 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	victims := p.bridgeEvictLocked(entry)
 	p.bridgeMu.Unlock()
 
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
 	for _, victim := range victims {
-		victim.runs.FinishAllRuns(context.Background())
+		victim.runs.FinishAllRuns(ctx)
 	}
 	return entry, nil
 }

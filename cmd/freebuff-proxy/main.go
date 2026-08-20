@@ -248,7 +248,10 @@ func main() {
 	// Issue #62: the dashboard login wizard drives the same headless OAuth
 	// flow as the CLI against the proxy's own transport/stealth wiring; the
 	// token it yields is added to the pool + .env (nil disables the wizard).
-	loginClient, _ := upstream.NewForAuth(&cfg)
+	loginClient, err := upstream.NewForAuth(&cfg)
+	if err != nil {
+		slog.Warn("dashboard login client unavailable (login wizard disabled)", "err", err)
+	}
 	serverOpts := []server.Option{server.WithLoginClient(loginClient)}
 	// Issue #50b: release update indicator — the dashboard badge compares
 	// the running version against the latest GitHub release (6h cache).
