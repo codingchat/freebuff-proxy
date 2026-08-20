@@ -56,8 +56,8 @@ type Config struct {
 	LogAccess       bool   // true = per-request access log lines (LOG_ACCESS; default true, an empty .env line keeps it enabled)
 	// LogRingSize is the bounded in-memory log ring capacity behind the
 	// dashboard log viewer (LOG_RING_SIZE; default 500, validated 50..5000).
-	LogRingSize           int
-	MaxMessagesPerDay     int           // 0 = unlimited: per-token cap on successful chats per 24h
+	LogRingSize       int
+	MaxMessagesPerDay int // 0 = unlimited: per-token cap on successful chats per 24h
 	// BridgeDailyLimit is the global daily chat cap across ALL bridge-mode
 	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited). Enforced in AcquireBridge
 	// before the per-entry check so a flood of distinct client tokens cannot
@@ -226,16 +226,16 @@ type rawConfig struct {
 	ActingUserID       string   `json:"ACTING_USER_ID"`
 	// LegacyActingUserID is the pre-rename JSON key (USER_ID) — merged at
 	// the end of Load when no ACTING_USER_ID source set a value (#126).
-	LegacyActingUserID               string          `json:"USER_ID"`
-	TLSFingerprint                   string          `json:"TLS_FINGERPRINT"`
-	RegistryRefresh                  string          `json:"REGISTRY_REFRESH"`
-	DebugDump                        bool            `json:"DEBUG_DUMP"`
-	LogFile                          string          `json:"LOG_FILE"`
-	LogLevel                         string          `json:"LOG_LEVEL"`
-	LogFormat                        string          `json:"LOG_FORMAT"`
-	LogAccess                        bool            `json:"LOG_ACCESS"`
-	LogRingSize                      *int            `json:"LOG_RING_SIZE"`
-	MaxMessagesPerDay                *int            `json:"MAX_MESSAGES_PER_DAY"`
+	LegacyActingUserID string `json:"USER_ID"`
+	TLSFingerprint     string `json:"TLS_FINGERPRINT"`
+	RegistryRefresh    string `json:"REGISTRY_REFRESH"`
+	DebugDump          bool   `json:"DEBUG_DUMP"`
+	LogFile            string `json:"LOG_FILE"`
+	LogLevel           string `json:"LOG_LEVEL"`
+	LogFormat          string `json:"LOG_FORMAT"`
+	LogAccess          bool   `json:"LOG_ACCESS"`
+	LogRingSize        *int   `json:"LOG_RING_SIZE"`
+	MaxMessagesPerDay  *int   `json:"MAX_MESSAGES_PER_DAY"`
 	// BridgeDailyLimit is the global daily chat cap across all bridge
 	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited).
 	BridgeDailyLimit                 *int            `json:"BRIDGE_DAILY_LIMIT"`

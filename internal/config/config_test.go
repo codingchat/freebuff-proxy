@@ -723,7 +723,6 @@ func TestValidateModeKnobs(t *testing.T) {
 	}
 }
 
-
 func TestDotenv(t *testing.T) {
 	clearEnv(t) // chdirs to a fresh temp dir; .env is written relative to it
 
