@@ -1,0 +1,57 @@
+version: '3'
+
+tasks:
+  default:
+    desc: List all tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build frontend assets and compile the Go binary
+    deps: [build:ui]
+    cmds:
+      - task: build:proxy
+
+  build:ui:
+    desc: Build Svelte 5 frontend into internal/dashboard/dist
+    dir: frontend
+    cmds:
+      - npm run build
+
+  build:proxy:
+    desc: Compile the Go proxy binary
+    cmds:
+      - go build -o bin/freebuff-proxy{{exeExt}} ./cmd/freebuff-proxy
+
+  test:
+    desc: Run the hermetic Go test suite
+    env:
+      AUTH_TOKENS: ''
+      ADMIN_TOKEN: ''
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run the Go test suite with -race detector
+    env:
+      AUTH_TOKENS: ''
+      ADMIN_TOKEN: ''
+    cmds:
+      - go test -race ./...
+
+  lint:
+    desc: Run static analysis and linting (go vet + golangci-lint)
+    cmds:
+      - go vet ./...
+      - golangci-lint run ./...
+
+  dev:
+    desc: Run proxy server
+    cmds:
+      - go run ./cmd/freebuff-proxy
+
+  dev:ui:
+    desc: Run frontend Vite dev server on port 5173
+    dir: frontend
+    cmds:
+      - npm run dev

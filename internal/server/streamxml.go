@@ -119,10 +119,15 @@ func feedAnthropicXMLToolCalls(xmlExtractor *convert.XMLToolCallExtractor, chunk
 	}
 	tcs, _ := delta["tool_calls"].([]any)
 	for _, call := range calls {
+		if call.Function.Name == "end_turn" {
+			continue // strip-parity: never relay the proxy-injected pseudo-tool
+		}
 		tcs = append(tcs, convert.ToolCallDeltaFragment(*xmlCallIndex, call))
 		*xmlCallIndex++
 	}
-	delta["tool_calls"] = tcs
+	if len(tcs) > 0 {
+		delta["tool_calls"] = tcs
+	}
 }
 
 // flushAnthropicXMLToolCalls releases any still-open XML candidate block at
@@ -142,10 +147,15 @@ func (s *Server) flushAnthropicXMLToolCalls(send func(map[string]any), st *anthr
 	if len(fc) > 0 {
 		tcs := make([]any, 0, len(fc))
 		for _, call := range fc {
+			if call.Function.Name == "end_turn" {
+				continue // strip-parity: never relay the proxy-injected pseudo-tool
+			}
 			tcs = append(tcs, convert.ToolCallDeltaFragment(*xmlCallIndex, call))
 			*xmlCallIndex++
 		}
-		delta["tool_calls"] = tcs
+		if len(tcs) > 0 {
+			delta["tool_calls"] = tcs
+		}
 	}
 	s.accumulateAnthropicChunk(send, st, map[string]any{
 		"id":      "chatcmpl-flush",

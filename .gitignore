@@ -63,6 +63,9 @@ node_modules/
 # ── agent handoff docs (local only, not repo content) ──
 HANDOFF.md
 *.handoff.md
+plan.md
+PLAN.md
+*.plan.md
 
 # ── dev docs & study (local only, not repo content) ──
 devdocs/

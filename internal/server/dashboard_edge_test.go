@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"freebuff-proxy/internal/config"
+	"freebuff-proxy/internal/dashboard"
 	"freebuff-proxy/internal/pool"
 	"freebuff-proxy/internal/registry"
 	"freebuff-proxy/internal/server"
@@ -1020,6 +1021,9 @@ func TestDashboardLoginGETWhenUnset(t *testing.T) {
 // TestDashboardLoginGETWithToken serves the SPA login page (HTML), not a JSON
 // error body: the Svelte form must be reachable without a session cookie.
 func TestDashboardLoginGETWithToken(t *testing.T) {
+	if !dashboard.HasEmbeddedSPA {
+		t.Skip("skipping SPA test in CLI-only build (compiled without -tags dashboard)")
+	}
 	ts := dashboardServer(t, "secret", nil)
 	resp := get(t, ts.URL+"/admin/login", "")
 	defer func() { _ = resp.Body.Close() }()

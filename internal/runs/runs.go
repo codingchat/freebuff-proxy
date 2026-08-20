@@ -416,21 +416,51 @@ func (m *RunManager) Release(run *Run) {
 	m.mu.Unlock()
 }
 
-// InflightCount returns the number of outstanding leases across all runs
-// (active and draining). The pool uses it to skip evicting bridge entries
-// whose run is still serving a request: FINISHing such a run would kill the
-// in-flight chat, so those entries are left for the idle sweep instead.
-func (m *RunManager) InflightCount() int {
+// InflightCount returns the total in-flight request count across all runs,
+// or for a specific agentID if provided.
+func (m *RunManager) InflightCount(agentID ...string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	n := 0
-	for _, run := range m.runs {
-		n += run.inflight
+	if len(agentID) > 0 && agentID[0] != "" {
+		if r := m.runs[agentID[0]]; r != nil {
+			return r.inflight
+		}
+		return 0
 	}
-	for _, run := range m.draining {
-		n += run.inflight
+	count := 0
+	for _, r := range m.runs {
+		count += r.inflight
 	}
-	return n
+	for _, r := range m.draining {
+		count += r.inflight
+	}
+	return count
+}
+
+// Invalidate drops the active run for agentID without finishing it (e.g. on runId not found).
+func (m *RunManager) Invalidate(agentID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.runs, agentID)
+	if m.store != nil && m.key != "" {
+		m.store.RemoveRun(m.key, agentID)
+	}
+}
+
+// FinishAllRuns finishes all active and draining runs synchronously.
+func (m *RunManager) FinishAllRuns(ctx context.Context) {
+	m.mu.Lock()
+	runsToFinish := make([]*Run, 0, len(m.runs)+len(m.draining))
+	for agentID, run := range m.runs {
+		delete(m.runs, agentID)
+		runsToFinish = append(runsToFinish, run)
+	}
+	runsToFinish = append(runsToFinish, m.draining...)
+	m.draining = nil
+	m.mu.Unlock()
+	for _, r := range runsToFinish {
+		m.finishIfReadyCtx(ctx, r)
+	}
 }
 
 // FinishRun FINISHes the run upstream with its recorded terminal status,
@@ -634,44 +664,6 @@ func (m *RunManager) Shutdown(ctx context.Context) {
 	if len(errs) > 0 {
 		slog.Warn("runs: shutdown with errors", "errors", strings.Join(errs, "; "))
 	}
-}
-
-// FinishAllRuns FINISHes every active run and drops it from the active set,
-// leaving the session untouched (unlike Shutdown). Used by the pool's idle
-// rotation: once a token has been idle past IDLE_ROTATION_TIMEOUT, its runs
-// are finished so no rotation/refresh activity continues upstream; the next
-// Acquire starts a fresh run on demand.
-func (m *RunManager) FinishAllRuns(ctx context.Context) {
-	m.mu.Lock()
-	all := make([]*Run, 0, len(m.runs))
-	for _, run := range m.runs {
-		all = append(all, run)
-	}
-	m.runs = make(map[string]*Run)
-	m.mu.Unlock()
-
-	var errs []string
-	for _, run := range all {
-		status, steps, totalSteps := m.finishPayload(run)
-		if err := m.client.FinishRun(ctx, run.RunID, status, totalSteps, steps, ""); err != nil {
-			errs = append(errs, fmt.Sprintf("finish run %s: %v", run.RunID, err))
-		} else {
-			m.removeRun(run)
-		}
-	}
-	if len(errs) > 0 {
-		slog.Warn("runs: idle finish with errors", "errors", strings.Join(errs, "; "))
-	}
-}
-
-// Invalidate drops the current run for agentID so the next Acquire starts a
-// fresh one. Used when an upstream chat reports the run id as unknown
-// (ErrRunInvalid); the dead run is not FINISHed (upstream already forgot it)
-// and not drained.
-func (m *RunManager) Invalidate(agentID string) {
-	m.mu.Lock()
-	delete(m.runs, agentID)
-	m.mu.Unlock()
 }
 
 // Cooldown puts the token in a cooldown window of duration d (e.g.

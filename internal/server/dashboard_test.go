@@ -209,6 +209,9 @@ const lockoutBound = 5
 
 // Assets are public (the login page loads them without a cookie).
 func TestDashboardAssetsPublic(t *testing.T) {
+	if !dashboard.HasEmbeddedSPA {
+		t.Skip("skipping SPA asset test in CLI-only build (compiled without -tags dashboard)")
+	}
 	ts := dashboardServer(t, "secret", nil)
 	distFS := dashboard.DistFS()
 	entries, err := fs.ReadDir(distFS, "assets")
@@ -811,7 +814,7 @@ func TestDashboardConcurrentTokenAdds(t *testing.T) {
 	}
 	srv := server.New(cfg, p, reg, nil, nil, "")
 	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	defer ts.Close()
 	cookie := authedCookie(t, ts)
 
 	const n = 8

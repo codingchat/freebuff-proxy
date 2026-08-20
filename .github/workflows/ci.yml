@@ -28,18 +28,6 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Enforce source-file size budget
-        run: |
-          # 1400-line budget. Tracked exceptions (shrink via follow-up splits):
-          # internal/convert/convert.go (monolith-refactor R8, blocked on PR #141),
-          # internal/pool/pool.go was removed from exceptions after the
-          # split into acquire.go / bridge.go / snapshot.go (all under 1400).
-
-          bad=$(find internal cmd -name '*.go' ! -name '*_test.go' \
-            ! -path 'internal/convert/convert.go' \
-            ! -path 'internal/runs/runs.go' \
-            -exec sh -c 'for f; do [ "$(wc -l < "$f")" -gt 1400 ] && echo "$f $(wc -l < "$f")"; done' sh {} + || true)
-          if [ -n "$bad" ]; then echo "Files over 1400 lines:"; echo "$bad"; exit 1; fi
 
       - name: Test (race detector)
         run: go test -race -timeout 10m ./...

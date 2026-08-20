@@ -35,38 +35,50 @@ import (
 // request to chat params, then route through chatCore with an Anthropic
 // wire relay.
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	version := "2023-06-01"
+	if reqVer := r.Header.Get("anthropic-version"); reqVer != "" {
+		version = reqVer
+	}
+	w.Header().Set("anthropic-version", version)
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			s.writeJSONError(w, http.StatusRequestEntityTooLarge,
-				"request body exceeds the 32MB limit", "invalid_request_error", "content_too_large", 0)
+			s.writeAnthropicError(w, r, http.StatusRequestEntityTooLarge,
+				"request body exceeds the 32MB limit", "content_too_large", 0)
 		} else {
-			s.writeJSONError(w, http.StatusBadRequest,
-				"failed to read request body: "+err.Error(), "invalid_request_error", "invalid_json", 0)
+			s.writeAnthropicError(w, r, http.StatusBadRequest,
+				"failed to read request body: "+err.Error(), "invalid_json", 0)
 		}
 		return
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		s.writeJSONError(w, http.StatusBadRequest,
-			"request body must be a valid JSON object", "invalid_request_error", "invalid_json", 0)
+		s.writeAnthropicError(w, r, http.StatusBadRequest,
+			"request body must be a valid JSON object", "invalid_json", 0)
+		return
+	}
+	rawMsgs, ok := raw["messages"].([]any)
+	if !ok || len(rawMsgs) == 0 {
+		s.writeAnthropicError(w, r, http.StatusBadRequest,
+			"messages: array must not be empty", "invalid_request_error", 0)
 		return
 	}
 	rawModel, _ := raw["model"].(string)
 	if rawModel == "" {
-		s.writeJSONError(w, http.StatusBadRequest,
+		s.writeAnthropicError(w, r, http.StatusBadRequest,
 			"missing required field \"model\"; available: "+strings.Join(s.reg.Models(), ", "),
-			"invalid_request_error", "model_not_found", 0)
+			"model_not_found", 0)
 		return
 	}
 	model := s.reg.ResolveModel(rawModel)
 	if !s.modelAllowed(model) {
 		// MODELS_ALLOW: the resolved model is outside the operator
 		// allowlist — reject like an unknown model.
-		s.writeJSONError(w, http.StatusNotFound,
-			"model not allowed by MODELS_ALLOW", "invalid_request_error", "model_not_found", 0)
+		s.writeAnthropicError(w, r, http.StatusNotFound,
+			"model not allowed by MODELS_ALLOW", "model_not_found", 0)
 		return
 	}
 	stream := false
@@ -75,20 +87,26 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	chatParams, err := anthropicToChatParams(raw)
 	if err != nil {
-		s.writeJSONError(w, http.StatusBadRequest,
-			"invalid messages request: "+err.Error(), "invalid_request_error", "invalid_json", 0)
+		s.writeAnthropicError(w, r, http.StatusBadRequest,
+			"invalid messages request: "+err.Error(), "invalid_json", 0)
 		return
 	}
 	normalized, err := convert.NormalizeRequest(chatParams, model)
 	if err != nil {
-		s.writeJSONError(w, http.StatusBadRequest,
-			"request body must be a valid JSON object: "+err.Error(), "invalid_request_error", "invalid_json", 0)
+		s.writeAnthropicError(w, r, http.StatusBadRequest,
+			"request body must be a valid JSON object: "+err.Error(), "invalid_json", 0)
 		return
+	}
+	inputTokens := 0
+	if s.tokenEstimator != nil {
+		if count, err := s.tokenEstimator.CountAnthropicRequest(raw); err == nil && count > 0 {
+			inputTokens = count
+		}
 	}
 	var relay relayFunc
 	if stream {
 		relay = func(ctx context.Context, w http.ResponseWriter, up io.Reader, stats *relayStats, chatStart time.Time) {
-			s.relayAnthropicStream(ctx, w, up, stats, chatStart, rawModel)
+			s.relayAnthropicStream(ctx, w, up, stats, chatStart, rawModel, inputTokens)
 		}
 	} else {
 		relay = func(ctx context.Context, w http.ResponseWriter, up io.Reader, stats *relayStats, chatStart time.Time) {
@@ -98,81 +116,67 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	s.chatCore(w, r, model, stream, normalized, convert.ExtractReasoningEffort(raw), "messages", relay)
 }
 
-// handleMessagesCountTokens answers POST /v1/messages/count_tokens with a
-// local estimate of the request's input tokens. The estimate mirrors the
-// FreeBuff upstream context estimator (o200k_base tokenization scaled by its
-// multiplier, per-message overhead, flat image cost, structured tool
-// counting) and is fully local: no session, quota, or upstream call. The
-// result is an estimate for context planning, not a provider-exact token
-// count — Anthropic documents its own count endpoint the same way.
 func (s *Server) handleMessagesCountTokens(w http.ResponseWriter, r *http.Request) {
+	version := "2023-06-01"
+	if reqVer := r.Header.Get("anthropic-version"); reqVer != "" {
+		version = reqVer
+	}
+	w.Header().Set("anthropic-version", version)
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			s.writeJSONError(w, http.StatusRequestEntityTooLarge,
-				"request body exceeds the 32MB limit", "invalid_request_error", "content_too_large", 0)
+			s.writeAnthropicError(w, r, http.StatusRequestEntityTooLarge,
+				"request body exceeds the 32MB limit", "content_too_large", 0)
 		} else {
-			s.writeJSONError(w, http.StatusBadRequest,
-				"failed to read request body: "+err.Error(), "invalid_request_error", "invalid_json", 0)
+			s.writeAnthropicError(w, r, http.StatusBadRequest,
+				"failed to read request body: "+err.Error(), "invalid_json", 0)
 		}
 		return
 	}
-	// Decode with UseNumber so integers in tool schemas round-trip
-	// byte-identically through CountJSON instead of losing precision as
-	// float64 (numbers > 2^53 would otherwise shift the estimate).
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var raw map[string]any
 	if err := dec.Decode(&raw); err != nil {
-		s.writeJSONError(w, http.StatusBadRequest,
-			"request body must be a valid JSON object", "invalid_request_error", "invalid_json", 0)
+		s.writeAnthropicError(w, r, http.StatusBadRequest,
+			"request body must be a valid JSON object", "invalid_json", 0)
 		return
 	}
-	// json.Decoder stops after the first value; reject trailing garbage the
-	// way json.Unmarshal would.
-	if err := dec.Decode(&json.RawMessage{}); !errors.Is(err, io.EOF) {
-		s.writeJSONError(w, http.StatusBadRequest,
-			"request body must be a valid JSON object", "invalid_request_error", "invalid_json", 0)
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		s.writeAnthropicError(w, r, http.StatusBadRequest,
+			"request body must be a valid JSON object", "invalid_json", 0)
 		return
 	}
 	rawModel, _ := raw["model"].(string)
 	if rawModel == "" {
-		s.writeJSONError(w, http.StatusBadRequest,
+		s.writeAnthropicError(w, r, http.StatusBadRequest,
 			"missing required field \"model\"; available: "+strings.Join(s.reg.Models(), ", "),
-			"invalid_request_error", "model_not_found", 0)
+			"model_not_found", 0)
 		return
 	}
-	// Reject unknown models the way the chat path does (registry
-	// ErrModelNotFound → 400 model_not_found) without acquiring a session
-	// or touching upstream.
-	if _, err := s.reg.AgentForModel(rawModel); err != nil {
-		s.writeJSONError(w, http.StatusBadRequest,
-			err.Error()+"; available: "+strings.Join(s.reg.Models(), ", "),
-			"invalid_request_error", "model_not_found", 0)
+	model := s.reg.ResolveModel(rawModel)
+	if !s.modelAllowed(model) {
+		s.writeAnthropicError(w, r, http.StatusBadRequest,
+			"model not allowed by MODELS_ALLOW", "model_not_found", 0)
 		return
 	}
 	if s.tokenEstimator == nil {
-		s.writeJSONError(w, http.StatusInternalServerError,
-			"token estimator unavailable", "server_error", "estimator_unavailable", 0)
+		s.writeAnthropicError(w, r, http.StatusServiceUnavailable, "token estimation unavailable", "upstream_unavailable", 0)
 		return
 	}
 	count, err := s.tokenEstimator.CountAnthropicRequest(raw)
 	if err != nil {
-		// Document blocks get their own code: the body is valid JSON, so
-		// invalid_json would mislead clients that key on the code.
-		if errors.Is(err, tokenestimate.ErrDocument) {
-			s.writeJSONError(w, http.StatusBadRequest,
-				err.Error(), "invalid_request_error", "unsupported_content", 0)
-			return
+		code := "invalid_request_error"
+		if errors.Is(err, tokenestimate.ErrDocument) || strings.Contains(err.Error(), "document") {
+			code = "unsupported_content"
 		}
-		s.writeJSONError(w, http.StatusBadRequest,
-			"invalid messages request: "+err.Error(), "invalid_request_error", "invalid_json", 0)
+		s.writeAnthropicError(w, r, http.StatusBadRequest, err.Error(), code, 0)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{"input_tokens": count})
 }
 
@@ -201,7 +205,11 @@ func anthropicToChatParams(raw map[string]any) ([]byte, error) {
 	if stops, ok := anthropicStopSequencesToOpenAI(raw["stop_sequences"]); ok {
 		chat["stop"] = stops
 	}
-	if v, ok := raw["user"]; ok && v != nil {
+	if meta, ok := raw["metadata"].(map[string]any); ok && meta != nil {
+		if uid, ok := meta["user_id"].(string); ok && uid != "" {
+			chat["user"] = uid
+		}
+	} else if v, ok := raw["user"]; ok && v != nil {
 		chat["user"] = v
 	}
 	if effort, ok := anthropicThinkingToEffort(raw["thinking"]); ok {
@@ -372,6 +380,10 @@ func anthropicAssistantToOpenAI(msg map[string]any) []any {
 			if strings.TrimSpace(text) != "" {
 				reasoning = append(reasoning, text)
 			}
+		case "redacted_thinking":
+			if data, ok := part["data"].(string); ok && data != "" {
+				reasoning = append(reasoning, "[redacted_thinking: "+data+"]")
+			}
 		case "tool_use", "server_tool_use":
 			id := sanitizeToolID(stringValue(part["id"]))
 			toolCalls = append(toolCalls, map[string]any{
@@ -414,10 +426,18 @@ func anthropicToolResultToOpenAI(part map[string]any) map[string]any {
 	if toolUseID == "" {
 		return nil
 	}
+	content := anthropicToolResultContent(part["content"])
+	if isErr, ok := part["is_error"].(bool); ok && isErr {
+		if content == "" {
+			content = "Error: tool execution failed"
+		} else if !strings.HasPrefix(content, "Error:") && !strings.HasPrefix(content, "error:") {
+			content = "Error: " + content
+		}
+	}
 	return map[string]any{
 		"role":         "tool",
 		"tool_call_id": sanitizeToolID(toolUseID),
-		"content":      anthropicToolResultContent(part["content"]),
+		"content":      content,
 	}
 }
 
@@ -696,19 +716,21 @@ type anthropicToolState struct {
 }
 
 type anthropicStreamState struct {
-	messageID       string
-	model           string
-	thinkingStarted bool
-	thinkingIndex   int
-	thinkingClosed  bool
-	textStarted     bool
-	textIndex       int
-	textClosed      bool
-	nextBlockIdx    int
-	toolCalls       map[int]*anthropicToolState
-	finishReason    string
-	sawToolCall     bool
-	usage           map[string]any
+	messageID          string
+	model              string
+	inputTokens        int
+	thinkingStarted    bool
+	thinkingIndex      int
+	thinkingClosed     bool
+	textStarted        bool
+	textIndex          int
+	textClosed         bool
+	nextBlockIdx       int
+	toolCalls          map[int]*anthropicToolState
+	endTurnCallIndexes map[int]bool
+	finishReason       string
+	sawToolCall        bool
+	usage              map[string]any
 
 	thinkingParts []string
 	textParts     []string
@@ -720,7 +742,7 @@ type anthropicStreamState struct {
 // Anthropic message events: message_start, content_block_start (thinking/
 // text/tool_use), thinking_delta, text_delta, input_json_delta,
 // signature_delta, content_block_stop, message_delta, message_stop.
-func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter, r io.Reader, stats *relayStats, chatStart time.Time, requestedModel string) {
+func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter, r io.Reader, stats *relayStats, chatStart time.Time, requestedModel string, inputTokens int) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -734,10 +756,12 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 	flusher.Flush()
 
 	st := &anthropicStreamState{
-		messageID:    "msg_" + randHexString(10),
-		model:        requestedModel,
-		toolCalls:    make(map[int]*anthropicToolState),
-		finishReason: "end_turn",
+		messageID:          "msg_" + randHexString(10),
+		model:              requestedModel,
+		inputTokens:        inputTokens,
+		toolCalls:          make(map[int]*anthropicToolState),
+		endTurnCallIndexes: make(map[int]bool),
+		finishReason:       "end_turn",
 	}
 	// Streaming XML tool-call extraction: MiMo/Hermes/Qwen/CodeBuff models
 	// emit <tool_call>/<codebuff_tool_call>/<function_call> blocks inline in
@@ -769,7 +793,7 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 			return
 		case <-keepalive.C:
 			if time.Since(relayed) >= keepaliveInterval {
-				_, _ = io.WriteString(w, ": keepalive\n\n")
+				_, _ = io.WriteString(w, "event: ping\ndata: {\"type\": \"ping\"}\n\n")
 				relayed = time.Now()
 				flusher.Flush()
 			}
@@ -778,7 +802,13 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 				if ctx.Err() == nil {
 					s.logger.Warn("anthropic upstream stream error", "err", lc.err)
 					s.flushAnthropicXMLToolCalls(send, st, xmlExtractor, &xmlCallIndex)
-					s.finalizeAnthropicStream(send, st)
+					send(map[string]any{
+						"type": "error",
+						"error": map[string]any{
+							"type":    "api_error",
+							"message": "upstream stream error: " + lc.err.Error(),
+						},
+					})
 				}
 				return
 			}
@@ -821,6 +851,7 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 
 // sendAnthropicMessageStart emits the message_start event.
 func sendAnthropicMessageStart(send func(map[string]any), st *anthropicStreamState) {
+	inTokens := st.inputTokens
 	send(map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
@@ -831,9 +862,18 @@ func sendAnthropicMessageStart(send func(map[string]any), st *anthropicStreamSta
 			"content":       []any{},
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage":         map[string]any{"input_tokens": 0, "output_tokens": 0},
+			"usage":         map[string]any{"input_tokens": inTokens, "output_tokens": 0},
 		},
 	})
+}
+
+func (st *anthropicStreamState) closeOpenToolCalls(send func(map[string]any)) {
+	for _, ts := range st.toolCalls {
+		if ts.started && !ts.blockClosed {
+			send(map[string]any{"type": "content_block_stop", "index": ts.index})
+			ts.blockClosed = true
+		}
+	}
 }
 
 // accumulateAnthropicChunk translates one upstream chat chunk into
@@ -877,7 +917,6 @@ func (s *Server) accumulateAnthropicChunk(send func(map[string]any), st *anthrop
 	// Tool-call fragments → tool_use blocks.
 	if tcs, ok := delta["tool_calls"].([]any); ok && len(tcs) > 0 {
 		st.closeText(send)
-		st.sawToolCall = true
 		for _, raw := range tcs {
 			tc, ok := raw.(map[string]any)
 			if !ok {
@@ -887,6 +926,19 @@ func (s *Server) accumulateAnthropicChunk(send func(map[string]any), st *anthrop
 			if i, ok := numFloat64(tc["index"]); ok {
 				upIdx = int(i)
 			}
+			fn, _ := tc["function"].(map[string]any)
+			name := ""
+			if fn != nil {
+				name, _ = fn["name"].(string)
+			}
+			if name == "end_turn" {
+				st.endTurnCallIndexes[upIdx] = true
+				continue
+			}
+			if st.endTurnCallIndexes[upIdx] {
+				continue
+			}
+			st.sawToolCall = true
 			ts := st.toolState(upIdx)
 			if id, ok := tc["id"].(string); ok && id != "" {
 				ts.id = id
@@ -902,21 +954,19 @@ func (s *Server) accumulateAnthropicChunk(send func(map[string]any), st *anthrop
 					}
 				}
 			}
-			fn, _ := tc["function"].(map[string]any)
-			if fn == nil {
-				continue
-			}
-			if name, ok := fn["name"].(string); ok && name != "" && ts.name == "" {
+			if name != "" && ts.name == "" {
 				ts.name = name
 				ts.ensureStarted(send)
 			}
 			if args, ok := fn["arguments"].(string); ok && args != "" {
-				ts.ensureStarted(send)
-				send(map[string]any{
-					"type":  "content_block_delta",
-					"index": ts.index,
-					"delta": map[string]any{"type": "input_json_delta", "partial_json": args},
-				})
+				if ts.name != "" {
+					ts.ensureStarted(send)
+					send(map[string]any{
+						"type":  "content_block_delta",
+						"index": ts.index,
+						"delta": map[string]any{"type": "input_json_delta", "partial_json": args},
+					})
+				}
 			}
 		}
 	}
@@ -946,7 +996,15 @@ func (s *Server) finalizeAnthropicStream(send func(map[string]any), st *anthropi
 	}
 	usagePayload := map[string]any{"output_tokens": 0}
 	if st.usage != nil {
-		usagePayload = st.usage
+		if outToks, ok := intOf(st.usage["output_tokens"]); ok {
+			usagePayload["output_tokens"] = outToks
+		}
+		if cr, ok := intOf(st.usage["cache_read_input_tokens"]); ok && cr > 0 {
+			usagePayload["cache_read_input_tokens"] = cr
+		}
+		if cc, ok := intOf(st.usage["cache_creation_input_tokens"]); ok && cc > 0 {
+			usagePayload["cache_creation_input_tokens"] = cc
+		}
 	}
 	send(map[string]any{
 		"type": "message_delta",
@@ -957,7 +1015,6 @@ func (s *Server) finalizeAnthropicStream(send func(map[string]any), st *anthropi
 		"usage": usagePayload,
 	})
 	send(map[string]any{"type": "message_stop"})
-
 	if s.reasoningCache != nil && len(st.thinkingParts) > 0 {
 		thinking := strings.Join(st.thinkingParts, "")
 		if thinking != "" {
@@ -1008,6 +1065,7 @@ func (st *anthropicStreamState) ensureText(send func(map[string]any)) {
 		return
 	}
 	st.closeThinking(send)
+	st.closeOpenToolCalls(send)
 	st.textIndex = st.nextBlockIdx
 	st.nextBlockIdx++
 	st.textStarted = true
@@ -1287,7 +1345,7 @@ func anthropicMessageFromCompletion(completion map[string]any, requestedModel st
 			if msg != nil {
 				content := []any{}
 				if rc, ok := msg["reasoning_content"].(string); ok && rc != "" {
-					content = append(content, map[string]any{"type": "thinking", "thinking": rc})
+					content = append(content, map[string]any{"type": "thinking", "thinking": rc, "signature": ""})
 				}
 				if text, ok := msg["content"].(string); ok && text != "" {
 					content = append(content, map[string]any{"type": "text", "text": text})
@@ -1300,6 +1358,9 @@ func anthropicMessageFromCompletion(completion map[string]any, requestedModel st
 						}
 						fn, _ := tc["function"].(map[string]any)
 						name, _ := fn["name"].(string)
+						if name == "end_turn" {
+							continue // strip proxy-injected end_turn pseudo tool
+						}
 						args, _ := fn["arguments"].(string)
 						toolID, _ := tc["id"].(string)
 						if toolID == "" {
@@ -1323,9 +1384,22 @@ func anthropicMessageFromCompletion(completion map[string]any, requestedModel st
 	}
 	if message["stop_reason"] == "end_turn" && hasToolCall {
 		message["stop_reason"] = "tool_use"
+	} else if !hasToolCall && message["stop_reason"] == "tool_use" {
+		message["stop_reason"] = "end_turn"
 	}
 	if usage, ok := completion["usage"].(map[string]any); ok {
 		message["usage"] = openAIUsageToAnthropic(usage)
+	}
+	uMap, _ := message["usage"].(map[string]any)
+	if uMap == nil {
+		uMap = map[string]any{"input_tokens": 0, "output_tokens": 0}
+		message["usage"] = uMap
+	}
+	if _, ok := uMap["input_tokens"]; !ok {
+		uMap["input_tokens"] = 0
+	}
+	if _, ok := uMap["output_tokens"]; !ok {
+		uMap["output_tokens"] = 0
 	}
 	return message
 }

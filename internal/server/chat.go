@@ -190,9 +190,15 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 	var err error
 	if bridge {
 		if tok == "" {
-			s.writeJSONError(w, http.StatusUnauthorized,
-				"bridge mode: send your FreeBuff token as Authorization: Bearer <token> (no AUTH_TOKENS configured on the proxy)",
-				"invalid_request_error", "missing_bearer_token", 0)
+			if isAnthropicRequest(r) {
+				s.writeAnthropicError(w, r, http.StatusUnauthorized,
+					"bridge mode: send your FreeBuff token in Authorization: Bearer <token>, x-api-key, or anthropic-api-key",
+					"missing_bearer_token", 0)
+			} else {
+				s.writeJSONError(w, http.StatusUnauthorized,
+					"bridge mode: send your FreeBuff token as Authorization: Bearer <token> (no AUTH_TOKENS configured on the proxy)",
+					"invalid_request_error", "missing_bearer_token", 0)
+			}
 			return
 		}
 		up, lease, err = s.chatAttempt(ctx, model, normalized, st,
