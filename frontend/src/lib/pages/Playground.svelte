@@ -1,11 +1,13 @@
 <script>
   import { onMount } from 'svelte';
-  import { Play, Brain } from '@lucide/svelte';
+  import { Play, Brain, XCircle, Wifi, WifiOff, Zap, Clock } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import Alert from '../components/Alert.svelte';
   import CopyButton from '../components/CopyButton.svelte';
+  import StatusBadge from '../components/StatusBadge.svelte';
   import { fetchAPI } from '../utils/api.js';
 
+  // State
   let models = $state([]);
   let selectedModel = $state('');
   let prompt = $state('');
@@ -16,11 +18,35 @@
   let modelsError = $state('');
   let abortController = null;
 
+  // New: connection, metrics, context
+  let connected = $state(false);
+  let messageCount = $state(0);
+  let latencyMs = $state(0);
+  let tokenCount = $state(0);
+  let sendStartTime = $state(0);
+  let lastResponseModel = $state('');
+  let responseStatus = $state('idle'); // 'idle' | 'streaming' | 'success' | 'error'
+
+  // Derived: connection status
+  let connectionLabel = $derived(connected ? 'Connected' : 'Disconnected');
+  let connectionHost = $derived(window.location.hostname || 'localhost');
+  let responseLatency = $derived(latencyMs > 0 ? `${latencyMs}ms` : '--');
+  let responseModel = $derived(lastResponseModel || selectedModel || '--');
+  let tokenDisplay = $derived(tokenCount > 0 ? tokenCount.toString() : '--');
+
+  // Context badges: derive model short name
+  let modelShort = $derived.by(() => {
+    if (!selectedModel) return '';
+    const parts = selectedModel.split('/');
+    return parts.length > 1 ? parts[parts.length - 1] : selectedModel;
+  });
+
   async function fetchModels() {
     try {
       const data = await fetchAPI('/admin/api/models');
       models = data.models.map(m => m.id);
       modelsError = '';
+      connected = true;
       if (models.length > 0 && !selectedModel) {
         const preferred = models.find(m => m === 'deepseek/deepseek-v4-flash') ||
                           models.find(m => m.includes('deepseek-v4-flash')) ||
@@ -29,6 +55,7 @@
       }
     } catch {
       modelsError = "Couldn't load the model list. Check the server connection and retry, or refresh the page.";
+      connected = false;
     }
   }
 
@@ -40,6 +67,9 @@
     output = '';
     reasoning = '';
     errorMsg = '';
+    responseStatus = 'streaming';
+    sendStartTime = performance.now();
+    messageCount += 1;
 
     abortController = new AbortController();
 
@@ -54,10 +84,12 @@
       if (!res.ok) {
         const errText = await res.text();
         errorMsg = `HTTP ${res.status}: ${errText}`;
+        responseStatus = 'error';
         streaming = false;
         return;
       }
 
+      lastResponseModel = selectedModel;
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
@@ -83,13 +115,28 @@
                 if (delta.reasoning_content) reasoning += delta.reasoning_content;
                 if (delta.content) output += delta.content;
               }
+              // Track usage if present
+              if (obj.usage) {
+                tokenCount = obj.usage.total_tokens || 0;
+              }
             } catch { /* buffered partial */ }
           }
         }
       }
+
+      latencyMs = Math.round(performance.now() - sendStartTime);
+      // Estimate token count from output length if no usage reported
+      if (tokenCount === 0 && output.length > 0) {
+        tokenCount = Math.ceil(output.length / 4);
+      }
+      responseStatus = output.length > 0 ? 'success' : 'idle';
     } catch (err) {
       if (err.name !== 'AbortError') {
         errorMsg = `Stream failed: ${err.message}`;
+        responseStatus = 'error';
+        latencyMs = Math.round(performance.now() - sendStartTime);
+      } else {
+        responseStatus = 'idle';
       }
     } finally {
       streaming = false;
@@ -109,6 +156,10 @@
     output = '';
     reasoning = '';
     errorMsg = '';
+    responseStatus = 'idle';
+    latencyMs = 0;
+    tokenCount = 0;
+    lastResponseModel = '';
   }
 
   function cancelStream() {
@@ -116,6 +167,7 @@
       abortController.abort();
       abortController = null;
       streaming = false;
+      responseStatus = output.length > 0 ? 'success' : 'idle';
     }
   }
 
@@ -125,7 +177,61 @@
 <div class="space-y-6 page-enter">
   <PageHeader title="Model Playground" subtitle="Interactive prompt console with live SSE streaming and reasoning inspection" />
 
-  <!-- Prompt Form -->
+  <!-- A→B→C→D: Connection Status -->
+  <div class="fp-card p-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      {#if connected}
+        <StatusBadge variant="teal">
+          <Wifi size={12} />
+          <span>{connectionLabel}</span>
+        </StatusBadge>
+      {:else}
+        <StatusBadge variant="red">
+          <WifiOff size={12} />
+          <span>{connectionLabel}</span>
+        </StatusBadge>
+      {/if}
+      {#if models.length > 0}
+        <span class="text-xs text-[var(--fp-dim)] font-mono">{models.length} model{models.length !== 1 ? 's' : ''} available</span>
+      {/if}
+    </div>
+    <span class="text-xs text-[var(--fp-dim)]">Connected to proxy at {connectionHost}</span>
+  </div>
+
+  <!-- A→B→C→D: Context Badges -->
+  <div class="flex flex-wrap items-center gap-2">
+    {#if modelShort}
+      <StatusBadge variant="blue" mono>
+        <Zap size={11} />
+        <span>{modelShort}</span>
+      </StatusBadge>
+    {/if}
+    {#if streaming}
+      <StatusBadge variant="amber">
+        <span class="w-1.5 h-1.5 rounded-full bg-[var(--fp-amber)] animate-pulse"></span>
+        <span>Streaming</span>
+      </StatusBadge>
+    {:else if responseStatus === 'success'}
+      <StatusBadge variant="teal">
+        <span>Ready</span>
+      </StatusBadge>
+    {:else if responseStatus === 'error'}
+      <StatusBadge variant="red">
+        <span>Error</span>
+      </StatusBadge>
+    {:else}
+      <StatusBadge variant="muted">
+        <span>Idle</span>
+      </StatusBadge>
+    {/if}
+    {#if messageCount > 0}
+      <StatusBadge variant="muted" mono>
+        <span>Messages: {messageCount}</span>
+      </StatusBadge>
+    {/if}
+  </div>
+
+  <!-- A→B→C→D: Prompt Form (Chat Area) -->
   <div class="fp-card p-5 space-y-4">
     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
       <div class="flex items-center gap-2">
@@ -146,7 +252,10 @@
           {/if}
         </div>
       </div>
-      <span class="text-xs text-[var(--fp-dim)] font-mono">Press Ctrl+Enter to send</span>
+      <div class="flex items-center gap-3 text-xs text-[var(--fp-dim)] font-mono">
+        <span>Messages: {messageCount}</span>
+        <span>Press Ctrl+Enter to send</span>
+      </div>
     </div>
 
     <label for="pg-prompt" class="sr-only">Prompt</label>
@@ -159,29 +268,40 @@
       class="fp-input fp-input-mono text-sm p-3"
     ></textarea>
 
-    <div class="flex items-center justify-end gap-2">
-      <button type="button" onclick={clearAll} class="fp-btn-secondary">Clear</button>
-      {#if streaming}
-        <button type="button" onclick={cancelStream} class="fp-btn-danger">
-          <span class="w-2 h-2 rounded-full bg-[var(--fp-red)]"></span>
-          <span>Cancel</span>
+    <!-- Actions: Cancel, Clear, Copy, Send -->
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-xs text-[var(--fp-dim)]">Test chat completions through the proxy</span>
+      <div class="flex items-center gap-2">
+        {#if output}
+          <CopyButton text={output} variant="labeled" label="Copy Response" />
+        {/if}
+        <button type="button" onclick={clearAll} class="fp-btn-secondary">Clear</button>
+        {#if streaming}
+          <button type="button" onclick={cancelStream} class="fp-btn-danger">
+            <XCircle size={14} />
+            <span>Cancel</span>
+          </button>
+        {/if}
+        <button
+          type="button"
+          onclick={sendPrompt}
+          disabled={streaming || !prompt.trim() || !selectedModel}
+          class="fp-btn-primary"
+        >
+          <Play size={16} />
+          <span>{streaming ? 'Streaming...' : 'Send Prompt'}</span>
         </button>
-      {/if}
-      <button
-        type="button"
-        onclick={sendPrompt}
-        disabled={streaming || !prompt.trim() || !selectedModel}
-        class="fp-btn-primary"
-      >
-        <Play size={16} />
-        <span>{streaming ? 'Streaming...' : 'Send Prompt'}</span>
-      </button>
+      </div>
     </div>
   </div>
 
-  <!-- Error -->
-  <Alert variant="error" message={modelsError} dismissable={true} ondismiss={() => (modelsError = '')} />
-  <Alert variant="error" message={errorMsg} dismissable={false} />
+  <!-- Errors -->
+  {#if modelsError}
+    <Alert variant="error" message={modelsError} dismissable={true} ondismiss={() => (modelsError = '')} />
+  {/if}
+  {#if errorMsg}
+    <Alert variant="error" message={errorMsg} dismissable={false} />
+  {/if}
 
   <!-- Reasoning -->
   {#if reasoning}
@@ -199,22 +319,45 @@
     </details>
   {/if}
 
-  <!-- Output -->
+  <!-- A→B→C→D: Response / Output -->
   <div class="fp-card p-5 min-h-[160px]">
+    <!-- A: Status badge + B: Metadata row -->
     <div class="text-xs font-semibold text-[var(--fp-dim)] uppercase tracking-wider mb-2 flex items-center justify-between">
-      <span>Output Stream</span>
       <div class="flex items-center gap-2">
+        <span>Output Stream</span>
         {#if streaming}
-          <span class="text-[var(--fp-teal)] flex items-center gap-1">
-            <span class="w-2 h-2 rounded-full bg-[var(--fp-teal)] animate-pulse"></span>
-            Streaming...
+          <StatusBadge variant="amber">
+            <span class="w-1.5 h-1.5 rounded-full bg-[var(--fp-amber)] animate-pulse"></span>
+            <span>Streaming</span>
+          </StatusBadge>
+        {:else if responseStatus === 'success'}
+          <StatusBadge variant="teal">Success</StatusBadge>
+        {:else if responseStatus === 'error'}
+          <StatusBadge variant="red">Error</StatusBadge>
+        {/if}
+      </div>
+
+      <!-- B: Response metadata -->
+      <div class="flex items-center gap-3 text-[var(--fp-dim)]">
+        {#if latencyMs > 0}
+          <span class="flex items-center gap-1">
+            <Clock size={11} />
+            <span>{responseLatency}</span>
           </span>
         {/if}
-        {#if output && !streaming}
-          <CopyButton text={output} variant="inline" label="Copy" />
+        {#if lastResponseModel}
+          <span class="font-mono">{responseModel}</span>
+        {/if}
+        {#if tokenCount > 0}
+          <span class="font-mono">{tokenDisplay} tokens</span>
         {/if}
       </div>
     </div>
+
+    <!-- D: Help text -->
+    <p class="text-[10px] text-[var(--fp-dim)] mb-3">Streaming responses shown in real-time</p>
+
+    <!-- Output content -->
     <div class="text-sm font-mono text-[var(--fp-text)] whitespace-pre-wrap leading-relaxed">
       {#if output}
         {output}
@@ -222,5 +365,13 @@
         <span class="text-[var(--fp-dim)]">// Model response will stream here in real-time...</span>
       {/if}
     </div>
+
+    <!-- C: Copy response (bottom) -->
+    {#if output && !streaming}
+      <div class="mt-4 pt-3 border-t border-[var(--fp-border)] flex items-center justify-between">
+        <span class="text-[10px] text-[var(--fp-dim)]">{output.length} chars</span>
+        <CopyButton text={output} variant="labeled" label="Copy Response" />
+      </div>
+    {/if}
   </div>
 </div>

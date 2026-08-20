@@ -8,6 +8,7 @@
   import StatusBadge from '../components/StatusBadge.svelte';
   import Alert from '../components/Alert.svelte';
   import EmptyState from '../components/EmptyState.svelte';
+  import CopyButton from '../components/CopyButton.svelte';
   import { fetchAPI } from '../utils/api.js';
   import { generateRandomApiKey, generateRandomAdminToken } from '../utils/format.js';
   import { copyToClipboard } from '../utils/clipboard.js';
@@ -21,6 +22,48 @@
   let saveResult = $state(null);
   let originalContent = $state('');
   let hasUnsavedChanges = $derived(envContent !== originalContent);
+
+  // Validation: live-parsed from envContent
+  let validationErrors = $derived.by(() => {
+    const errors = [];
+    const lines = envContent.split('\n');
+    const seenKeys = new Set();
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line || line.startsWith('#')) continue;
+      const eqIdx = line.indexOf('=');
+      if (eqIdx === -1) { errors.push(`Line ${i + 1}: Missing '=' separator`); continue; }
+      const key = line.substring(0, eqIdx).trim();
+      if (!key) { errors.push(`Line ${i + 1}: Empty key name`); continue; }
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) errors.push(`Line ${i + 1}: Invalid key "${key}" (use A-Z, a-z, 0-9, _)`);
+      if (seenKeys.has(key)) errors.push(`Line ${i + 1}: Duplicate key "${key}"`);
+      seenKeys.add(key);
+    }
+    return errors;
+  });
+  let envValid = $derived(validationErrors.length === 0 && envContent.trim().length > 0);
+  let lastSavedTime = $state(null);
+
+  let changedKeysCount = $derived.by(() => {
+    const parseKeys = (c) => c.split('\n')
+      .filter(l => l.trim() && !l.trim().startsWith('#') && l.includes('='))
+      .map(l => l.split('=')[0].trim());
+    const origKeys = new Set(parseKeys(originalContent));
+    const curKeys = parseKeys(envContent);
+    let count = 0;
+    for (const key of curKeys) {
+      const regex = new RegExp(`^\\s*${key}=(.*)$`, 'm');
+      const o = originalContent.match(regex)?.[1]?.trim();
+      const c = envContent.match(regex)?.[1]?.trim();
+      if (o !== c) count++;
+    }
+    for (const key of origKeys) {
+      if (!curKeys.includes(key)) count++;
+    }
+    return count;
+  });
+  let lineCount = $derived.by(() => envContent.split('\n').filter(l => l.trim()).length);
+  let keyCount = $derived.by(() => envContent.split('\n').filter(l => l.trim() && !l.trim().startsWith('#') && l.includes('=')).length);
 
   let searchQuery = $state('');
   let selectedSettingKey = $state('SAFE_MODE');
@@ -321,7 +364,10 @@
         ok: res.ok && result.ok,
         message: result.message || (res.ok ? 'Configuration saved and reloaded.' : 'Save failed'),
       };
-      if (saveResult.ok) fetchData();
+      if (saveResult.ok) {
+        lastSavedTime = new Date();
+        fetchData();
+      }
     } catch (e) {
       saveResult = { ok: false, message: e.message || 'Network error saving configuration' };
     } finally {
@@ -346,7 +392,7 @@
   }
 
   // Filtered settings for quick inspector
-  let filteredSettings = $derived(() => {
+  let filteredSettings = $derived.by(() => {
     const list = data?.effective || [];
     if (!searchQuery.trim()) return list;
     const q = searchQuery.toLowerCase().trim();
@@ -450,7 +496,7 @@
           <div>
             <div class="text-xs font-bold text-white group-hover:text-[var(--fp-amber)] transition-colors flex items-center gap-1.5">
               {#if preset.icon}
-                <svelte:component this={preset.icon} size={13} class="text-[var(--fp-amber)] shrink-0" />
+                <preset.icon size={13} class="text-[var(--fp-amber)] shrink-0" />
               {/if}
               <span>{preset.label}</span>
             </div>
@@ -681,22 +727,54 @@
     </div>
 
     <!-- Right: Live Synchronized .env Editor (5 cols) -->
-    <div class="lg:col-span-5 flex flex-col">
+    <div class="lg:col-span-5 flex flex-col space-y-4">
+      <!-- Config Status Bar -->
+      <div class="fp-card p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2.5">
+            <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold
+              {envValid ? 'bg-[var(--fp-teal)]/15 text-[var(--fp-teal)] border border-[var(--fp-teal)]/30' : 'bg-[var(--fp-red)]/15 text-[var(--fp-red)] border border-[var(--fp-red)]/30'}">
+              <span class="w-1.5 h-1.5 rounded-full {envValid ? 'bg-[var(--fp-teal)]' : 'bg-[var(--fp-red)]'}"></span>
+              {envValid ? 'Valid' : 'Invalid'}
+            </div>
+            {#if hasUnsavedChanges}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[var(--fp-amber)]/15 text-[var(--fp-amber)] border border-[var(--fp-amber)]/30">
+                <span class="w-1 h-1 rounded-full bg-[var(--fp-amber)]"></span>
+                {changedKeysCount} changed
+              </span>
+            {/if}
+          </div>
+          <div class="flex items-center gap-3 text-[11px] text-[var(--fp-muted)]">
+            {#if lastSavedTime}
+              <span>Saved {lastSavedTime.toLocaleTimeString()}</span>
+            {/if}
+            <button
+              type="button"
+              onclick={fetchData}
+              class="fp-btn-secondary text-[11px] py-1 px-2 flex items-center gap-1"
+            >
+              <RefreshCw size={12} />
+              Reload
+            </button>
+          </div>
+        </div>
+        <p class="text-[11px] text-[var(--fp-dim)]">
+          {#if envValid && !hasUnsavedChanges}
+            Configuration is valid and in sync with disk.
+          {:else if envValid && hasUnsavedChanges}
+            Configuration is valid. {changedKeysCount} key{changedKeysCount === 1 ? '' : 's'} need{changedKeysCount === 1 ? 's' : ''} to be saved.
+          {:else}
+            {validationErrors.length} validation error{validationErrors.length === 1 ? '' : 's'} need{validationErrors.length === 1 ? 's' : ''} attention.
+          {/if}
+        </p>
+      </div>
+
+      <!-- .env Editor -->
       <div class="fp-card p-4 flex-1 flex flex-col space-y-3">
         <div class="flex items-center justify-between border-b border-[var(--fp-border)] pb-3">
           <div>
             <h2 class="text-base font-semibold text-white">.env Editor</h2>
-            <p class="text-xs text-[var(--fp-muted)] mt-0.5">Live file synced with quick knobs above. (<kbd class="px-1 py-0.5 rounded bg-[var(--fp-surface-3)] text-[10px] font-mono text-[var(--fp-dim)]">Ctrl+S</kbd> to save)</p>
-          </div>
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              onclick={() => envContent = originalContent}
-              disabled={!hasUnsavedChanges}
-              class="fp-btn-secondary text-[11px]"
-            >
-              Reset
-            </button>
+            <p class="text-xs text-[var(--fp-muted)] mt-0.5">Live file synced with quick knobs above.</p>
           </div>
         </div>
 
@@ -706,36 +784,101 @@
             rows="22"
             spellcheck="false"
             required
-            class="fp-input fp-input-mono flex-1 text-xs leading-relaxed p-3.5 font-mono focus-visible:ring-2 focus-visible:ring-[var(--fp-amber)]"
+            class="fp-input fp-input-mono flex-1 text-xs leading-relaxed p-3.5 font-mono focus-visible:ring-2 focus-visible:ring-[var(--fp-amber)] transition-colors
+              {validationErrors.length > 0 ? 'border-[var(--fp-red)]/50 focus-visible:ring-[var(--fp-red)]' : envValid ? 'border-[var(--fp-teal)]/30' : ''}"
             placeholder="# Configuration variables..."
           ></textarea>
 
-          <div class="flex items-center justify-between pt-1">
-            <span class="text-xs font-mono text-[var(--fp-dim)]">
-              {#if envContent === '' && hasUnsavedChanges}
-                <span class="text-[var(--fp-red)] font-semibold">● Editor is empty, not saved</span>
-              {:else if hasUnsavedChanges}
-                <span class="text-[var(--fp-red)] font-semibold">● Unsaved changes</span>
-              {:else}
-                <span class="text-[var(--fp-teal)]">✓ In sync with disk</span>
-              {/if}
-            </span>
-
-            <button
-              type="submit"
-              disabled={saving || !hasUnsavedChanges}
-              class="fp-btn-primary"
-            >
-              {#if saving}
-                <RefreshCw size={15} class="animate-spin" />
-                <span>Saving...</span>
-              {:else}
-                <Save size={15} />
-                <span>Save & Reload</span>
-              {/if}
-            </button>
+          <!-- Editor footer: counts + validation errors + actions -->
+          <div class="space-y-2">
+            {#if validationErrors.length > 0}
+              <div class="p-2.5 rounded-lg bg-[var(--fp-red)]/8 border border-[var(--fp-red)]/20 space-y-1">
+                <p class="text-[11px] font-semibold text-[var(--fp-red)]">
+                  {validationErrors.length} validation error{validationErrors.length === 1 ? '' : 's'}:
+                </p>
+                {#each validationErrors.slice(0, 5) as err}
+                  <p class="text-[10px] text-[var(--fp-red)]/80 font-mono">{err}</p>
+                {/each}
+                {#if validationErrors.length > 5}
+                  <p class="text-[10px] text-[var(--fp-dim)]">... and {validationErrors.length - 5} more</p>
+                {/if}
+              </div>
+            {/if}
+            <div class="flex items-center justify-between pt-1">
+              <div class="flex items-center gap-3 text-[11px] text-[var(--fp-dim)] font-mono">
+                <span>{lineCount} lines</span>
+                <span class="text-[var(--fp-border)]">|</span>
+                <span>{keyCount} keys</span>
+                {#if hasUnsavedChanges}
+                  <span class="text-[var(--fp-border)]">|</span>
+                  <span class="text-[var(--fp-amber)] font-semibold">unsaved</span>
+                {/if}
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  onclick={() => envContent = originalContent}
+                  disabled={!hasUnsavedChanges}
+                  class="fp-btn-secondary text-[11px] py-1.5 px-2.5 flex items-center gap-1"
+                >
+                  <X size={12} />
+                  Reset to .env
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving || !hasUnsavedChanges}
+                  class="fp-btn-primary"
+                >
+                  {#if saving}
+                    <RefreshCw size={15} class="animate-spin" />
+                    <span>Saving...</span>
+                  {:else}
+                    <Save size={15} />
+                    <span>Save & Reload</span>
+                  {/if}
+                </button>
+              </div>
+            </div>
           </div>
         </form>
+        <p class="text-[11px] text-[var(--fp-dim)] pt-1">Edit .env variables. Changes take effect after save. <kbd class="px-1 py-0.5 rounded bg-[var(--fp-surface-3)] text-[10px] font-mono text-[var(--fp-dim)]">Ctrl+S</kbd></p>
+      </div>
+
+      <!-- Effective Config Section -->
+      <div class="fp-card p-4 space-y-3">
+        <div class="flex items-center justify-between border-b border-[var(--fp-border)] pb-3">
+          <div>
+            <h2 class="text-base font-semibold text-white">Effective Configuration</h2>
+            <p class="text-xs text-[var(--fp-muted)] mt-0.5">Read-only view of the running configuration.</p>
+          </div>
+          <StatusBadge variant={data?.effective?.length ? 'teal' : 'amber'}>
+            {data?.effective?.length || 0} keys active
+          </StatusBadge>
+        </div>
+        {#if data?.effective?.length}
+          <div class="max-h-[320px] overflow-y-auto space-y-1">
+            {#each data.effective as kv}
+              <div class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg hover:bg-[var(--fp-surface-2)] transition-colors group">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="font-mono text-[11px] font-bold text-white truncate">{kv.key}</span>
+                  {#if kv.secret}
+                    <span class="text-[9px] px-1 py-0.5 rounded bg-rose-500/15 text-rose-400 font-semibold uppercase">secret</span>
+                  {/if}
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <span class="text-[11px] font-mono text-[var(--fp-muted)] truncate max-w-[200px]">
+                    {kv.secret ? '••••••••' : (kv.value || '—')}
+                  </span>
+                  <span class="opacity-0 group-hover:opacity-100 transition-opacity">
+                    <CopyButton text={kv.value || ''} variant="inline" label="copy" size={12} />
+                  </span>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <EmptyState icon={Info} message="No effective configuration loaded. Start the proxy to populate this view." />
+        {/if}
       </div>
     </div>
   </div>

@@ -1,10 +1,13 @@
 <script>
-  import { Shield, AlertTriangle, Play, RefreshCw, CheckCircle2, XCircle, Settings } from '@lucide/svelte';
+  import { Shield, AlertTriangle, Play, RefreshCw, CheckCircle2, XCircle, Settings, Activity, FileText, Terminal, BarChart3, Clock } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import Alert from '../components/Alert.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import CopyButton from '../components/CopyButton.svelte';
+  import ThresholdBar from '../components/ThresholdBar.svelte';
+  import PhaseTimeline from '../components/PhaseTimeline.svelte';
+  import StatCard from '../components/StatCard.svelte';
   import { fetchAPI, postAPI } from '../utils/api.js';
   import { usePolling } from '../utils/polling.js';
 
@@ -80,6 +83,29 @@
     if (data?.in_bridge) return 'blue';
     return 'amber';
   }
+
+  // --- Derived health stats ---
+  let totalRequests = $derived(data?.tokens?.reduce((s, t) => s + (t.requests || 0), 0) ?? 0);
+  let activeTokens = $derived(data?.tokens?.filter(t => t.active_runs > 0).length ?? 0);
+  let modelCount = $derived(data?.model_count ?? 0);
+
+  function overallHealth(tokens) {
+    if (!tokens || tokens.length === 0) return { badge: 'muted', label: 'no tokens' };
+    if (tokens.some(t => t.risk_level === 'critical' || t.risk_level === 'high')) return { badge: 'red', label: 'critical' };
+    if (tokens.some(t => t.risk_level === 'moderate')) return { badge: 'amber', label: 'moderate' };
+    return { badge: 'teal', label: 'all clear' };
+  }
+
+  let health = $derived(overallHealth(data?.tokens));
+
+  function formatCooldown(until) {
+    if (!until) return '';
+    const diff = new Date(until).getTime() - Date.now();
+    if (diff <= 0) return '';
+    const mins = Math.ceil(diff / 60000);
+    if (mins < 60) return `${mins}m`;
+    return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  }
 </script>
 
 <div class="space-y-6 page-enter">
@@ -106,6 +132,32 @@
           <div class="skeleton skeleton-card"></div>
         {/each}
       </div>
+    </div>
+  {/if}
+
+  <!-- Health Summary Row -->
+  {#if data && !loading}
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+      <StatCard
+        label="Health"
+        value={health.label}
+        description="Live proxy status"
+      />
+      <StatCard
+        label="Total Requests"
+        value={totalRequests.toLocaleString()}
+        description="All pooled token requests"
+      />
+      <StatCard
+        label="Active Tokens"
+        value={`${activeTokens} / ${data.tokens?.length ?? 0}`}
+        description="Tokens with running requests"
+      />
+      <StatCard
+        label="Uptime"
+        value={data.uptime}
+        description={`${modelCount} model${modelCount === 1 ? '' : 's'} registered`}
+      />
     </div>
   {/if}
 
@@ -166,12 +218,8 @@
           <span>Smoke test passed in {smokeResult.ms}ms via {smokeResult.token} ({smokeResult.model})</span>
         </div>
         {#if smokeResult.phases?.length > 0}
-          <div class="flex flex-wrap gap-2 mt-2">
-            {#each smokeResult.phases as phase}
-              <span class="px-2 py-0.5 rounded fp-inset text-xs font-mono text-[var(--fp-muted)]">
-                {phase.name}: <strong class="text-white tabular-nums">{phase.ms}ms</strong>
-              </span>
-            {/each}
+          <div class="mt-3">
+            <PhaseTimeline phases={smokeResult.phases.map(p => ({ ...p, color: p.color || undefined }))} totalMs={smokeResult.ms} />
           </div>
         {/if}
         {#if smokeResult.preview}
@@ -185,6 +233,10 @@
         <XCircle size={16} />
         <span>{smokeError}</span>
       </div>
+    {/if}
+
+    {#if !smokeResult && !smokeRunning && !smokeError}
+      <p class="text-xs text-[var(--fp-dim)] mt-3">Measures acquire → session → upstream → total latency</p>
     {/if}
   </div>
 
@@ -251,24 +303,47 @@
                 <span class="text-white font-semibold tabular-nums">{token.messages_24h}{token.daily_limit > 0 ? ` / ${token.daily_limit}` : ''}</span>
               </div>
             </div>
+
+            {#if token.cooldown_active}
+              <div class="mb-3 px-2.5 py-1 rounded bg-[var(--fp-amber)]/10 border border-[var(--fp-amber)]/20 text-xs text-[var(--fp-amber)] flex items-center gap-1.5">
+                <Clock size={12} />
+                <span>Cooldown: {formatCooldown(token.cooldown_until)} remaining</span>
+              </div>
+            {/if}
           </div>
 
           {#if token.daily_limit > 0}
-            <div>
-              <div class="w-full bg-[var(--fp-input-bg)] h-2 rounded-full overflow-hidden border border-[var(--fp-border)]">
-                <div
-                  class="h-full transition-all duration-300 {token.usage_pct >= 80 ? 'bg-[var(--fp-red)]' : 'bg-[var(--fp-amber)]'}"
-                  style="width: {Math.min(token.usage_pct, 100)}%"
-                ></div>
-              </div>
-              <div class="flex justify-between text-[11px] text-[var(--fp-dim)] mt-1 font-mono">
-                <span>Usage</span>
-                <span class="tabular-nums">{token.usage_pct}%</span>
-              </div>
+            <div class="mb-3">
+              <ThresholdBar value={token.usage_pct} label="Usage" />
             </div>
           {/if}
+
+          <a href="#tokens" class="text-xs text-[var(--fp-amber)] hover:text-white transition-colors font-medium">
+            View Details →
+          </a>
         </div>
       {/each}
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="flex flex-wrap items-center gap-3 text-xs">
+      <span class="text-[var(--fp-dim)] uppercase tracking-wider font-semibold">Quick navigation</span>
+      <a href="#config" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--fp-surface)] border border-[var(--fp-border)] text-[var(--fp-muted)] hover:text-white hover:border-[var(--fp-amber)]/40 transition-all">
+        <Settings size={13} />
+        Config
+      </a>
+      <a href="#logs" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--fp-surface)] border border-[var(--fp-border)] text-[var(--fp-muted)] hover:text-white hover:border-[var(--fp-amber)]/40 transition-all">
+        <FileText size={13} />
+        Logs
+      </a>
+      <a href="#traces" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--fp-surface)] border border-[var(--fp-border)] text-[var(--fp-muted)] hover:text-white hover:border-[var(--fp-amber)]/40 transition-all">
+        <Terminal size={13} />
+        Traces
+      </a>
+      <a href="#playground" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--fp-surface)] border border-[var(--fp-border)] text-[var(--fp-muted)] hover:text-white hover:border-[var(--fp-amber)]/40 transition-all">
+        <BarChart3 size={13} />
+        Playground
+      </a>
     </div>
   {/if}
 </div>

@@ -275,14 +275,31 @@ type metricSample struct {
 
 const maxMetricSamples = 120
 
-type metricsData struct {
+type metricTrend struct {
+	Direction  string  `json:"direction"` // "up", "down", "flat"
+	Percentage float64 `json:"percentage"`
+}
+
+type perTokenMetrics struct {
+	Token                int    `json:"token"`
+	Requests24h          int    `json:"requests_24h"`
 	TransientRetries     int64  `json:"transient_retries"`
 	FingerprintRotations int64  `json:"fingerprint_rotations"`
-	RequestsTotal        int64  `json:"requests_total"`
-	Models               int    `json:"models"`
-	SampleCount          int    `json:"sample_count"`
-	RequestsSpark        string `json:"requests_spark"`
-	RetriesSpark         string `json:"retries_spark"`
+	SpendDay             int64  `json:"spend_day"`
+	RiskLevel            string `json:"risk_level"`
+}
+
+type metricsData struct {
+	TransientRetries     int64             `json:"transient_retries"`
+	FingerprintRotations int64             `json:"fingerprint_rotations"`
+	RequestsTotal        int64             `json:"requests_total"`
+	Models               int               `json:"models"`
+	SampleCount          int               `json:"sample_count"`
+	RequestsSpark        string            `json:"requests_spark"`
+	RetriesSpark         string            `json:"retries_spark"`
+	RequestsTrend        metricTrend       `json:"requests_trend"`
+	RetriesTrend         metricTrend       `json:"retries_trend"`
+	PerTokens            []perTokenMetrics `json:"per_tokens"`
 }
 
 func (d *Dashboard) metricsData() metricsData {
@@ -311,7 +328,60 @@ func (d *Dashboard) metricsData() metricsData {
 	}
 	md.RequestsSpark = sparklineSVG(requests, "var(--fp-amber)", "requests served over time")
 	md.RetriesSpark = sparklineSVG(retries, "var(--fp-teal)", "transient retries over time")
+
+	// Trend: compare last 10 samples vs previous 10.
+	md.RequestsTrend = computeTrend(hist, true)
+	md.RetriesTrend = computeTrend(hist, false)
+
+	// Per-token breakdown from pool snapshot.
+	for _, tok := range ps.Tokens {
+		md.PerTokens = append(md.PerTokens, perTokenMetrics{
+			Token:                tok.Token,
+			Requests24h:          tok.Messages24h,
+			TransientRetries:     tok.TransientRetries,
+			FingerprintRotations: tok.FingerprintRotations,
+			SpendDay:             tok.SpendDay,
+			RiskLevel:            tok.RiskLevel,
+		})
+	}
 	return md
+}
+
+// computeTrend compares the sum of the last 10 samples to the previous 10.
+// useRequests selects the Requests column (true) or Retries (false).
+func computeTrend(hist []metricSample, useRequests bool) metricTrend {
+	n := len(hist)
+	if n < 11 {
+		return metricTrend{Direction: "flat"}
+	}
+	const window = 10
+	recent := hist[n-window:]
+	previous := hist[n-2*window : n-window]
+
+	var recentSum, previousSum int64
+	for i := range window {
+		if useRequests {
+			recentSum += recent[i].Requests
+			previousSum += previous[i].Requests
+		} else {
+			recentSum += recent[i].Retries
+			previousSum += previous[i].Retries
+		}
+	}
+
+	if previousSum == 0 {
+		if recentSum == 0 {
+			return metricTrend{Direction: "flat"}
+		}
+		return metricTrend{Direction: "up", Percentage: 100}
+	}
+	pct := float64(recentSum-previousSum) / float64(previousSum) * 100
+	if pct > 5 {
+		return metricTrend{Direction: "up", Percentage: pct}
+	} else if pct < -5 {
+		return metricTrend{Direction: "down", Percentage: pct}
+	}
+	return metricTrend{Direction: "flat", Percentage: pct}
 }
 
 func sparklineSVG(values []float64, color, label string) string {
@@ -477,12 +547,13 @@ type tracesData struct {
 }
 
 type traceEntry struct {
-	Time   string `json:"time"`
-	Token  string `json:"token"`
-	Model  string `json:"model"`
-	Status string `json:"status"`
-	Ms     string `json:"ms"`
-	Error  string `json:"error"`
+	Time   string    `json:"time"`
+	Token  string    `json:"token"`
+	Model  string    `json:"model"`
+	Status string    `json:"status"`
+	Ms     string    `json:"ms"`
+	Error  string    `json:"error"`
+	Phases []PhaseKV `json:"phases,omitempty"`
 }
 
 func (d *Dashboard) tracesData() tracesData {
@@ -490,11 +561,19 @@ func (d *Dashboard) tracesData() tracesData {
 	if d.logs == nil {
 		return td
 	}
+	phaseNames := map[string]bool{
+		phasetiming.AcquireMS:        true,
+		phasetiming.SessionRefreshMS: true,
+		phasetiming.RunAcquireMS:     true,
+		phasetiming.UpstreamTTFBMS:   true,
+		phasetiming.TotalMS:          true,
+	}
 	for _, e := range d.logs.Recent(200) {
 		if e.Message != "chat trace" {
 			continue
 		}
 		entry := traceEntry{Time: e.Time, Status: "ok"}
+		var phaseMap map[string]int64
 		for _, f := range e.Fields {
 			key, value, ok := strings.Cut(f, "=")
 			if !ok {
@@ -511,7 +590,19 @@ func (d *Dashboard) tracesData() tracesData {
 				entry.Ms = value + "ms"
 			case "error":
 				entry.Error = value
+			default:
+				if phaseNames[key] {
+					if phaseMap == nil {
+						phaseMap = make(map[string]int64, 5)
+					}
+					if v, err := strconv.ParseInt(value, 10, 64); err == nil {
+						phaseMap[key] = v
+					}
+				}
 			}
+		}
+		if phaseMap != nil {
+			entry.Phases = PhaseList(phaseMap)
 		}
 		if entry.Token == "" {
 			entry.Token = "—"

@@ -5,6 +5,7 @@
   let token = $state('');
   let errorMsg = $state('');
   let loading = $state(false);
+  let attempts = $state(0);
 
   const GENERIC_LOGIN_ERROR = 'Invalid password.';
 
@@ -40,6 +41,7 @@
       if (res.ok || res.redirected) {
         window.location.href = '/admin';
       } else {
+        attempts += 1;
         errorMsg = cleanLoginError(await res.text());
       }
     } catch (e) {
@@ -60,7 +62,16 @@
       <p class="text-xs text-[var(--fp-muted)]">Sign in to manage your proxy</p>
     </div>
 
-    <Alert variant="error" message={errorMsg} dismissable={false} />
+    {#if errorMsg}
+      <div class="space-y-1.5">
+        <Alert variant="error" message={errorMsg} dismissable={false} />
+        {#if attempts > 0}
+          <p class="text-[10px] text-[var(--fp-dim)] text-center">
+            {attempts} attempt{attempts === 1 ? '' : 's'} — {attempts >= 5 ? 'Account may be temporarily locked' : 'Invalid token. Try again.'}
+          </p>
+        {/if}
+      </div>
+    {/if}
 
     <form onsubmit={handleLogin} class="space-y-4">
       <div>
@@ -84,5 +95,15 @@
         <span>{loading ? 'Authenticating...' : 'Sign In'}</span>
       </button>
     </form>
+
+    <!-- Help Text -->
+    <div class="text-center pt-2 border-t border-[var(--fp-border)]">
+      <p class="text-[11px] text-[var(--fp-dim)] leading-relaxed">
+        Enter your admin token to access the dashboard.
+      </p>
+      <p class="text-[10px] text-[var(--fp-dim)]/60 mt-1">
+        Set <code class="font-mono text-[var(--fp-muted)]">ADMIN_TOKEN</code> in your <code class="font-mono text-[var(--fp-muted)]">.env</code> file to configure access.
+      </p>
+    </div>
   </div>
 </div>

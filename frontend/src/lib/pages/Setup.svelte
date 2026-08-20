@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { Copy, Check, Terminal, Play, Activity, Zap } from '@lucide/svelte';
+  import { Copy, Check, Terminal, Play, Activity, Zap, RotateCcw } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import CopyButton from '../components/CopyButton.svelte';
@@ -19,6 +19,16 @@
   // Diagnostic state
   let diagRunning = $state(false);
   let diagChecks = $state(null);
+
+  // Step indicator: 0=loading, 1=configure, 2=validate, 3=done
+  let setupStep = $derived.by(() => {
+    if (loading) return 0;
+    if (error) return 0;
+    if (diagChecks && diagChecks.length > 0 && diagChecks.some(c => c.ok)) return 3;
+    if (data && data.models && data.models.length > 0) return 2;
+    if (data) return 1;
+    return 0;
+  });
 
   async function fetchData() {
     try {
@@ -59,6 +69,55 @@
 </script>
 
 <div class="space-y-6 page-enter">
+  <!-- Step Indicator -->
+  <div class="fp-card p-4">
+    <div class="flex items-center justify-center gap-0">
+      <!-- Step 1: Configure -->
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all
+          {setupStep === 0 ? 'bg-[var(--fp-input-bg)] text-[var(--fp-dim)] border border-[var(--fp-border)] animate-pulse' :
+           setupStep >= 1 ? 'bg-[var(--fp-teal)] text-white' :
+           'bg-[var(--fp-input-bg)] text-[var(--fp-dim)] border border-[var(--fp-border)]'}">
+          {setupStep > 1 ? '✓' : '1'}
+        </div>
+        <span class="text-xs font-medium {setupStep >= 1 ? 'text-[var(--fp-teal)]' : 'text-[var(--fp-dim)]'} hidden sm:inline">Configure</span>
+      </div>
+      <!-- Connector -->
+      <div class="w-10 sm:w-16 h-0.5 mx-2 transition-colors {setupStep >= 2 ? 'bg-[var(--fp-teal)]' : 'bg-[var(--fp-border)]'}"></div>
+      <!-- Step 2: Validate -->
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all
+          {setupStep >= 2 ? 'bg-[var(--fp-teal)] text-white' :
+           'bg-[var(--fp-input-bg)] text-[var(--fp-dim)] border border-[var(--fp-border)]'}">
+          {setupStep > 2 ? '✓' : '2'}
+        </div>
+        <span class="text-xs font-medium {setupStep >= 2 ? 'text-[var(--fp-teal)]' : 'text-[var(--fp-dim)]'} hidden sm:inline">Validate</span>
+      </div>
+      <!-- Connector -->
+      <div class="w-10 sm:w-16 h-0.5 mx-2 transition-colors {setupStep >= 3 ? 'bg-[var(--fp-teal)]' : 'bg-[var(--fp-border)]'}"></div>
+      <!-- Step 3: Done -->
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all
+          {setupStep >= 3 ? 'bg-[var(--fp-teal)] text-white' :
+           'bg-[var(--fp-input-bg)] text-[var(--fp-dim)] border border-[var(--fp-border)]'}">
+          3
+        </div>
+        <span class="text-xs font-medium {setupStep >= 3 ? 'text-[var(--fp-teal)]' : 'text-[var(--fp-dim)]'} hidden sm:inline">Done</span>
+      </div>
+    </div>
+    <p class="text-center text-xs text-[var(--fp-dim)] mt-2.5">
+      {#if setupStep === 0}
+        {loading ? 'Loading setup data...' : 'Follow the steps to set up your FreeBuff proxy'}
+      {:else if setupStep === 1}
+        Follow the steps to set up your FreeBuff proxy
+      {:else if setupStep === 2}
+        Run diagnostics to validate your configuration
+      {:else}
+        Setup complete — your proxy is ready
+      {/if}
+    </p>
+  </div>
+
   <!-- Page Header -->
   <PageHeader title="Client Setup & Tool Integration" subtitle="Copy a config block for your AI coding tool.">
     {#if data}
@@ -85,6 +144,10 @@
       <div>
         <h2 class="text-base font-semibold text-white">Universal Configuration</h2>
         <p class="text-xs text-[var(--fp-muted)] mt-0.5">These values work with any OpenAI-compatible client or extension</p>
+        <p class="text-[10px] text-[var(--fp-dim)] mt-1 flex items-center gap-1">
+          <span class="inline-block w-1 h-1 rounded-full bg-[var(--fp-teal)]"></span>
+          Copy any value by clicking on it — paste into your tool's config
+        </p>
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <!-- Base URL -->
@@ -190,6 +253,10 @@
         <div>
           <h2 class="text-base font-semibold text-white">Tool-Specific Snippets</h2>
           <p class="text-xs text-[var(--fp-muted)] mt-0.5">Copy the config block for your AI coding extension</p>
+          <p class="text-[10px] text-[var(--fp-dim)] mt-1 flex items-center gap-1">
+            <span class="inline-block w-1 h-1 rounded-full bg-[var(--fp-amber)]"></span>
+            Each snippet includes your custom API key — regenerate to refresh all
+          </p>
         </div>
       </div>
 
@@ -281,15 +348,26 @@ Model ID: {data.model}</pre>
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-2">
         <Activity size={18} class="text-[var(--fp-teal)]" />
-        <h2 class="text-base font-semibold text-white">Full Proxy Diagnostics</h2>
+        <div>
+          <h2 class="text-base font-semibold text-white">Full Proxy Diagnostics</h2>
+          <p class="text-[10px] text-[var(--fp-dim)] mt-0.5">Validate connectivity, model availability, and proxy health</p>
+        </div>
       </div>
       <button
         onclick={runDiag}
         disabled={diagRunning}
         class="fp-btn-secondary"
       >
-        <Activity size={14} class={diagRunning ? 'animate-spin' : ''} />
-        <span>{diagRunning ? 'Running...' : 'Run Diagnostics'}</span>
+        {#if diagRunning}
+          <Activity size={14} class="animate-spin" />
+          <span>Running...</span>
+        {:else if diagChecks}
+          <RotateCcw size={14} />
+          <span>Re-run Diagnostics</span>
+        {:else}
+          <Activity size={14} />
+          <span>Run Diagnostics</span>
+        {/if}
       </button>
     </div>
 
@@ -312,9 +390,12 @@ Model ID: {data.model}</pre>
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2">
           <Zap size={18} class="text-[var(--fp-amber)]" />
-          <h2 class="text-base font-semibold text-white">Active Model Catalog ({data.models.length} Models)</h2>
+          <div>
+            <h2 class="text-base font-semibold text-white">Active Model Catalog ({data.models.length} Models)</h2>
+            <p class="text-[10px] text-[var(--fp-dim)] mt-0.5">Click any model chip to copy its ID for use in your config</p>
+          </div>
         </div>
-        <span class="text-xs text-[var(--fp-dim)]">Click any model chip to copy ID</span>
+        <span class="text-xs text-[var(--fp-dim)]">Click to copy</span>
       </div>
       <div class="flex flex-wrap gap-2 pt-1">
         {#each data.models as m}

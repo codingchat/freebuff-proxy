@@ -1,9 +1,10 @@
 <script>
   import { onDestroy } from 'svelte';
-  import { Key, Unlock, Zap, Plus, Trash2, Layers, Network, Server, Sparkles, RefreshCw, ExternalLink } from '@lucide/svelte';
+  import { Key, Unlock, Zap, Plus, Trash2, Layers, Network, Server, Sparkles, RefreshCw, ExternalLink, ChevronDown, ChevronRight } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import Alert from '../components/Alert.svelte';
+  import ThresholdBar from '../components/ThresholdBar.svelte';
   import { fetchAPI, postAPI } from '../utils/api.js';
   import { usePolling } from '../utils/polling.js';
   import { formatLocalDate, generateRandomApiKey } from '../utils/format.js';
@@ -22,8 +23,20 @@
   let apiKeys = $state([]);
   let copiedKeyIdx = $state(null);
 
-  // OAuth wizard state (moved from Setup page: token generation belongs
-  // next to the pool it feeds)
+  // Expandable token rows
+  let expandedToken = $state(null);
+
+  // Token validation state (as user types)
+  let tokenValid = $derived(
+    newToken.trim() === ''
+      ? null
+      : /^cb_[A-Za-z0-9_-]{20,}$/.test(newToken.trim())
+  );
+
+  // Test-all results: { [tokenIndex]: { ok, latencyMs, model, instance, ts } }
+  let testResults = $state({});
+
+  // OAuth wizard state
   let oauthStarting = $state(false);
   let oauthStatus = $state(null);
   let oauthTimer = $state(null);
@@ -86,8 +99,6 @@
   async function fetchData() {
     try {
       data = await fetchAPI('/admin/api/tokens');
-      // Load the existing client API keys so the card can offer them for
-      // one-click copy when setting up another client.
       try {
         const cfgRes = await fetchAPI('/admin/api/config');
         const envContent = cfgRes?.env_content || '';
@@ -105,10 +116,6 @@
     }
   }
 
-  // Generate a fresh client API key (sk-fb-...) and append it to API_KEYS in
-  // .env — the same generator as the Config studio, moved here where the
-  // token pool lives so the omp credential is created next to the upstream
-  // tokens that back it.
   async function generateClientKey() {
     if (generatingKey) return;
     generatingKey = true;
@@ -142,7 +149,6 @@
       generatingKey = false;
     }
   }
-
 
   async function copyKey(idx) {
     const key = apiKeys[idx];
@@ -185,6 +191,74 @@
     } finally {
       actionPending = false;
     }
+  }
+
+  // Test a single token and record result
+  async function testToken(idx) {
+    const start = performance.now();
+    try {
+      const result = await postAPI(`/admin/tokens/${idx}/test`, {});
+      const latencyMs = Math.round(performance.now() - start);
+      testResults = {
+        ...testResults,
+        [idx]: {
+          ok: result.ok !== false,
+          latencyMs,
+          model: result.model || result.model_id || '—',
+          instance: result.instance || result.instance_id || '—',
+          ts: Date.now()
+        }
+      };
+      actionOK = result.ok !== false;
+      actionMessage = result.message || (result.ok !== false ? `Token #${idx} test passed` : `Token #${idx} test failed`);
+    } catch (e) {
+      const latencyMs = Math.round(performance.now() - start);
+      testResults = {
+        ...testResults,
+        [idx]: { ok: false, latencyMs, model: '—', instance: '—', ts: Date.now() }
+      };
+      actionOK = false;
+      actionMessage = e.message || 'Network error testing token';
+    }
+  }
+
+  // Test all tokens and collect results
+  async function testAllTokens() {
+    if (!data?.tokens?.length) return;
+    actionPending = true;
+    testResults = {};
+    const tokens = data.tokens;
+    for (let i = 0; i < tokens.length; i++) {
+      const idx = tokens[i].index ?? i;
+      const start = performance.now();
+      try {
+        const result = await postAPI(`/admin/tokens/${idx}/test`, {});
+        const latencyMs = Math.round(performance.now() - start);
+        testResults = {
+          ...testResults,
+          [idx]: {
+            ok: result.ok !== false,
+            latencyMs,
+            model: result.model || result.model_id || '—',
+            instance: result.instance || result.instance_id || '—',
+            ts: Date.now()
+          }
+        };
+      } catch {
+        const latencyMs = Math.round(performance.now() - start);
+        testResults = {
+          ...testResults,
+          [idx]: { ok: false, latencyMs, model: '—', instance: '—', ts: Date.now() }
+        };
+      }
+    }
+    actionPending = false;
+    actionOK = true;
+    actionMessage = 'Test complete for all tokens';
+  }
+
+  function toggleExpand(idx) {
+    expandedToken = expandedToken === idx ? null : idx;
   }
 
   function handleModeSwitch(targetMode) {
@@ -247,7 +321,7 @@
     />
   {/if}
 
-  <!-- Fetch Error: a failed poll must not masquerade as an empty pool -->
+  <!-- Fetch Error -->
   {#if error}
     <Alert
       variant="error"
@@ -256,7 +330,7 @@
     />
   {/if}
 
-  <!-- Mode Control & Pool Routing Bar (Always Visible) -->
+  <!-- Mode Control & Pool Routing Bar -->
   <div class="fp-card p-5 space-y-4">
     <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
       <div>
@@ -276,9 +350,7 @@
         </p>
       </div>
 
-      <!-- Mode Selector Buttons -->
       <div class="flex flex-wrap items-center gap-2">
-        <!-- Pooled Mode -->
         <button
           type="button"
           onclick={() => handleModeSwitch('pooled')}
@@ -294,7 +366,6 @@
           {data && !data.in_bridge ? '✓' : ''}
         </button>
 
-        <!-- Bridge Mode -->
         <button
           type="button"
           onclick={() => handleModeSwitch('bridge')}
@@ -314,10 +385,15 @@
           <div class="h-6 w-[1px] bg-[var(--fp-border)] mx-1 hidden sm:block"></div>
           <button
             type="button"
-            onclick={() => triggerAction('/admin/tokens/test-all', {}, '')}
+            onclick={testAllTokens}
+            disabled={actionPending}
             class="fp-btn-secondary text-[var(--fp-amber)] border-[var(--fp-amber)]/30"
           >
-            <Zap size={13} />
+            {#if actionPending}
+              <RefreshCw size={13} class="animate-spin" />
+            {:else}
+              <Zap size={13} />
+            {/if}
             <span>Test All</span>
           </button>
           <button
@@ -433,10 +509,26 @@
     </button>
   </div>
 
-  <!-- Add Token Card -->
+  <!-- Add Token Card (A→B→C→D) -->
   <div class="fp-card p-5 border-[var(--fp-amber)]/30">
-    <h2 class="text-base font-semibold text-white mb-1">Add Token to Pool</h2>
-    <p class="text-xs text-[var(--fp-muted)] mb-3">Paste a FreeBuff token (<code class="font-mono text-[var(--fp-amber)]">cb_...</code>). Validated against upstream, then added to the pool and saved to <code class="font-mono text-[var(--fp-amber)]">.env</code>.</p>
+    <!-- A: Validation status indicator -->
+    <h2 class="text-base font-semibold text-white mb-1 flex items-center gap-2">
+      Add Token to Pool
+      {#if tokenValid === true}
+        <span class="text-[var(--fp-teal)] text-xs font-normal flex items-center gap-1">
+          <span class="w-4 h-4 rounded-full bg-[var(--fp-teal)]/20 flex items-center justify-center text-[10px]">✓</span>
+          valid format
+        </span>
+      {:else if tokenValid === false}
+        <span class="text-[var(--fp-red)] text-xs font-normal flex items-center gap-1">
+          <span class="w-4 h-4 rounded-full bg-[var(--fp-red)]/20 flex items-center justify-center text-[10px]">✗</span>
+          invalid format
+        </span>
+      {/if}
+    </h2>
+    <!-- D: help text -->
+    <p class="text-xs text-[var(--fp-muted)] mb-3">Token must be a valid FreeBuff auth token (<code class="font-mono text-[var(--fp-amber)]">cb_...</code>). Adding burns no quota.</p>
+    <!-- C: Add button + input -->
     <form onsubmit={addToken} class="flex flex-col sm:flex-row gap-2">
       <input
         type="text"
@@ -444,11 +536,13 @@
         placeholder="Paste FreeBuff token (cb_...)"
         autocomplete="off"
         spellcheck="false"
-        class="fp-input fp-input-mono flex-1"
+        class="fp-input fp-input-mono flex-1
+          {tokenValid === false ? 'border-[var(--fp-red)]/60 focus:border-[var(--fp-red)]' : ''}
+          {tokenValid === true ? 'border-[var(--fp-teal)]/60 focus:border-[var(--fp-teal)]' : ''}"
       />
       <button
         type="submit"
-        disabled={actionPending || !newToken.trim()}
+        disabled={actionPending || !newToken.trim() || tokenValid === false}
         class="fp-btn-primary"
       >
         <Plus size={16} />
@@ -457,108 +551,189 @@
     </form>
   </div>
 
-  <!-- Token Details List -->
-  <div class="space-y-4">
-    {#each data?.tokens || [] as token}
-      <div class="fp-card p-5 space-y-4">
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[var(--fp-border)] pb-4">
-          <div class="flex items-center gap-3">
-            <div class="w-3 h-3 rounded-full {riskDot(token.risk_level)}"></div>
-            <h3 class="text-lg font-bold text-white font-mono">Token #{token.index}</h3>
-            <StatusBadge variant={riskVariant(token.risk_level)}>{token.risk_level}</StatusBadge>
-            {#if token.has_standing}
-              <StatusBadge variant="blue" uppercase={false}>
-                trust {token.standing_label} ({Math.round(token.standing_score)}/100)
-              </StatusBadge>
+  <!-- Token Details List (Expandable Rows) -->
+  <div class="space-y-2">
+    {#each data?.tokens || [] as token, i (token.index ?? i)}
+      {@const isExpanded = expandedToken === (token.index ?? i)}
+      {@const tr = testResults[token.index ?? i]}
+
+      <!-- Token Row (A→B→C→D) -->
+      <div class="fp-card overflow-hidden transition-all duration-200 {isExpanded ? 'ring-1 ring-[var(--fp-amber)]/30' : ''}">
+        <!-- Collapsed header — clickable div (not button) to allow nested buttons -->
+        <div
+          role="button"
+          tabindex="0"
+          onclick={() => toggleExpand(token.index ?? i)}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(token.index ?? i); } }}
+          class="w-full p-4 flex items-center gap-3 text-left hover:bg-[var(--fp-surface)]/50 transition-colors cursor-pointer select-none"
+        >
+          <!-- D: Expand indicator -->
+          <span class="shrink-0 text-[var(--fp-dim)]">
+            {#if isExpanded}
+              <ChevronDown size={16} />
+            {:else}
+              <ChevronRight size={16} />
             {/if}
+          </span>
+
+          <!-- A: Risk dot + badge -->
+          <div class="w-3 h-3 rounded-full shrink-0 {riskDot(token.risk_level)}"></div>
+          <span class="text-sm font-bold text-white font-mono shrink-0">Token #{token.index}</span>
+          <StatusBadge variant={riskVariant(token.risk_level)}>{token.risk_level}</StatusBadge>
+          {#if token.has_standing}
+            <StatusBadge variant="blue" uppercase={false} class="hidden sm:inline-flex">
+              trust {token.standing_label} ({Math.round(token.standing_score)}/100)
+            </StatusBadge>
+          {/if}
+
+          <!-- B: Stats inline (desktop) -->
+          <div class="hidden md:flex items-center gap-4 ml-auto text-[11px] font-mono text-[var(--fp-muted)] shrink-0">
+            <span>runs: <span class="text-white tabular-nums">{token.active_runs}</span></span>
+            <span>req: <span class="text-white tabular-nums">{token.requests}</span></span>
+            <span>24h: <span class="text-white tabular-nums">{token.messages_24h}</span></span>
           </div>
-          <div class="flex items-center gap-2">
+
+          <!-- C: Action buttons -->
+          <div class="flex items-center gap-1.5 shrink-0 ml-2" onclick={(e) => e.stopPropagation()}>
             {#if token.cooldown_active}
               <button
                 onclick={() => triggerAction(`/admin/tokens/${token.index}/unlock`, {}, `Unlock Token ${token.index}? Only do this if the lock is stale.`)}
-                class="fp-btn-secondary text-[var(--fp-teal)] border-[var(--fp-teal)]/30"
+                class="fp-btn-secondary text-[var(--fp-teal)] border-[var(--fp-teal)]/30 !py-1 !px-2 !text-[11px]"
+                title="Unlock this token"
               >
-                <Unlock size={12} />
-                <span>Unlock</span>
+                <Unlock size={11} />
               </button>
             {/if}
-            <button onclick={() => triggerAction(`/admin/tokens/${token.index}/test`, {}, '')} class="fp-btn-secondary">
-              <Zap size={12} />
-              <span>Test</span>
+            <button
+              onclick={() => testToken(token.index ?? i)}
+              class="fp-btn-secondary !py-1 !px-2 !text-[11px]"
+              title="Test this token"
+            >
+              <Zap size={11} />
             </button>
-            <button onclick={() => triggerAction(`/admin/tokens/${token.index}/finish`, {}, `Finish all active runs for Token ${token.index}?`)} class="fp-btn-secondary text-[var(--fp-muted)]">
-              <span>Finish Runs</span>
+            <button
+              onclick={() => triggerAction(`/admin/tokens/${token.index}/finish`, {}, `Finish all active runs for Token ${token.index}?`)}
+              class="fp-btn-secondary text-[var(--fp-muted)] !py-1 !px-2 !text-[11px]"
+              title="Finish active runs"
+            >
+              Finish
             </button>
           </div>
         </div>
 
-        <!-- Stats -->
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
-          <div class="p-2.5 rounded-lg fp-inset">
-            <span class="text-[var(--fp-dim)] block text-[10px] uppercase">Session ID</span>
-            <span class="text-white font-medium truncate block">{token.session_instance || '—'}</span>
-          </div>
-          <div class="p-2.5 rounded-lg fp-inset">
-            <span class="text-[var(--fp-dim)] block text-[10px] uppercase">Active Runs</span>
-            <span class="text-white font-medium tabular-nums">{token.active_runs}</span>
-          </div>
-          <div class="p-2.5 rounded-lg fp-inset">
-            <span class="text-[var(--fp-dim)] block text-[10px] uppercase">Requests</span>
-            <span class="text-white font-medium tabular-nums">{token.requests}</span>
-          </div>
-          <div class="p-2.5 rounded-lg fp-inset">
-            <span class="text-[var(--fp-dim)] block text-[10px] uppercase">24h Messages</span>
-            <span class="text-white font-medium tabular-nums">{token.messages_24h}{token.daily_limit > 0 ? ` / ${token.daily_limit}` : ''}</span>
-          </div>
+        <!-- Mobile stats row (shown below header on small screens) -->
+        <div class="md:hidden px-4 pb-3 flex items-center gap-3 text-[11px] font-mono text-[var(--fp-muted)]">
+          <span>runs: <span class="text-white tabular-nums">{token.active_runs}</span></span>
+          <span>req: <span class="text-white tabular-nums">{token.requests}</span></span>
+          <span>24h: <span class="text-white tabular-nums">{token.messages_24h}{token.daily_limit > 0 ? `/${token.daily_limit}` : ''}</span></span>
         </div>
 
-        <!-- Quota Table -->
-        {#if token.has_quota && token.quota?.length > 0}
-          <div class="mt-4">
-            <h4 class="text-xs font-semibold text-[var(--fp-muted)] uppercase tracking-wider mb-2">Model Session Quota</h4>
-            <div class="overflow-x-auto border border-[var(--fp-border)] rounded-lg">
-              <table class="fp-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Model</th>
-                    <th scope="col">Recent</th>
-                    <th scope="col">Limit</th>
-                    <th scope="col">Period</th>
-                    <th scope="col">Reset (Local)</th>
-                    <th scope="col">Entitlement</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each token.quota as q}
-                    <tr>
-                      <td class="font-bold text-white">{q.model}</td>
-                      <td class="text-[var(--fp-muted)] tabular-nums">{q.recent}</td>
-                      <td class="text-[var(--fp-muted)] tabular-nums">{q.limit}</td>
-                      <td class="text-[var(--fp-dim)]">{q.period}</td>
-                      <td class="text-[var(--fp-amber)]">
-                        {formatLocalDate(q.reset_at_utc) || q.reset_at}
-                        {#if q.resets_in}
-                          <span class="ml-1 text-xs opacity-75 font-sans">({q.resets_in})</span>
-                        {/if}
-                      </td>
-                      <td class="text-[var(--fp-muted)]">{q.has_entitlement ? q.entitled : '—'}</td>
-                    </tr>
-                    {#if q.has_bar}
-                      <tr class="bg-[var(--fp-input-bg)]/50">
-                        <td colspan="6" class="px-2.5 py-1">
-                          <div class="w-full bg-[var(--fp-surface)] h-1.5 rounded-full overflow-hidden">
-                            <div class="h-full transition-all {q.near_limit ? 'bg-[var(--fp-red)]' : 'bg-[var(--fp-teal)]'}" style="width: {Math.min(q.usage_pct, 100)}%"></div>
-                          </div>
-                        </td>
-                      </tr>
-                    {/if}
-                  {/each}
-                </tbody>
-              </table>
+        <!-- Expanded Detail -->
+        {#if isExpanded}
+          <div class="border-t border-[var(--fp-border)] bg-[var(--fp-surface)]/30 px-4 py-4 space-y-4">
+            <!-- A: Access tier badge -->
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-[var(--fp-dim)] uppercase tracking-wider font-semibold">Access Tier</span>
+              <StatusBadge variant={token.access_tier === 'full' ? 'teal' : 'amber'}>
+                {token.access_tier || 'unknown'}
+              </StatusBadge>
+              {#if token.session_instance}
+                <span class="text-[11px] font-mono text-[var(--fp-muted)] ml-auto">
+                  Instance: <span class="text-white">{token.session_instance}</span>
+                </span>
+              {/if}
             </div>
+
+            <!-- B: Per-model quota breakdown -->
+            {#if token.has_quota && token.quota?.length > 0}
+              <div class="space-y-3">
+                <h4 class="text-xs font-semibold text-[var(--fp-muted)] uppercase tracking-wider">Model Quotas</h4>
+                <div class="grid gap-3">
+                  {#each token.quota as q}
+                    <div class="p-3 rounded-lg fp-inset space-y-2">
+                      <div class="flex items-center justify-between text-xs">
+                        <span class="font-bold text-white font-mono">{q.model}</span>
+                        <span class="text-[var(--fp-muted)]">{q.period}</span>
+                      </div>
+                      <div class="flex items-center justify-between text-xs font-mono">
+                        <span class="text-[var(--fp-muted)]">
+                          Used: <span class="text-white tabular-nums">{q.recent}</span> / <span class="text-white tabular-nums">{q.limit}</span>
+                        </span>
+                        <span class="text-[var(--fp-muted)]">
+                          Remaining: <span class="text-white tabular-nums">{Math.max(0, q.limit - q.recent)}</span>
+                        </span>
+                      </div>
+                      <!-- ThresholdBar for usage visualization -->
+                      {#if q.limit > 0}
+                        <ThresholdBar
+                          value={Math.round((q.recent / q.limit) * 100)}
+                          label="{q.recent}/{q.limit}"
+                          suffix="%"
+                          thresholds={[50, 80]}
+                          color="auto"
+                        />
+                      {/if}
+                      <div class="flex items-center justify-between text-[11px]">
+                        <span class="text-[var(--fp-dim)]">
+                          Reset: {formatLocalDate(q.reset_at_utc) || q.reset_at}
+                          {#if q.resets_in}
+                            <span class="ml-1 opacity-75">({q.resets_in})</span>
+                          {/if}
+                        </span>
+                        {#if q.has_entitlement}
+                          <span class="text-[var(--fp-teal)]">Entitled: {q.entitled}</span>
+                        {/if}
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {:else}
+              <p class="text-xs text-[var(--fp-dim)] italic">No quota data available for this session.</p>
+            {/if}
+
+            <!-- Test result inline (if tested) -->
+            {#if tr}
+              <div class="flex items-center gap-3 p-3 rounded-lg fp-inset text-xs font-mono">
+                <StatusBadge variant={tr.ok ? 'teal' : 'red'}>
+                  {tr.ok ? 'pass' : 'fail'}
+                </StatusBadge>
+                <span class="text-[var(--fp-muted)]">
+                  Latency: <span class="text-white tabular-nums">{tr.latencyMs}ms</span>
+                </span>
+                <span class="text-[var(--fp-muted)]">
+                  Model: <span class="text-white">{tr.model}</span>
+                </span>
+                <span class="text-[var(--fp-muted)]">
+                  Instance: <span class="text-white">{tr.instance}</span>
+                </span>
+              </div>
+            {/if}
+
+            <!-- C: Test button (expanded) -->
+            <div class="flex items-center gap-2">
+              <button
+                onclick={() => testToken(token.index ?? i)}
+                class="fp-btn-secondary text-[var(--fp-teal)] border-[var(--fp-teal)]/30"
+              >
+                <Zap size={12} />
+                <span>Test this token</span>
+              </button>
+            </div>
+
+            <!-- D: Help text -->
+            <p class="text-[11px] text-[var(--fp-dim)]">
+              Pacific day resets at 07:00 UTC. Usage bars show consumption against session quotas.
+            </p>
           </div>
         {/if}
       </div>
     {/each}
+
+    {#if !loading && (!data?.tokens || data.tokens.length === 0)}
+      <div class="fp-card p-8 text-center">
+        <p class="text-[var(--fp-muted)] text-sm">No tokens in pool. Add one above or use the OAuth generator.</p>
+      </div>
+    {/if}
   </div>
 </div>
