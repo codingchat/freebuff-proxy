@@ -24,8 +24,9 @@ vendored `reference/` clones were removed 2026-08-20 after the RE completed).
   #141) and is a CI file-size allowlist exception.
 - `internal/pool` — token pool: `Acquire`/`Chat`/`Lease`, admission coercion
   (lease model is authoritative), cooldowns, quota windows, spend buckets, unfit
-  registry, create gates. Split: `cooldown.go`, `quota.go`, `lifecycle.go`,
-  `spend.go`, `unfit.go`, `create_gate.go` (`pool.go` itself is a CI exception).
+  registry, create gates. Split: `acquire.go`, `bridge.go`, `cooldown.go`,
+  `create_gate.go`, `lifecycle.go`, `quota.go`, `snapshot.go`, `spend.go`,
+  `unfit.go` (+ slim `pool.go` core).
 - `internal/session` — upstream session store + on-disk persistence
   (`store.go`), session lifecycle and re-admission.
 - `internal/upstream` — the FreeBuff wire client: `client.go` core plus
@@ -84,10 +85,11 @@ model header — never add one).
   `internal/registry/testdata/upstream/`. Re-clone the public
   repos if a cited line number needs re-verification.
 - **File-size budget**: 1400 lines per non-test `.go` file, enforced in CI
-  (`.github/workflows/ci.yml`). `internal/convert/convert.go`,
-  `internal/pool/pool.go`, and `internal/runs/runs.go` are tracked exceptions
-  with shrink follow-ups — do not add to the allowlist without a documented
-  reason.
+  (`.github/workflows/ci.yml`). `internal/convert/convert.go` and
+  `internal/runs/runs.go` are tracked exceptions with shrink follow-ups — do
+  not add to the allowlist without a documented reason. (`pool.go` was removed
+  from the exceptions after the split into `acquire.go`/`bridge.go`/
+  `snapshot.go`.)
 
 ## Doc pointers
 
@@ -105,8 +107,7 @@ model header — never add one).
   RE study and reverse-engineering notes, dev study docs, research/product/plan
   docs (`docs/` outside the public top-level pages), handoff notes (`HANDOFF.md`,
   `*.handoff.md`),
-  dev tooling (`.codegraph/`, `uicheck/`), worktrees (`.worktrees/`), and
-  reference clones (`reference/`).
+  dev tooling (`.codegraph/`, `uicheck/`), and reference clones (`reference/`).
 - Only `docs/` top-level `.md` pages are committed documentation; the private RE
   notes live in `devdocs/` (gitignored) — never commit them.
 - NEVER commit secrets: `.env*` (except `.env.example`), `config*.json` (except
@@ -117,8 +118,9 @@ model header — never add one).
 
 ## Workflow
 
-- Work in git worktrees (`.worktrees/`); the main checkout at the repo root may
-  be shared with other sessions — never read-edit it or run git there.
+- Work directly in the main checkout; it may be shared with other sessions —
+  coordinate on files, never destroy uncommitted work, and verify `origin/main`
+  before pushing.
 - Commit convention: conventional subjects (`refactor(...)`, `fix(...)`,
   `docs+ci(...)`), CI runs build + vet + `-race` tests.
 - Release flow: bump the patch/stage version for minor changes, tag after

@@ -45,8 +45,7 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# ── git worktrees + SDD scratch ──
-.worktrees/
+# ── SDD scratch ──
 .superpowers/
 
 # ── dev tooling & verification (local only, not published) ──
