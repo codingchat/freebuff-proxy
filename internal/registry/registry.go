@@ -80,21 +80,21 @@ var LimitedTierModels = map[string]bool{
 // configuration. The -max variants are included because PREFER_MAX_MODELS
 // upgrades base requests to them server-side.
 var SmartToyModels = map[string]bool{
-	"deepseek/deepseek-v4-flash":          true,
-	"deepseek/deepseek-v4-pro":            true,
-	"deepseek/deepseek-v4-flash-max":      true,
-	"deepseek/deepseek-v4-pro-max":        true,
-	"mimo/mimo-v2.5":                      true,
-	"minimax/minimax-m3":                  true,
-	"openai/gpt-5.6-luna":                 true,
-	"openai/gpt-5.6-luna-max":             true,
-	"z-ai/glm-5.2":                        true,
-	"anthropic/claude-fable-5":            true,
-	"crof/kimi-k3-eco":                    true,
-	"meta/muse-spark-1.2-contributor":     true,
-	"google/gemini-2.5-flash-lite":        true,
-	"google/gemini-3.1-flash-lite":        true,
-	"google/gemini-3.5-flash-lite":        true,
+	"deepseek/deepseek-v4-flash":      true,
+	"deepseek/deepseek-v4-pro":        true,
+	"deepseek/deepseek-v4-flash-max":  true,
+	"deepseek/deepseek-v4-pro-max":    true,
+	"mimo/mimo-v2.5":                  true,
+	"minimax/minimax-m3":              true,
+	"openai/gpt-5.6-luna":             true,
+	"openai/gpt-5.6-luna-max":         true,
+	"z-ai/glm-5.2":                    true,
+	"anthropic/claude-fable-5":        true,
+	"crof/kimi-k3-eco":                true,
+	"meta/muse-spark-1.2-contributor": true,
+	"google/gemini-2.5-flash-lite":    true,
+	"google/gemini-3.1-flash-lite":    true,
+	"google/gemini-3.5-flash-lite":    true,
 }
 
 // maxVariants maps each base model id to its -max extended-context variant
