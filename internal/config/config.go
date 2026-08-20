@@ -159,6 +159,10 @@ type Config struct {
 	// PreferMaxModels maps standard model IDs to their -max extended context
 	// variants (PREFER_MAX_MODELS).
 	PreferMaxModels bool
+	// DashboardEnabled controls whether the embedded admin web UI is served
+	// (DASHBOARD_ENABLED; default true). Set to false to disable all /admin
+	// routes.
+	DashboardEnabled bool
 	// AccessTier is the account access tier the proxy assumes for -max model
 	// upgrades (ACCESS_TIER, or learned at runtime from the upstream session
 	// probe/admission response's accessTier field): "full" (default when
@@ -268,6 +272,7 @@ type rawConfig struct {
 	RateLimitPerIP                   *float64        `json:"RATE_LIMIT_PER_IP"`
 	RateLimitBurst                   *int            `json:"RATE_LIMIT_BURST"`
 	PreferMaxModels                  bool            `json:"PREFER_MAX_MODELS"`
+	DashboardEnabled                 bool            `json:"DASHBOARD_ENABLED"`
 	AccessTier                       string          `json:"ACCESS_TIER"`
 }
 
@@ -306,6 +311,7 @@ func defaultRawConfig() rawConfig {
 		MaxSpendPerDay:                   nil,         // 0 = unlimited advisory spend ceiling (never enforced)
 		IdleRotationTimeout:              "",          // "" = disabled (unset → SAFE_MODE preset may fill)
 		SafeMode:                         true,        // anti-ban presets on by default; set SAFE_MODE=false to disable
+		DashboardEnabled:                 true,        // dashboard on by default; set DASHBOARD_ENABLED=false to disable
 		LogAccess:                        true,        // per-request access lines on by default; LOG_ACCESS=false disables them
 		LogRingSize:                      ptrInt(500), // dashboard log viewer ring capacity (T19)
 		CORSAllowedOrigin:                "*",         // browser clients reach /v1/* cross-origin by default
@@ -491,6 +497,7 @@ func Load(configPath string) (Config, error) {
 	overrideFloat(&raw.RateLimitPerIP, "RATE_LIMIT_PER_IP")
 	overrideInt(&raw.RateLimitBurst, "RATE_LIMIT_BURST")
 	overrideBool(&raw.PreferMaxModels, "PREFER_MAX_MODELS")
+	overrideBool(&raw.DashboardEnabled, "DASHBOARD_ENABLED")
 	overrideString(&raw.AccessTier, "ACCESS_TIER")
 
 	parseDuration := func(raw, name string) (time.Duration, error) {
@@ -753,6 +760,7 @@ func Load(configPath string) (Config, error) {
 		RateLimitPerIP:                   rateLimitPerIP,
 		RateLimitBurst:                   rateLimitBurst,
 		PreferMaxModels:                  raw.PreferMaxModels,
+		DashboardEnabled:                 raw.DashboardEnabled,
 		AccessTier:                       strings.TrimSpace(raw.AccessTier),
 		AccessTierExplicit:               strings.TrimSpace(raw.AccessTier) != "",
 		EnvFile:                          envFileUsed,
@@ -1090,6 +1098,7 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideFloatFrom(&raw.RateLimitPerIP, get, "RATE_LIMIT_PER_IP")
 	overrideIntFrom(&raw.RateLimitBurst, get, "RATE_LIMIT_BURST")
 	overrideBoolFrom(&raw.PreferMaxModels, get, "PREFER_MAX_MODELS")
+	overrideBoolFrom(&raw.DashboardEnabled, get, "DASHBOARD_ENABLED")
 	overrideStringFrom(&raw.AccessTier, get, "ACCESS_TIER")
 	return nil
 }

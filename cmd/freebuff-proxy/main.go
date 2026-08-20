@@ -286,6 +286,7 @@ func main() {
 		"registry_models", reg.ModelCount(),
 		"log_level", logLevelDisplay(level),
 		"verbose", *verbose,
+		"dashboard_enabled", cfg.DashboardEnabled,
 	)
 	if cfg.ActingUserID != "" {
 		// #126: the header is only safe with the token's OWN account id (the
@@ -297,7 +298,7 @@ func main() {
 	// /admin/reload and the admin dashboard are open in default deployments
 	// (no API_KEYS, or bridge mode): warn loudly so operators can decide
 	// whether to set ADMIN_TOKEN.
-	if cfg.AdminToken == "" && (len(cfg.APIKeys) == 0 || cfg.BridgeMode()) {
+	if cfg.DashboardEnabled && cfg.AdminToken == "" && (len(cfg.APIKeys) == 0 || cfg.BridgeMode()) {
 		logger.Warn("/admin/reload and the /admin dashboard are unauthenticated — any client that can reach the proxy can reload configuration and view its state. Set ADMIN_TOKEN to require a bearer token")
 	}
 	logger.Info("listening", "addr", cfg.ListenAddr)

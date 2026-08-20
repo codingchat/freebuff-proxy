@@ -48,6 +48,7 @@ func newTestServerCfg(t *testing.T, apiKeys []string, mut func(*config.Config), 
 		UpstreamBaseURL:    "https://www.codebuff.com",
 		APIKeys:            apiKeys,
 		LogAccess:          true,
+		DashboardEnabled:   true,
 	}
 	if mut != nil {
 		mut(cfg)
@@ -1629,6 +1630,7 @@ func newBridgeTestServer(t *testing.T, mock *testutil.MockUpstream) (*httptest.S
 		SessionCallTimeout: 5 * time.Second,
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
+		DashboardEnabled:   true,
 	}
 	reg := registry.New(cfg, nil)
 	reg.LoadFallback()
@@ -1941,6 +1943,7 @@ func TestChatModelAliasesAndReasoningEffort(t *testing.T) {
 		ModelAliases: map[string]string{
 			"gpt-4o": modelA,
 		},
+		DashboardEnabled: true,
 	}, p, reg, nil, nil, "")
 	tsAlias := httptest.NewServer(srv.Handler())
 	t.Cleanup(tsAlias.Close)
@@ -2006,6 +2009,7 @@ func TestMetricsTransientRetryCounters(t *testing.T) {
 		SessionCallTimeout: 5 * time.Second,
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
+		DashboardEnabled:   true,
 		TransientRetries:   1,
 	}
 	client, err := upstream.New("tok-0", cfg)

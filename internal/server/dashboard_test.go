@@ -566,6 +566,7 @@ func TestDashboardModeSwitchClearsJSONConfigTokens(t *testing.T) {
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
 		AdminToken:         "secret",
+		DashboardEnabled:   true,
 	}
 	clientCfg := *cfg
 	clientCfg.UpstreamBaseURL = mock.URL()
@@ -793,6 +794,7 @@ func TestDashboardConcurrentTokenAdds(t *testing.T) {
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
 		AdminToken:         "secret",
+		DashboardEnabled:   true,
 	}
 	clientCfg := *cfg
 	clientCfg.UpstreamBaseURL = mock.URL()
@@ -1040,6 +1042,7 @@ func TestDashboardTokenRemoveRollsBackOnPersistFailure(t *testing.T) {
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
 		AdminToken:         "secret",
+		DashboardEnabled:   true,
 	}
 	clientCfg := *cfg
 	clientCfg.UpstreamBaseURL = mock.URL()
@@ -1088,6 +1091,7 @@ func TestDashboardDiagPortHandling(t *testing.T) {
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
 		AdminToken:         "secret",
+		DashboardEnabled:   true,
 	}
 	clientCfg := *cfg
 	clientCfg.UpstreamBaseURL = mock.URL()
@@ -1147,6 +1151,7 @@ func TestDashboardConfigSaveAppliesModelAliases(t *testing.T) {
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    mock.URL(),
 		AdminToken:         "secret",
+		DashboardEnabled:   true,
 	}
 	clientCfg := *cfg
 	clientCfg.UpstreamBaseURL = mock.URL()

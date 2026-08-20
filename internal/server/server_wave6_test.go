@@ -285,6 +285,7 @@ func newServerOpts(t *testing.T, mock *testutil.MockUpstream, mut func(*config.C
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    "https://www.codebuff.com",
 		LogAccess:          true,
+		DashboardEnabled:   true,
 	}
 	if mut != nil {
 		mut(cfg)
