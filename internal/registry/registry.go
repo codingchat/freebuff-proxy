@@ -63,12 +63,13 @@ const fetchTimeout = 30 * time.Second
 // than this fails the fetch, which keeps the previous registry state.
 const maxFetchBytes = 2 << 20
 
-// SmartToyModels is the hardcoded set of models available through 9router's
-// smart_toy component. Used as a code-level gate so the proxy never serves
-// or advertises a model the account cannot use, regardless of MODELS_ALLOW
-// configuration. The -max variants are included because PREFER_MAX_MODELS
-// upgrades base requests to them server-side.
-var SmartToyModels = map[string]bool{
+// ServedModels is the hardcoded set of model ids this gateway serves
+// (mirrors the model set 9router's free-pool "smart_toy" component offers).
+// Used as a code-level gate so the proxy never serves or advertises a model
+// the account cannot use, regardless of MODELS_ALLOW configuration. The -max
+// variants are included so provisioned accounts can request them directly
+// by id.
+var ServedModels = map[string]bool{
 	"deepseek/deepseek-v4-flash":      true,
 	"deepseek/deepseek-v4-pro":        true,
 	"deepseek/deepseek-v4-flash-max":  true,
@@ -84,40 +85,6 @@ var SmartToyModels = map[string]bool{
 	"google/gemini-2.5-flash-lite":    true,
 	"google/gemini-3.1-flash-lite":    true,
 	"google/gemini-3.5-flash-lite":    true,
-}
-
-// maxVariants maps each base model id to its -max extended-context variant
-// (PREFER_MAX_MODELS). Both the provider-qualified id
-// ("deepseek/deepseek-v4-pro") and the bare id ("deepseek-v4-pro") are
-// accepted; the returned variant is always provider-qualified.
-var maxVariants = map[string]string{
-	"deepseek/deepseek-v4-pro":   "deepseek/deepseek-v4-pro-max",
-	"deepseek-v4-pro":            "deepseek/deepseek-v4-pro-max",
-	"deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash-max",
-	"deepseek-v4-flash":          "deepseek/deepseek-v4-flash-max",
-	"openai/gpt-5.6-luna":        "openai/gpt-5.6-luna-max",
-	"gpt-5.6-luna":               "openai/gpt-5.6-luna-max",
-}
-
-// legacyMaxVariants covers stock client model names that reach ResolveModel
-// when MODEL_ALIASES is explicitly configured without them (the default
-// aliases resolve gpt-4o → deepseek-v4-pro and deepseek-chat →
-// deepseek-v4-flash first; deepseek-reasoner has no alias at all). They keep
-// the historic PREFER_MAX_MODELS behavior through the same routed gate as
-// MaxVariantOf.
-var legacyMaxVariants = map[string]string{
-	"gpt-4o":            "deepseek/deepseek-v4-pro-max",
-	"deepseek-reasoner": "deepseek/deepseek-v4-pro-max",
-	"deepseek-chat":     "deepseek/deepseek-v4-flash-max",
-}
-
-// MaxVariantOf returns the -max extended-context variant for base model,
-// or ("", false) when the model has no -max variant. Accepts both the
-// provider-qualified id ("deepseek/deepseek-v4-pro") and the bare id
-// ("deepseek-v4-pro"); the returned variant is always provider-qualified.
-func MaxVariantOf(model string) (string, bool) {
-	v, ok := maxVariants[model]
-	return v, ok
 }
 
 // fallbackAgents is the hardcoded model→agent fallback used when the sources
@@ -358,38 +325,30 @@ func (r *Registry) LoadFallback() {
 }
 
 // ResolveModel resolves an alias (e.g. "gpt-4o") to its real model ID if mapped
-// in cfg.ModelAliases, strips reasoning effort / max suffixes (e.g. "(max)",
-// "(high)", ":max"), and maps models to their -max extended context variants
-// when requested by suffix or when cfg.PreferMaxModels is enabled. A -max
-// upgrade applies ONLY when the upgraded variant is actually routed by the
-// live registry (a phantom variant would trip upstream 403
-// free_mode_invalid_agent_model). When the upgrade is not applicable the
-// base model is kept.
+// in cfg.ModelAliases, and strips reasoning-effort / context suffixes (e.g.
+// "(max)", "(high)", ":max") so the bare upstream id is sent on the wire.
+// The proxy NEVER auto-upgrades base models to their -max extended-context
+// variants: those are per-account upstream provisions (unprovisioned accounts
+// are coerced upstream), so a client that holds a -max grant requests the id
+// literally.
 func (r *Registry) ResolveModel(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return ""
 	}
 
-	isMax := false
 	if strings.HasSuffix(model, ")") {
 		if idx := strings.LastIndex(model, "("); idx > 0 {
 			tag := strings.ToLower(strings.TrimSpace(model[idx+1 : len(model)-1]))
 			switch tag {
-			case "max":
-				isMax = true
-				model = strings.TrimSpace(model[:idx])
-			case "high", "medium", "low", "minimal", "xhigh", "ultra":
+			case "max", "high", "medium", "low", "minimal", "xhigh", "ultra":
 				model = strings.TrimSpace(model[:idx])
 			}
 		}
 	} else if idx := strings.LastIndex(model, ":"); idx > 0 {
 		tag := strings.ToLower(strings.TrimSpace(model[idx+1:]))
 		switch tag {
-		case "max":
-			isMax = true
-			model = strings.TrimSpace(model[:idx])
-		case "high", "medium", "low", "minimal", "xhigh", "ultra":
+		case "max", "high", "medium", "low", "minimal", "xhigh", "ultra":
 			model = strings.TrimSpace(model[:idx])
 		}
 	}
@@ -404,64 +363,7 @@ func (r *Registry) ResolveModel(model string) string {
 		}
 	}
 
-	preferMax := isMax
-	if cfg != nil && cfg.PreferMaxModels {
-		preferMax = true
-	}
-
-	if preferMax {
-		if upgraded, ok := MaxVariantOf(model); ok {
-			if maxUpgradeAllowed(r, upgraded) {
-				return upgraded
-			}
-			return model
-		}
-		// Stock client names the default aliases already resolved (or that
-		// have none): keep the historic upgrade path through the same gates.
-		if upgraded, ok := legacyMaxVariants[model]; ok {
-			if maxUpgradeAllowed(r, upgraded) {
-				return upgraded
-			}
-			return model
-		}
-	}
-
 	return model
-}
-
-// maxUpgradeAllowed reports whether an upgrade to the given -max variant is
-// safe for the registry's current route table: the variant must be routed by
-// the live registry (modelToAgent) — a phantom variant would trip upstream
-// 403 free_mode_invalid_agent_model.
-//
-// r may be nil (no route table — treated as routed for compatibility with a
-// bare registry).
-func maxUpgradeAllowed(r *Registry, upgraded string) bool {
-	if r != nil && !r.IsModelRouted(upgraded) {
-		return false
-	}
-	return true
-}
-
-// IsModelRouted reports whether the registry currently routes model: true
-// when AgentForModel would succeed after alias resolution. ResolveModel uses
-// it to refuse -max upgrades whose agent root is missing from the live
-// mapping (an unrouted variant surfaces via /v1/models and trips upstream
-// 403 free_mode_invalid_agent_model).
-func (r *Registry) IsModelRouted(model string) bool {
-	if r == nil {
-		return false
-	}
-	model = strings.TrimSpace(model)
-	if cfg := r.cfg.Load(); cfg != nil && len(cfg.ModelAliases) > 0 {
-		if realModel, ok := cfg.ModelAliases[model]; ok && realModel != "" {
-			model = realModel
-		}
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	_, ok := r.modelToAgent[model]
-	return ok
 }
 
 // AgentForModel returns the agent id that serves model (after resolving aliases),

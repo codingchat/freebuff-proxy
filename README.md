@@ -244,7 +244,7 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `UPSTREAM_BASE_URL` | `https://codebuff.com` | Upstream API endpoint (normalized to `www.codebuff.com`) |
 | `AUTH_TOKENS` | `""` | Comma-separated upstream tokens (empty = bridge mode) |
 | `MODELS_HIDE_UNAVAILABLE` | `false` | `/v1/models` prunes models marked unavailable (region/tier demotion, quota exhaustion) so picker clients cannot select them; off by default so a stale signal never hides a working model |
-| `MODELS_ALLOW` | `""` | Comma-separated model allowlist (JSON array or string). When set, only these RESOLVED model ids are served — `/v1/models` lists only them, and `chat/messages/responses` requests whose resolved model (after alias resolution and `-max` upgrades) is not listed are rejected with `404 model_not_found` (`"model not allowed by MODELS_ALLOW"`). With `PREFER_MAX_MODELS=true` an allowlisted **base** id (e.g. `deepseek/deepseek-v4-flash`) also accepts its `-max` variant — clients keep requesting the base id, the proxy serves the extended-context variant. Empty = all models allowed |
+| `MODELS_ALLOW` | `""` | Comma-separated model allowlist (JSON array or string). When set, only these model ids are served — `/v1/models` lists only them, and `chat/messages/responses` requests whose resolved model (after alias resolution) is not listed are rejected with `404 model_not_found` (`"model not allowed by MODELS_ALLOW"`). Empty = all models allowed |
 | `AUTO_DISCOVER_TOKEN` | `true` | When `AUTH_TOKENS` is empty, read credentials from the official CLI login files (`false` disables) |
 | `API_KEYS` | `""` | Comma-separated client keys required for `/v1/*` (empty = open; ignored in bridge mode) |
 | `ADMIN_TOKEN` | `""` | Bearer token that `POST /admin/reload` requires when set (empty = unauthenticated in default deployments; a startup warning is logged). Also the login password for the [admin dashboard](#admin-dashboard): the same value unlocks the login page |
@@ -407,7 +407,7 @@ See [Dashboard Guide](docs/dashboard.md) for access, Docker caveats, and hardeni
 - [9router Integration](docs/9router-integration.md): router dashboard setup in bridge mode
 - [Dashboard Guide](docs/dashboard.md): the admin web UI: access, pages, Docker caveats, hardening
 - [Manual Testing](docs/testing.md): verify the proxy on Linux or Windows by hand, step by step
-- [Version Stability & Ban Findings](docs/getting-started.md#access-tiers--workarounds): **read before upgrading** — why v0.11.2 bridge is the proven-stable deployment and how `PREFER_MAX_MODELS` on newer versions caused instant account bans
+- [Version Stability & Ban Findings](docs/getting-started.md#access-tiers--workarounds): **read before upgrading** — why v0.11.2 bridge is the proven-stable deployment
 
 ---
 

@@ -1064,23 +1064,27 @@ func TestModelsAllowResolvedAlias(t *testing.T) {
 	}
 }
 
-// TestModelsAllowMaxUpgrade pins the PREFER_MAX_MODELS interaction: the
-// allowlist accepts both the -max UPGRADED id directly AND a base-model id
-// whose -max variant is the resolved target (auto-upgrade + base-only
-// allowlist coexist), while anything outside the list stays rejected.
-func TestModelsAllowMaxUpgrade(t *testing.T) {
+// TestModelsAllowPassthrough pins the simplified allowlist interaction: no
+// auto-upgrade exists, so an allowlisted BASE id serves exactly the base
+// model, an allowlisted -max id serves the -max model, and the catalog
+// always stays exactly the MODELS_ALLOW list.
+func TestModelsAllowPassthrough(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.ChatBody = testutil.SSEEvent(chunk("chatcmpl-max", 1, `"choices":[{"index":0,"delta":{"content":"ping"},"finish_reason":"stop"}]`))
 	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) {
-		c.PreferMaxModels = true
-		c.ModelsAllow = []string{"deepseek/deepseek-v4-pro-max"}
+		c.ModelsAllow = []string{"deepseek/deepseek-v4-pro"}
 	}, mock)
 
-	// A base client id upgrades to the allowlisted -max variant → served.
+	// The allowlisted base id is served as-is (no -max upgrade).
 	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("deepseek/deepseek-v4-pro"), nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("chat (max-upgraded, max listed) status = %d, want 200: %s", resp.StatusCode, data)
+		t.Fatalf("chat (allowlisted base) status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	// A -max id NOT in the allowlist stays rejected (no implicit expansion).
+	resp, data = doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("deepseek/deepseek-v4-pro-max"), nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("chat (unlisted -max) status = %d, want 404: %s", resp.StatusCode, data)
 	}
 	// A model outside the list stays rejected.
 	resp, data = doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
@@ -1088,30 +1092,8 @@ func TestModelsAllowMaxUpgrade(t *testing.T) {
 		t.Fatalf("chat (disallowed) status = %d, want 404: %s", resp.StatusCode, data)
 	}
 
-	// Base-only allowlist + auto-upgrade: the resolved -max id is accepted
-	// through the allowlisted base id, so clients may keep requesting the
-	// base id while the proxy serves the extended-context variant.
-	mock2 := testutil.NewMock()
-	defer mock2.Close()
-	mock2.ChatBody = testutil.SSEEvent(chunk("chatcmpl-max2", 1, `"choices":[{"index":0,"delta":{"content":"ping"},"finish_reason":"stop"}]`))
-	ts2, _ := newTestServerCfg(t, nil, func(c *config.Config) {
-		c.PreferMaxModels = true
-		c.ModelsAllow = []string{"deepseek/deepseek-v4-pro"}
-	}, mock2)
-
-	resp, data = doJSON(t, http.MethodPost, ts2.URL+"/v1/chat/completions", chatBody("deepseek/deepseek-v4-pro"), nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("chat (base allowlist + upgrade) status = %d, want 200: %s", resp.StatusCode, data)
-	}
-	// The -max id is also accepted when derived from an allowlisted base.
-	resp, data = doJSON(t, http.MethodPost, ts2.URL+"/v1/chat/completions", chatBody("deepseek/deepseek-v4-pro-max"), nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("chat (direct -max id of allowed base) status = %d, want 200: %s", resp.StatusCode, data)
-	}
-
-	// /v1/models must NOT expand to the -max variant: the catalog surface
-	// stays exactly the MODELS_ALLOW base ids even with PREFER_MAX_MODELS on.
-	resp, data = doJSON(t, http.MethodGet, ts2.URL+"/v1/models", nil, nil)
+	// /v1/models lists exactly the allowlist, nothing else.
+	resp, data = doJSON(t, http.MethodGet, ts.URL+"/v1/models", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("models status = %d, want 200: %s", resp.StatusCode, data)
 	}
@@ -1134,7 +1116,7 @@ func TestModelsAllowMaxUpgrade(t *testing.T) {
 		t.Errorf("/v1/models leaked -max variant under base-only MODELS_ALLOW: %v", listed)
 	}
 	if len(out.Data) != 1 {
-		t.Errorf("model count = %d, want 1 (base allowlist only, no -max expansion)", len(out.Data))
+		t.Errorf("model count = %d, want 1 (base allowlist only)", len(out.Data))
 	}
 }
 

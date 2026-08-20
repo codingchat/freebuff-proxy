@@ -835,188 +835,64 @@ func TestRefreshLogsSuccess(t *testing.T) {
 	}
 }
 
-func TestResolveModelPreferMaxAndSuffixes(t *testing.T) {
-	t.Run("suffix stripping with PreferMaxModels=false", func(t *testing.T) {
-		cfg := &config.Config{
-			PreferMaxModels: false,
-		}
-		r := New(cfg, nil)
-		// The -max variants must be routed for the upgrade to apply (the
-		// gate refuses unrouted variants): load the offline fallback, which
-		// maps every -max variant to its agent root.
-		r.LoadFallback()
-
-		cases := []struct {
-			input string
-			want  string
-		}{
-			{"deepseek-v4-pro(high)", "deepseek-v4-pro"},
-			{"deepseek-v4-pro(medium)", "deepseek-v4-pro"},
-			{"deepseek-v4-pro(low)", "deepseek-v4-pro"},
-			{"deepseek-v4-pro:high", "deepseek-v4-pro"},
-			{" deepseek-v4-pro(high) ", "deepseek-v4-pro"},
-			{"deepseek-v4-pro(max)", "deepseek/deepseek-v4-pro-max"},
-			{"deepseek-v4-pro:max", "deepseek/deepseek-v4-pro-max"},
-			{"deepseek/deepseek-v4-pro(max)", "deepseek/deepseek-v4-pro-max"},
-			{"deepseek/deepseek-v4-flash(max)", "deepseek/deepseek-v4-flash-max"},
-			{"openai/gpt-5.6-luna(max)", "openai/gpt-5.6-luna-max"},
-			{"gpt-4o(max)", "deepseek/deepseek-v4-pro-max"},
-			{"gpt-4o:max", "deepseek/deepseek-v4-pro-max"},
-			{"deepseek-chat(max)", "deepseek/deepseek-v4-flash-max"},
-			{"deepseek-reasoner(max)", "deepseek/deepseek-v4-pro-max"},
-			{"gpt-5.6-luna(max)", "openai/gpt-5.6-luna-max"},
-			{"minimax/minimax-m3(high)", "minimax/minimax-m3"},
-			{"minimax/minimax-m3(max)", "minimax/minimax-m3"},
-		}
-
-		for _, tc := range cases {
-			if got := r.ResolveModel(tc.input); got != tc.want {
-				t.Errorf("ResolveModel(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		}
-	})
-
-	t.Run("PreferMaxModels=true", func(t *testing.T) {
-		cfg := &config.Config{
-			PreferMaxModels: true,
-		}
-		r := New(cfg, nil)
-		// Same routing requirement as above: the -max variants must exist in
-		// the route table or the upgrade is refused.
-		r.LoadFallback()
-
-		cases := []struct {
-			input string
-			want  string
-		}{
-			{"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro-max"},
-			{"deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash-max"},
-			{"openai/gpt-5.6-luna", "openai/gpt-5.6-luna-max"},
-			{"deepseek-v4-pro", "deepseek/deepseek-v4-pro-max"},
-			{"deepseek-v4-flash", "deepseek/deepseek-v4-flash-max"},
-			{"gpt-5.6-luna", "openai/gpt-5.6-luna-max"},
-			{"gpt-4o", "deepseek/deepseek-v4-pro-max"},
-			{"deepseek-chat", "deepseek/deepseek-v4-flash-max"},
-			{"deepseek-reasoner", "deepseek/deepseek-v4-pro-max"},
-			{"deepseek/deepseek-v4-pro(high)", "deepseek/deepseek-v4-pro-max"},
-			{"deepseek/deepseek-v4-pro:high", "deepseek/deepseek-v4-pro-max"},
-			{"deepseek/deepseek-v4-pro-max", "deepseek/deepseek-v4-pro-max"},
-			{"minimax/minimax-m3", "minimax/minimax-m3"},
-			{"unknown", "unknown"},
-		}
-
-		for _, tc := range cases {
-			if got := r.ResolveModel(tc.input); got != tc.want {
-				t.Errorf("ResolveModel(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		}
-	})
-
-	t.Run("AgentForModel with max resolution", func(t *testing.T) {
-		r := New(&config.Config{PreferMaxModels: true}, nil)
-		r.LoadFallback()
-
-		agent, err := r.AgentForModel("deepseek-v4-pro")
-		if err != nil {
-			t.Fatalf("AgentForModel(deepseek-v4-pro) err = %v", err)
-		}
-		if agent != "base2-free-deepseek-pro-max" {
-			t.Errorf("AgentForModel(deepseek-v4-pro) = %q, want base2-free-deepseek-pro-max", agent)
-		}
-	})
-}
-
-// TestMaxVariantOf pins the -max variant map: provider-qualified and bare
-// base ids both resolve, the returned variant is always provider-qualified,
-// and models without a -max variant report false.
-func TestMaxVariantOf(t *testing.T) {
-	cases := []struct {
-		input string
-		want  string
-		ok    bool
-	}{
-		{"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro-max", true},
-		{"deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash-max", true},
-		{"openai/gpt-5.6-luna", "openai/gpt-5.6-luna-max", true},
-		{"deepseek-v4-pro", "deepseek/deepseek-v4-pro-max", true},
-		{"deepseek-v4-flash", "deepseek/deepseek-v4-flash-max", true},
-		{"gpt-5.6-luna", "openai/gpt-5.6-luna-max", true},
-		{"deepseek/deepseek-v4-pro-max", "", false}, // already a max variant
-		{"mimo/mimo-v2.5", "", false},
-		{"z-ai/glm-5.2", "", false},
-		{"unknown", "", false},
-	}
-	for _, tc := range cases {
-		got, ok := MaxVariantOf(tc.input)
-		if got != tc.want || ok != tc.ok {
-			t.Errorf("MaxVariantOf(%q) = (%q, %v), want (%q, %v)", tc.input, got, ok, tc.want, tc.ok)
-		}
-	}
-}
-
-// TestIsModelRouted verifies the route-table membership check, including
-// alias-aware resolution: a bare alias maps to its real model before the
-// lookup, and models absent from the registry report false.
-func TestIsModelRouted(t *testing.T) {
+// TestResolveModelSuffixStripping pins the simplified resolution: alias
+// mapping plus suffix stripping only. The proxy NEVER auto-upgrades base
+// models to their -max variants (those are per-account upstream provisions),
+// so "(max)"/":max" suffixes resolve to the bare base id.
+func TestResolveModelSuffixStripping(t *testing.T) {
 	r := New(&config.Config{
 		ModelAliases: map[string]string{"gpt-4o": "deepseek/deepseek-v4-pro"},
 	}, nil)
 	r.LoadFallback()
 
-	for _, m := range []string{
-		"deepseek/deepseek-v4-pro",
-		"deepseek/deepseek-v4-pro-max",
-		"openai/gpt-5.6-luna-max",
-		"gpt-4o", // alias-resolved to a routed model
-	} {
-		if !r.IsModelRouted(m) {
-			t.Errorf("IsModelRouted(%q) = false, want true", m)
-		}
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"deepseek-v4-pro(high)", "deepseek-v4-pro"},
+		{"deepseek-v4-pro(medium)", "deepseek-v4-pro"},
+		{"deepseek-v4-pro(low)", "deepseek-v4-pro"},
+		{"deepseek-v4-pro:high", "deepseek-v4-pro"},
+		{" deepseek-v4-pro(high) ", "deepseek-v4-pro"},
+		{"deepseek-v4-pro(max)", "deepseek-v4-pro"},
+		{"deepseek-v4-pro:max", "deepseek-v4-pro"},
+		{"deepseek/deepseek-v4-pro(max)", "deepseek/deepseek-v4-pro"},
+		{"deepseek/deepseek-v4-flash(max)", "deepseek/deepseek-v4-flash"},
+		{"openai/gpt-5.6-luna(max)", "openai/gpt-5.6-luna"},
+		{"deepseek/deepseek-v4-flash-max", "deepseek/deepseek-v4-flash-max"},
+		{"openai/gpt-5.6-luna-max", "openai/gpt-5.6-luna-max"},
+		{"minimax/minimax-m3(high)", "minimax/minimax-m3"},
+		{"minimax/minimax-m3(max)", "minimax/minimax-m3"},
+		{"gpt-4o", "deepseek/deepseek-v4-pro"},
+		{"gpt-4o(max)", "deepseek/deepseek-v4-pro"},
+		{"unknown", "unknown"},
 	}
-	for _, m := range []string{
-		"deepseek-v4-pro", // bare name is not in the route table
-		"does/not-exist",
-		"",
-	} {
-		if r.IsModelRouted(m) {
-			t.Errorf("IsModelRouted(%q) = true, want false", m)
+
+	for _, tc := range cases {
+		if got := r.ResolveModel(tc.input); got != tc.want {
+			t.Errorf("ResolveModel(%q) = %q, want %q", tc.input, got, tc.want)
 		}
-	}
-	if got := r.IsModelRouted("gpt-4o"); got != true {
-		t.Errorf("IsModelRouted(gpt-4o) after aliases = %v, want true", got)
 	}
 }
 
-// TestResolveModelMaxUpgradeRequiresRoutedVariant pins the core fix: a -max
-// upgrade (PREFER_MAX_MODELS or explicit (max) suffix) applies ONLY when the
-// upgraded variant is actually routed by the registry. A fresh registry
-// routes nothing, so the base model stays; after LoadFallback the variants
-// exist and the upgrade applies.
-func TestResolveModelMaxUpgradeRequiresRoutedVariant(t *testing.T) {
-	t.Run("unrouted variant keeps base model", func(t *testing.T) {
-		r := New(&config.Config{PreferMaxModels: true}, nil) // no fallback: nothing routed
+// TestResolveModelMaxUpgradeRemoved pins the simplification: no model id is
+// ever auto-upgraded to a -max variant — the suffix is stripped and the base
+// id returned, exactly as upstream expects for non-provisioned accounts.
+func TestResolveModelMaxUpgradeRemoved(t *testing.T) {
+	r := New(&config.Config{}, nil)
+	r.LoadFallback()
 
-		cases := []struct{ input, want string }{
-			{"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro"},
-			{"deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash"},
-			{"openai/gpt-5.6-luna", "openai/gpt-5.6-luna"},
-			{"deepseek-v4-pro", "deepseek-v4-pro"},
-			{"deepseek-v4-pro(max)", "deepseek-v4-pro"},
-			{"openai/gpt-5.6-luna(max)", "openai/gpt-5.6-luna"},
+	cases := []struct{ input, want string }{
+		{"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro"},
+		{"deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash"},
+		{"openai/gpt-5.6-luna", "openai/gpt-5.6-luna"},
+		{"deepseek-v4-pro", "deepseek-v4-pro"},
+		{"deepseek-v4-pro(max)", "deepseek-v4-pro"},
+		{"openai/gpt-5.6-luna(max)", "openai/gpt-5.6-luna"},
+	}
+	for _, tc := range cases {
+		if got := r.ResolveModel(tc.input); got != tc.want {
+			t.Errorf("ResolveModel(%q) = %q, want %q (no auto-upgrade)", tc.input, got, tc.want)
 		}
-		for _, tc := range cases {
-			if got := r.ResolveModel(tc.input); got != tc.want {
-				t.Errorf("ResolveModel(%q) on unrouted registry = %q, want %q (base kept)", tc.input, got, tc.want)
-			}
-		}
-	})
-
-	t.Run("routed variant upgrades", func(t *testing.T) {
-		r := New(&config.Config{PreferMaxModels: true}, nil)
-		r.LoadFallback()
-
-		if got := r.ResolveModel("deepseek/deepseek-v4-pro"); got != "deepseek/deepseek-v4-pro-max" {
-			t.Errorf("ResolveModel(deepseek-v4-pro) with routed fallback = %q, want -max", got)
-		}
-	})
+	}
 }

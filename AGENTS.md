@@ -55,7 +55,7 @@ Official reference specifications and SDKs reside in `reference/` (gitignored).
 
 - `cmd/freebuff-proxy` — Entrypoint, CLI flag parsing (`-doctor`, `-test-token`, `-version`, `-config`, `-setup`).
 - `internal/config` — Typed configuration loader, `.env` + JSON precedence, hot-reloading via `atomic.Pointer`.
-- `internal/registry` — Model catalog synced from upstream; alias resolution, `-max` variant upgrades, and `SmartToyModels` gate.
+- `internal/registry` — Model catalog synced from upstream; alias resolution and the `ServedModels` gate.
 - `internal/convert` — Pure conversion logic:
   - `convert.go` — Request normalization, parameter whitelisting, role rewriting (`developer` → `system`), legacy function normalization.
   - `accumulator.go` — Non-streaming response assembler, XML tool call extractor, `Finish()` JSON builder.

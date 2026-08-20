@@ -28,13 +28,10 @@ func probeModel(reg *registry.Registry) string {
 }
 
 // modelAllowed reports whether a model may be served. Every model must first
-// pass the hardcoded SmartToyModels gate (9router smart_toy component); then,
-// when MODELS_ALLOW is non-empty, the RESOLVED model id (after registry alias
-// resolution and -max upgrades) must be listed exactly — OR, when
-// PREFER_MAX_MODELS is enabled, the resolved id may be the -max variant of
-// an allowlisted base model.
+// pass the hardcoded ServedModels gate; then, when MODELS_ALLOW is non-empty,
+// the well-known (alias/suffix-resolved) model id must be listed exactly.
 func (s *Server) modelAllowed(model string) bool {
-	if !registry.SmartToyModels[model] {
+	if !registry.ServedModels[model] {
 		return false
 	}
 	cfg := s.cfg.Load()
@@ -46,22 +43,15 @@ func (s *Server) modelAllowed(model string) bool {
 		if id == model {
 			return true
 		}
-		if cfg.PreferMaxModels {
-			if upgraded, ok := registry.MaxVariantOf(id); ok && upgraded == model {
-				return true
-			}
-		}
 	}
 	return false
 }
 
 // modelListed is the strict listing filter for /v1/models: like modelAllowed
-// it gates on SmartToyModels first; unlike modelAllowed it does NOT expand
-// base ids to their -max variants, so PREFER_MAX_MODELS keeps the catalog
-// surface exactly the MODELS_ALLOW list (clients request the base id; the
-// proxy serves the extended-context variant invisibly).
+// it gates on ServedModels first; when MODELS_ALLOW is set the catalog
+// surface is exactly the allowlist.
 func (s *Server) modelListed(model string) bool {
-	if !registry.SmartToyModels[model] {
+	if !registry.ServedModels[model] {
 		return false
 	}
 	allow := s.cfg.Load().ModelsAllow
