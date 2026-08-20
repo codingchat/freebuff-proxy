@@ -20,19 +20,16 @@ import (
 )
 
 // quotaSummary renders the live per-model session quota from a probe's
-// RateLimitsByModel map (models sorted for determinism), plus the account
-// tier and glmPromo when the response carried them (the
+// RateLimitsByModel map (models sorted for determinism), plus glmPromo when
+// the response carried it (the
 // x-freebuff-include-unused-rate-limits probe header asks upstream to
 // include the unused limits); "" when the upstream response carried no quota
 // data (compact responses omit it).
 func quotaSummary(st *upstream.SessionState) string {
-	if st == nil || (len(st.RateLimitsByModel) == 0 && st.AccessTier == "" && st.GlmPromo == "") {
+	if st == nil || (len(st.RateLimitsByModel) == 0 && st.GlmPromo == "") {
 		return ""
 	}
 	var parts []string
-	if st.AccessTier != "" {
-		parts = append(parts, "tier "+st.AccessTier)
-	}
 	models := make([]string, 0, len(st.RateLimitsByModel))
 	for id := range st.RateLimitsByModel {
 		models = append(models, id)
@@ -291,8 +288,8 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 		}
 	case errors.As(err, &lie):
 		// Issue #74 P2: the egress IP cannot serve the requested model.
-		// 409 (not a quota lock): a different egress or a full-tier token
-		// may still serve the model. The body's retryAfterMs is surfaced
+		// 409 (not a quota lock): a different egress or token may still
+		// serve the model. The body's retryAfterMs is surfaced
 		// as Retry-After but does not set the unfit window.
 		status, code = http.StatusConflict, "model_ip_limited"
 		message, retryAfter = lie.Error(), lie.RetryAfter

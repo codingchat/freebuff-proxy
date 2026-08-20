@@ -16,10 +16,10 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 		ss := tok.session.Snapshot()
 		msgs := p.usageCount(i)
 
-		// Region/tier view: the session snapshot carries the last admitted
-		// tier/country; an active country-block cooldown overrides it with
-		// the remembered block (the session never admitted after a block,
-		// so its snapshot would be empty for the blocked country).
+		// Region view: the session snapshot carries the last admitted country; an
+		// active country-block cooldown overrides it with the remembered
+		// block (the session never admitted after a block, so its snapshot
+		// would be empty for the blocked country).
 		countryCode, countryReason := ss.CountryCode, ss.CountryBlockReason
 		if cbe := tok.runs.CountryBlockedError(); cbe != nil {
 			if cbe.CountryCode != "" {
@@ -85,7 +85,6 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			SessionInstanceID:       ss.InstanceID,
 			SessionQueuePosition:    ss.QueuePosition,
 			SessionQueueDepth:       ss.QueueDepth,
-			TierAccess:              ss.TierAccess,
 			CountryCode:             countryCode,
 			CountryBlockReason:      countryReason,
 			SessionActiveUsersForIP: ss.ActiveUsersForIP,

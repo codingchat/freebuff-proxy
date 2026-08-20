@@ -760,13 +760,12 @@ func TestModelsEndpoint(t *testing.T) {
 	var out struct {
 		Object string `json:"object"`
 		Data   []struct {
-			ID                string `json:"id"`
-			Object            string `json:"object"`
-			Created           int64  `json:"created"`
-			OwnedBy           string `json:"owned_by"`
-			Available         bool   `json:"available"`
-			Status            string `json:"status"`
-			CurrentAccessTier string `json:"current_access_tier"`
+			ID        string `json:"id"`
+			Object    string `json:"object"`
+			Created   int64  `json:"created"`
+			OwnedBy   string `json:"owned_by"`
+			Available bool   `json:"available"`
+			Status    string `json:"status"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
@@ -918,75 +917,12 @@ func TestHealthzQuota(t *testing.T) {
 }
 
 // TestModelsAnnotationWithQuota verifies /v1/models reflects a session that
-// admitted a model: status becomes "available" once quotaByModel mentions it,
-// and current_access_tier carries the admission's tier.
+// admitted a model: status becomes "available" once quotaByModel mentions it.
 func TestModelsAnnotationWithQuota(t *testing.T) {
 	mock := quotaMock(t)
-	mock.AccessTier = "limited"
 	mock.CountryCode = "US"
 	ts, _ := newTestServer(t, nil, mock)
 
-	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
-	}
-
-	resp, data = doJSON(t, http.MethodGet, ts.URL+"/v1/models", nil, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("models status = %d, want 200: %s", resp.StatusCode, data)
-	}
-	var out struct {
-		Data []struct {
-			ID                string `json:"id"`
-			Available         bool   `json:"available"`
-			Status            string `json:"status"`
-			CurrentAccessTier string `json:"current_access_tier"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("models is not JSON: %v: %s", err, data)
-	}
-	var found *struct {
-		ID                string `json:"id"`
-		Available         bool   `json:"available"`
-		Status            string `json:"status"`
-		CurrentAccessTier string `json:"current_access_tier"`
-	}
-	for i := range out.Data {
-		if out.Data[i].ID == modelA {
-			found = &out.Data[i]
-			break
-		}
-	}
-	if found == nil {
-		t.Fatalf("model %q not in /v1/models", modelA)
-	}
-	if !found.Available {
-		t.Errorf("available = false, want true")
-	}
-	if found.Status != "available" {
-		t.Errorf("status = %q, want available (session admitted the model)", found.Status)
-	}
-	if found.CurrentAccessTier != "limited" {
-		t.Errorf("current_access_tier = %q, want limited (from session admission)", found.CurrentAccessTier)
-	}
-}
-
-// TestModelsRegionLimited verifies the tier-aware annotation: with a token in
-// the 'limited' tier (region/privacy demotion), a model outside the limited
-// allowlist with no admission signal is marked available=false +
-// status=region_limited, while an allowlisted model (mimo-v2.5) stays
-// available. An admitted model keeps its available status (admission is
-// ground truth).
-func TestModelsRegionLimited(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	mock.AccessTier = "limited"
-	mock.CountryCode = "US"
-	ts, _ := newTestServer(t, nil, mock)
-
-	// Admit a session so the token's snapshot carries tier=limited. The
-	// admitted model (modelA) becomes available by admission.
 	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
@@ -1006,86 +942,25 @@ func TestModelsRegionLimited(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("models is not JSON: %v: %s", err, data)
 	}
-	byID := map[string]struct {
-		Available bool
-		Status    string
-	}{}
-	for _, m := range out.Data {
-		byID[m.ID] = struct {
-			Available bool
-			Status    string
-		}{m.Available, m.Status}
+	var found *struct {
+		ID        string `json:"id"`
+		Available bool   `json:"available"`
+		Status    string `json:"status"`
 	}
-	// mimo/mimo-v2.5 is on the limited allowlist -> available.
-	if m, ok := byID["mimo/mimo-v2.5"]; !ok || !m.Available {
-		t.Errorf("mimo/mimo-v2.5 = %+v, want available:true on limited tier", m)
-	}
-	// deepseek-v4-flash is NOT on the limited allowlist anymore (disabled upstream)
-	// and was never admitted -> available:false + region_limited.
-	if m, ok := byID["deepseek/deepseek-v4-flash"]; !ok {
-		t.Errorf("deepseek-v4-flash missing from /v1/models")
-	} else if m.Available {
-		t.Errorf("deepseek-v4-flash available = true, want false on limited tier")
-	} else if m.Status != "region_limited" {
-		t.Errorf("deepseek-v4-flash status = %q, want region_limited", m.Status)
-	}
-	// anthropic/claude-fable-5 is NOT on the limited allowlist and was never
-	// admitted -> available:false + region_limited.
-	if m, ok := byID["anthropic/claude-fable-5"]; !ok {
-		t.Errorf("fable-5 missing from /v1/models")
-	} else if m.Available {
-		t.Errorf("fable-5 available = true, want false on limited tier")
-	} else if m.Status != "region_limited" {
-		t.Errorf("fable-5 status = %q, want region_limited", m.Status)
-	}
-}
-
-// TestModelsHideUnavailable verifies MODELS_HIDE_UNAVAILABLE=true prunes
-// region-limited models from the list so picker clients cannot select them.
-func TestModelsHideUnavailable(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	mock.AccessTier = "limited"
-	mock.CountryCode = "US"
-	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) {
-		c.ModelsHideUnavailable = true
-	}, mock)
-
-	// Admit a session so the token snapshot carries tier=limited.
-	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
-	}
-
-	resp, data = doJSON(t, http.MethodGet, ts.URL+"/v1/models", nil, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("models status = %d, want 200: %s", resp.StatusCode, data)
-	}
-	var out struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("models is not JSON: %v: %s", err, data)
-	}
-	for _, m := range out.Data {
-		if m.ID == "anthropic/claude-fable-5" {
-			t.Errorf("fable-5 present in /v1/models with MODELS_HIDE_UNAVAILABLE=true")
-		}
-		if m.ID == "deepseek/deepseek-v4-flash" {
-			t.Errorf("deepseek-v4-flash present in /v1/models with MODELS_HIDE_UNAVAILABLE=true (disabled on limited tier)")
-		}
-	}
-	found := false
-	for _, m := range out.Data {
-		if m.ID == "mimo/mimo-v2.5" {
-			found = true
+	for i := range out.Data {
+		if out.Data[i].ID == modelA {
+			found = &out.Data[i]
 			break
 		}
 	}
-	if !found {
-		t.Errorf("mimo/mimo-v2.5 pruned, want kept (limited allowlist)")
+	if found == nil {
+		t.Fatalf("model %q not in /v1/models", modelA)
+	}
+	if !found.Available {
+		t.Errorf("available = false, want true")
+	}
+	if found.Status != "available" {
+		t.Errorf("status = %q, want available (session admitted the model)", found.Status)
 	}
 }
 
@@ -1330,12 +1205,11 @@ func TestSmokeDefaultsToFallbackModel(t *testing.T) {
 	}
 }
 
-// TestHealthzModeTierCountry verifies healthz surfaces the effective routing
-// mode plus the per-token tier/country from the session admission.
-func TestHealthzModeTierCountry(t *testing.T) {
+// TestHealthzModeCountry verifies healthz surfaces the effective routing
+// mode plus the per-token country from the session admission.
+func TestHealthzModeCountry(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mock.AccessTier = "limited"
 	mock.CountryCode = "US"
 	ts, _ := newTestServer(t, nil, mock)
 
@@ -1351,7 +1225,6 @@ func TestHealthzModeTierCountry(t *testing.T) {
 	var out struct {
 		Mode   string `json:"mode"`
 		Tokens []struct {
-			Tier    string `json:"tier"`
 			Country string `json:"country"`
 		} `json:"tokens"`
 	}
@@ -1363,9 +1236,6 @@ func TestHealthzModeTierCountry(t *testing.T) {
 	}
 	if len(out.Tokens) != 1 {
 		t.Fatalf("tokens = %d, want 1", len(out.Tokens))
-	}
-	if out.Tokens[0].Tier != "limited" {
-		t.Errorf("tier = %q, want limited", out.Tokens[0].Tier)
 	}
 	if out.Tokens[0].Country != "US" {
 		t.Errorf("country = %q, want US", out.Tokens[0].Country)

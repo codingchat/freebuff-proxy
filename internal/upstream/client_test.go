@@ -392,7 +392,6 @@ func TestProbeAccount(t *testing.T) {
 	t.Run("200 with quota", func(t *testing.T) {
 		mock := testutil.NewMock()
 		defer mock.Close()
-		mock.AccessTier = "full"
 
 		client, err := New("tok", testConfig(mock.URL(), nil))
 		if err != nil {
@@ -404,9 +403,6 @@ func TestProbeAccount(t *testing.T) {
 		}
 		if st.Status != "active" || st.InstanceID != "inst-abc-123" {
 			t.Fatalf("probe state = %+v", st)
-		}
-		if st.AccessTier != "full" {
-			t.Errorf("probe AccessTier = %q, want full (captured from response JSON)", st.AccessTier)
 		}
 		q, ok := st.RateLimitsByModel["deepseek/deepseek-v4-flash"]
 		if !ok {
@@ -568,54 +564,6 @@ func TestSessionCallParsesRateLimitsByModel(t *testing.T) {
 	}
 	if q.Model != "z-ai/glm-5.2" {
 		t.Errorf("quota model = %q", q.Model)
-	}
-}
-
-// TestSessionCallParsesLimitedModelOffers verifies the limited-tier per-model
-// allowances from an admission response are parsed into SessionState,
-// including flex-time userResetAt.
-func TestSessionCallParsesLimitedModelOffers(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-abc-123","accessTier":"limited","limitedModelOffers":[{"model":"deepseek/deepseek-v4-flash","remaining":3,"total":5,"userRemaining":3,"userResetAt":"2026-08-16T07:00:00.000Z"}]}`)
-	}
-
-	client, _ := New("tok", testConfig(mock.URL(), nil))
-	st, err := client.CreateSession(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(st.LimitedModelOffers) != 1 {
-		t.Fatalf("LimitedModelOffers len = %d, want 1: %+v", len(st.LimitedModelOffers), st.LimitedModelOffers)
-	}
-	offer := st.LimitedModelOffers[0]
-	if offer.Model != "deepseek/deepseek-v4-flash" {
-		t.Errorf("model = %q", offer.Model)
-	}
-	if offer.Remaining != 3 || offer.Total != 5 || offer.UserRemaining != 3 {
-		t.Errorf("offer = %+v, want remaining=3 total=5 userRemaining=3", offer)
-	}
-	wantReset := time.Date(2026, 8, 16, 7, 0, 0, 0, time.UTC)
-	if !offer.UserResetAt.Equal(wantReset) {
-		t.Errorf("UserResetAt = %v, want %v", offer.UserResetAt, wantReset)
-	}
-}
-
-// TestSessionCallIgnoresMissingLimitedModelOffers verifies a full-tier or
-// compact admission without limitedModelOffers parses cleanly (nil slice).
-func TestSessionCallIgnoresMissingLimitedModelOffers(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-
-	client, _ := New("tok", testConfig(mock.URL(), nil))
-	st, err := client.CreateSession(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.LimitedModelOffers != nil {
-		t.Errorf("LimitedModelOffers = %+v, want nil when absent", st.LimitedModelOffers)
 	}
 }
 
@@ -3129,9 +3077,6 @@ func TestCompactPollAbsentTolerant(t *testing.T) {
 	if st.RateLimitsByModel != nil {
 		t.Errorf("RateLimitsByModel = %v, want nil on a compact poll without quotas", st.RateLimitsByModel)
 	}
-	if st.LimitedModelOffers != nil {
-		t.Errorf("LimitedModelOffers = %v, want nil on a compact poll without offers", st.LimitedModelOffers)
-	}
 	if got := <-gotCompact; got != "1" {
 		t.Errorf("compact header = %q, want 1", got)
 	}
@@ -3561,7 +3506,7 @@ func TestInjectEnvelopeTraceSessionIDAndFreshClientID(t *testing.T) {
 // (a third-party-proxy fingerprint the vendored CLI never sends; its session
 // GET returns the same response shape without it). The probe carries only
 // the standard Authorization + CLI-parity UA, and sessionCall still parses
-// accessTier/glmPromo/rateLimitsByModel when the response includes them.
+// glmPromo/rateLimitsByModel when the response includes them.
 func TestProbeAccountDoesNotSendIncludeUnusedRateLimits(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
@@ -3571,7 +3516,7 @@ func TestProbeAccountDoesNotSendIncludeUnusedRateLimits(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		gotUA = r.Header.Get("User-Agent")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-1","accessTier":"limited","glmPromo":{"dailySessions":2,"endsAt":"2026-08-20T07:00:00.000Z"},"rateLimitsByModel":{"deepseek/deepseek-v4-flash":{"model":"deepseek/deepseek-v4-flash","limit":6,"recentCount":2,"period":"pacific_day","resetAt":"2026-08-18T07:00:00.000Z"}}}`)
+		_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-1","glmPromo":{"dailySessions":2,"endsAt":"2026-08-20T07:00:00.000Z"},"rateLimitsByModel":{"deepseek/deepseek-v4-flash":{"model":"deepseek/deepseek-v4-flash","limit":6,"recentCount":2,"period":"pacific_day","resetAt":"2026-08-18T07:00:00.000Z"}}}`)
 	}
 	client, err := New("tok-a", testConfig(mock.URL(), nil))
 	if err != nil {
@@ -3589,9 +3534,6 @@ func TestProbeAccountDoesNotSendIncludeUnusedRateLimits(t *testing.T) {
 	}
 	if gotUA != cliUserAgent {
 		t.Errorf("User-Agent = %q, want %q (CLI-parity UA, no browser persona)", gotUA, cliUserAgent)
-	}
-	if st.AccessTier != "limited" {
-		t.Errorf("AccessTier = %q, want limited", st.AccessTier)
 	}
 	if st.GlmPromo == "" || !strings.Contains(st.GlmPromo, "dailySessions") {
 		t.Errorf("GlmPromo = %q, want raw glmPromo JSON", st.GlmPromo)

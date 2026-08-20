@@ -3,7 +3,6 @@ package pool
 import (
 	"time"
 
-	"freebuff-proxy/internal/session"
 	"freebuff-proxy/internal/upstream"
 )
 
@@ -48,20 +47,6 @@ func quotaLimitError(tok *tokenEntry, model string) *upstream.RateLimitError {
 		ResetAt:     q.ResetAt,
 		Body:        "session quota exhausted for model",
 	}
-}
-
-// provisionedFromQuota derives the set of model ids upstream provisioned for
-// this token from a session snapshot's QuotaByModel map (key = model id).
-// Absent/empty map → nil (unknown, tier gate alone decides).
-func provisionedFromQuota(ss session.SessionSnapshot) map[string]bool {
-	if len(ss.QuotaByModel) == 0 {
-		return nil
-	}
-	out := make(map[string]bool, len(ss.QuotaByModel))
-	for id := range ss.QuotaByModel {
-		out[id] = true
-	}
-	return out
 }
 
 // --- pool quota/snapshot ---

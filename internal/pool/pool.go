@@ -97,14 +97,7 @@ type Lease struct {
 	Model             string // the model this lease's session/run is bound to (authoritative for opts.Model; may differ from the requested model after #100 fallback)
 	AgentID           string
 	Run               *runs.Run
-	SessionInstanceID string // "" when the session is disabled
-	TierAccess        string // upstream accessTier, "" when unknown
-	TierCountry       string // upstream countryCode, "" when unknown
-	// ProvisionedModels is the set of model ids upstream provisioned for
-	// this token at admission (session snapshot QuotaByModel keys). Populated
-	// when the admission response carried rate limits; nil when unknown.
-	// Server uses it to gate -max upgrades (issue #140).
-	ProvisionedModels map[string]bool
+	SessionInstanceID string       // "" when the session is disabled
 	Bridge            *bridgeEntry // nil for pooled (fixed-token) leases
 	// entry is the fixed-token entry backing this lease. Set by Acquire so
 	// LeaseRelease always releases through the right run manager: after a
@@ -135,12 +128,6 @@ type bridgeEntry struct {
 	// spend is the per-client-token spend ledger (issue #87); guarded by
 	// Pool.bridgeMu like usage.
 	spend *spendLedger
-	// tier is the entry's last known upstream accessTier ("full"/"limited",
-	// "" when unknown), cached from the admission response and refreshed by
-	// successful session-liveness polls so a compact-poll-learned tier
-	// survives into later leases even when the admission omits it. Guarded
-	// by Pool.bridgeMu like usage.
-	tier string
 	// nextPollAt / pollFailures carry the session-liveness poll schedule
 	// (gap #2), touched only by the maintain goroutine (bridgeSessionPollTick).
 	nextPollAt   time.Time
@@ -183,11 +170,10 @@ type TokenSnapshot struct {
 	SpendLimit   int64
 	SpendPct     int
 	SpendLimited int
-	// TierAccess / CountryCode / CountryBlockReason are the token's last
-	// known upstream session tier and region-block state. CountryBlockReason
-	// is non-empty when the account (or its egress region) is blocked;
-	// surfaced by /v1/models availability annotation and healthz.
-	TierAccess         string
+	// CountryCode / CountryBlockReason are the token's last known upstream
+	// region-block state. CountryBlockReason is non-empty when the account
+	// (or its egress region) is blocked; surfaced by /v1/models availability
+	// annotation and healthz.
 	CountryCode        string
 	CountryBlockReason string
 	// SessionActiveUsersForIP is the last known distinct-user count on the
@@ -298,7 +284,7 @@ type Pool struct {
 	// and re-admission does not burn a daily session slot. The server guards
 	// NEW requests against it; Acquire deliberately does NOT consult it (the
 	// chat recovery loop re-acquires through the plain acquire closure and
-	// must reach a different token in mixed-tier pools). Guarded by unfitMu.
+	// must reach a different token in mixed pools). Guarded by unfitMu.
 	unfitMu sync.Mutex
 	unfit   map[unfitKey]unfitEntry
 
@@ -770,11 +756,6 @@ func (p *Pool) sessionPollTick(ctx context.Context) {
 		} else {
 			tok.pollFailures = 0
 			delay = sessionPollSuccessDelay(tok.session.Snapshot())
-			// Tier from successful poll: tokenEntry has no cached tier
-			// field (unlike bridgeEntry.tier); the session snapshot's
-			// TierAccess is authoritative and carries the last admitted
-			// tier — a compact poll that omits it reads the session
-			// manager's in-memory cache from the admission response.
 		}
 		tok.nextPollAt = time.Now().Add(delay)
 	}

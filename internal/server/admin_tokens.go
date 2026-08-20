@@ -73,11 +73,6 @@ func (s *Server) handleTokenTest(w http.ResponseWriter, r *http.Request) {
 		msg += " (" + q + ")"
 	}
 	msg += "."
-	// The probe is the pooled equivalent of a session admission: fold the
-	// observed accessTier + provisioned model set (rateLimitsByModel keys)
-	// into the runtime config for ResolveModel's -max upgrade gate
-	// (PREFER_MAX_MODELS gating).
-	s.rememberAccessTier(state.AccessTier, provisionedSet(state))
 	s.logger.Info("dashboard token probe ok", "token", id)
 	s.dash.RenderConfigResult(w, r, true, msg)
 }
@@ -251,13 +246,10 @@ func (s *Server) handleTokenAdd(w http.ResponseWriter, r *http.Request) {
 	// is zero-cost (no session slot claimed); a banned/country-blocked/
 	// auth-rejected token is refused with a clear message instead of being
 	// added and failing every request with 403 (the ban amplifier).
-	state, err := s.probeTokenGate(r.Context(), req.Token)
+	_, err := s.probeTokenGate(r.Context(), req.Token)
 	if err != nil {
 		s.dash.RenderConfigResult(w, r, false, "Token rejected by probe: "+err.Error())
 		return
-	}
-	if state != nil && state.AccessTier != "" {
-		s.logger.Info("dashboard token probed", "remote", remoteHost(r), "tier", state.AccessTier, "status", state.Status)
 	}
 	idx, err := s.pool.AddToken(req.Token)
 	if err != nil {

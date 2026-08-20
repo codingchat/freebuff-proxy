@@ -41,7 +41,6 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			"SpendPct":      snap.SpendPct,
 			"SpendLimited":  snap.SpendLimited,
 			"RiskLevel":     snap.RiskLevel,
-			"tier":          snap.TierAccess,
 			"country":       snap.CountryCode,
 		}
 		if len(snap.QuotaByModel) > 0 {

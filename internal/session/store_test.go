@@ -48,7 +48,6 @@ func TestStoreRoundtrip(t *testing.T) {
 		model:             "m",
 		expiresAt:         expiry,
 		gracePeriodEndsAt: expiry.Add(graceWindow),
-		accessTier:        "limited",
 		countryCode:       "US",
 	})
 

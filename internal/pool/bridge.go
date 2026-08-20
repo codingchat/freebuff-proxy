@@ -145,22 +145,6 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 			}
 		}
 	}
-	// Cache the admission's accessTier on the entry (PREFER_MAX_MODELS
-	// limited-tier gating stores the per-token tier here). The lease
-	// carries the fresh snapshot tier; a later lease falls back to this
-	// cache when the admission omits it.
-	tier := ss.TierAccess
-	if tier == "" {
-		p.bridgeMu.Lock()
-		tier = entry.tier
-		p.bridgeMu.Unlock()
-	}
-	if ss.TierAccess != "" {
-		p.bridgeMu.Lock()
-		entry.tier = ss.TierAccess
-		p.bridgeMu.Unlock()
-	}
-
 	// Issue #90a: pre-create the run at session admission (best-effort).
 	_ = entry.runs.Precreate(ctx, effectiveAgentID)
 	runStart := time.Now()
@@ -196,7 +180,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	}
 
 	p.logger.Debug("pool: bridge lease acquired", "model", effectiveModel, "agent", effectiveAgentID, "instance_id", instanceID,
-		"tier", tier, "country", ss.TierCountry)
+		"country", ss.CountryCode)
 	// Track the activity and end any idle-maintenance pause, mirroring
 	// Acquire: without this, IDLE_ROTATION_TIMEOUT was dead config in
 	// bridge mode — lastActive stayed zero forever, so the pool never
@@ -207,7 +191,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	p.idleFinished = false
 	p.lastActiveMu.Unlock()
 	return &Lease{Token: -1, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: instanceID,
-		TierAccess: tier, TierCountry: ss.TierCountry, Bridge: entry, AcquiredAt: time.Now()}, nil
+		Bridge: entry, AcquiredAt: time.Now()}, nil
 }
 
 // ProbeNewToken validates a NOT-yet-added token against upstream with a
@@ -484,14 +468,6 @@ func (p *Pool) bridgeSessionPollTick(ctx context.Context, cfg *config.Config) {
 		} else {
 			entry.pollFailures = 0
 			snap := entry.session.Snapshot()
-			// A successful poll is a session probe: refresh the entry's
-			// cached accessTier so a tier learned here (even a compact
-			// response) survives into leases whose admissions omit it.
-			if snap.TierAccess != "" {
-				p.bridgeMu.Lock()
-				entry.tier = snap.TierAccess
-				p.bridgeMu.Unlock()
-			}
 			delay = sessionPollSuccessDelay(snap)
 		}
 		entry.nextPollAt = time.Now().Add(delay)

@@ -24,7 +24,6 @@ type SessionState struct {
 	QueueDepth         int
 	EstimatedWaitMs    int
 	PollAt             time.Time
-	AccessTier         string // "full" | "limited" (empty when absent)
 	CountryCode        string
 	CountryBlockReason string
 	IpPrivacySignals   []string
@@ -41,10 +40,6 @@ type SessionState struct {
 	// it. Kept as a string so callers render the shape without the upstream
 	// adding fields; "" when absent.
 	GlmPromo string
-	// LimitedModelOffers carries the limited-tier per-model allowances from
-	// limitedModelOffers (present on limited-tier admissions, absent on
-	// full-tier and compact poll responses; never required).
-	LimitedModelOffers []LimitedModelOffer
 	// RateLimitsByModel carries the live per-model session quotas from the
 	// admission/poll response (key = model id). Absent on compact polls and
 	// pre-join (none) responses; never required.
@@ -100,28 +95,6 @@ type rawStanding struct {
 	Score       float64 `json:"score"`
 	NextLevelAt any     `json:"nextLevelAt"`
 	NextLevel   string  `json:"nextLevel"`
-}
-
-// LimitedModelOffer is one model's limited-tier allowance from the upstream
-// limitedModelOffers array, per the official CLI wire shape
-// (reference/freebuff/common/src/types/freebuff-session.ts). UserResetAt is
-// the user-level quota reset; zero when the server omits it.
-type LimitedModelOffer struct {
-	Model         string
-	Remaining     float64
-	Total         float64
-	UserRemaining float64
-	UserResetAt   time.Time
-}
-
-// rawLimitedModelOffer mirrors one limitedModelOffers entry on the wire.
-// userResetAt is parsed with parseFlexTime.
-type rawLimitedModelOffer struct {
-	Model         string  `json:"model"`
-	Remaining     float64 `json:"remaining"`
-	Total         float64 `json:"total"`
-	UserRemaining float64 `json:"userRemaining"`
-	UserResetAt   any     `json:"userResetAt"`
 }
 
 // CreateSession POSTs /api/v1/freebuff/session with no body.
@@ -419,7 +392,6 @@ func (c *Client) sessionCall(req *http.Request) (*SessionState, error) {
 		QueueDepth             int                      `json:"queueDepth"`
 		EstimatedWaitMs        int                      `json:"estimatedWaitMs"`
 		PollAt                 any                      `json:"pollAt"`
-		AccessTier             string                   `json:"accessTier"`
 		CountryCode            string                   `json:"countryCode"`
 		CountryBlockReason     string                   `json:"countryBlockReason"`
 		IpPrivacySignals       []string                 `json:"ipPrivacySignals"`
@@ -432,7 +404,6 @@ func (c *Client) sessionCall(req *http.Request) (*SessionState, error) {
 		AvailableHours         string                   `json:"availableHours"`
 		Message                string                   `json:"message"`
 		GlmPromo               json.RawMessage          `json:"glmPromo"`
-		LimitedModelOffers     []rawLimitedModelOffer   `json:"limitedModelOffers"`
 		RateLimitsByModel      map[string]rawModelQuota `json:"rateLimitsByModel"`
 		Standing               *rawStanding             `json:"standing"`
 	}
@@ -447,7 +418,6 @@ func (c *Client) sessionCall(req *http.Request) (*SessionState, error) {
 			Position:           raw.Position,
 			QueueDepth:         raw.QueueDepth,
 			EstimatedWaitMs:    raw.EstimatedWaitMs,
-			AccessTier:         raw.AccessTier,
 			CountryCode:        raw.CountryCode,
 			CountryBlockReason: raw.CountryBlockReason,
 			IpPrivacySignals:   raw.IpPrivacySignals,
@@ -488,21 +458,6 @@ func (c *Client) sessionCall(req *http.Request) (*SessionState, error) {
 		}
 		if state.ResumesAt, err = parseFlexTime(raw.ResumesAt); err != nil {
 			state.ResumesAt = time.Time{}
-		}
-		if len(raw.LimitedModelOffers) > 0 {
-			state.LimitedModelOffers = make([]LimitedModelOffer, 0, len(raw.LimitedModelOffers))
-			for _, o := range raw.LimitedModelOffers {
-				offer := LimitedModelOffer{
-					Model:         o.Model,
-					Remaining:     o.Remaining,
-					Total:         o.Total,
-					UserRemaining: o.UserRemaining,
-				}
-				if resetAt, perr := parseFlexTime(o.UserResetAt); perr == nil {
-					offer.UserResetAt = resetAt
-				}
-				state.LimitedModelOffers = append(state.LimitedModelOffers, offer)
-			}
 		}
 		if len(raw.RateLimitsByModel) > 0 {
 			state.RateLimitsByModel = make(map[string]ModelQuota, len(raw.RateLimitsByModel))

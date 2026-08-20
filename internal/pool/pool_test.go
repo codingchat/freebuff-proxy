@@ -1479,12 +1479,11 @@ func TestAcquireAllCountryBlocked(t *testing.T) {
 	}
 }
 
-// TestTokenSnapshotTierAndCountry pins the TokenSnapshot region/tier fields
+// TestTokenSnapshotTierAndCountry pins the TokenSnapshot region fields
 // carried from the admitted session (healthz / /v1/models annotation).
 func TestTokenSnapshotTierAndCountry(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mock.AccessTier = "limited"
 	mock.CountryCode = "US"
 	p := newTestPool(t, mock)
 
@@ -1492,14 +1491,11 @@ func TestTokenSnapshotTierAndCountry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lease.TierAccess != "limited" || lease.TierCountry != "US" {
-		t.Errorf("lease tier/country = %q/%q, want limited/US", lease.TierAccess, lease.TierCountry)
-	}
 	p.LeaseRelease(lease)
 
 	snap := p.Snapshot()[0]
-	if snap.TierAccess != "limited" || snap.CountryCode != "US" {
-		t.Errorf("snapshot tier/country = %q/%q, want limited/US", snap.TierAccess, snap.CountryCode)
+	if snap.CountryCode != "US" {
+		t.Errorf("snapshot country = %q, want US", snap.CountryCode)
 	}
 	if snap.CountryBlockReason != "" {
 		t.Errorf("CountryBlockReason = %q, want empty for an admitted session", snap.CountryBlockReason)
@@ -2584,9 +2580,9 @@ func TestSessionPollSchedule(t *testing.T) {
 
 // TestAcquireSyncsAdmittedModel pins the upstream model coercion fix: when the
 // client requests model A (e.g. deepseek/deepseek-v4-flash) but upstream
-// admits the session for model B (e.g. mimo/mimo-v2.5 due to limited tier on
-// that IP/country), Acquire must return a lease with Model=B and AgentID for B
-// so downstream chat and runs stay consistent with the upstream session row.
+// admits the session for model B (e.g. mimo/mimo-v2.5 on that IP/country),
+// Acquire must return a lease with Model=B and AgentID for B so downstream
+// chat and runs stay consistent with the upstream session row.
 func TestAcquireSyncsAdmittedModel(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()

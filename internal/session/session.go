@@ -40,8 +40,8 @@ const (
 	maxOuterIterations = 10
 	// DefaultFallbackModel is the guaranteed-available model used when a
 	// requested model is temporarily unavailable upstream, and the default
-	// probe target for token tests / smoke: every account (including
-	// limited tier) can use it, unlike an alphabetical-first catalog pick.
+	// probe target for token tests / smoke: every account can use it, unlike
+	// an alphabetical-first catalog pick.
 	DefaultFallbackModel = "deepseek/deepseek-v4-flash"
 	// asyncReAdmitTimeout bounds the background pre-emptive re-admit
 	// (issue #99) so a hung upstream never leaks a goroutine.
@@ -163,7 +163,6 @@ type cachedState struct {
 	position           int
 	queueDepth         int
 	pollAt             time.Time
-	accessTier         string
 	countryCode        string
 	countryBlockReason string
 	// ipPrivacySignals / activeUsersForIP / limit are surfaced for the
@@ -823,7 +822,6 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 				model:              model,
 				expiresAt:          st.ExpiresAt,
 				gracePeriodEndsAt:  st.ExpiresAt.Add(graceWindow),
-				accessTier:         st.AccessTier,
 				countryCode:        st.CountryCode,
 				countryBlockReason: st.CountryBlockReason,
 				activeUsersForIP:   st.ActiveUsersForIP,
@@ -922,10 +920,8 @@ type SessionSnapshot struct {
 	Model         string
 	QueuePosition int
 	QueueDepth    int
-	TierAccess    string
 	// CountryCode is the admitted session's country ("" when absent).
 	CountryCode        string
-	TierCountry        string
 	CountryBlockReason string
 	// ActiveUsersForIP is the last known distinct-user count on the token's
 	// egress IP (upstream activeUsersForIp); 0 when absent.
@@ -991,9 +987,7 @@ func (m *Manager) Snapshot() SessionSnapshot {
 		Model:              m.state.model,
 		QueuePosition:      m.state.position,
 		QueueDepth:         m.state.queueDepth,
-		TierAccess:         m.state.accessTier,
 		CountryCode:        m.state.countryCode,
-		TierCountry:        m.state.countryCode,
 		CountryBlockReason: m.state.countryBlockReason,
 		ActiveUsersForIP:   m.state.activeUsersForIP,
 		IPPrivacySignals:   sigs,

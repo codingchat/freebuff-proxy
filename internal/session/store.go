@@ -20,7 +20,7 @@ const maxStoreFileSize = 8 << 20 // 8 MiB
 
 // persistedState is the on-disk shape of one token's cached session. The
 // instance id + expiry are the fields that matter for restart-resume; the
-// rest are carried so a resumed session keeps its tier/country/queue view.
+// rest are carried so a resumed session keeps its country/queue view.
 type persistedState struct {
 	InstanceID         string    `json:"instance_id"`
 	Model              string    `json:"model"`
@@ -30,7 +30,6 @@ type persistedState struct {
 	Position           int       `json:"position"`
 	QueueDepth         int       `json:"queue_depth"`
 	PollAt             time.Time `json:"poll_at"`
-	AccessTier         string    `json:"access_tier"`
 	CountryCode        string    `json:"country_code"`
 	CountryBlockReason string    `json:"country_block_reason"`
 }
@@ -204,7 +203,6 @@ func (s *Store) Load(key string) *cachedState {
 		position:           ps.Position,
 		queueDepth:         ps.QueueDepth,
 		pollAt:             ps.PollAt,
-		accessTier:         ps.AccessTier,
 		countryCode:        ps.CountryCode,
 		countryBlockReason: ps.CountryBlockReason,
 	}
@@ -236,7 +234,6 @@ func (s *Store) Save(key string, cs *cachedState) {
 		Position:           cs.position,
 		QueueDepth:         cs.queueDepth,
 		PollAt:             cs.pollAt,
-		AccessTier:         cs.accessTier,
 		CountryCode:        cs.countryCode,
 		CountryBlockReason: cs.countryBlockReason,
 	}

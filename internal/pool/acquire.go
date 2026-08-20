@@ -374,16 +374,15 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			continue
 		}
 		p.logger.Debug("pool: lease acquired", "token", idx+1, "model", effectiveModel, "agent", effectiveAgentID, "instance_id", instanceID,
-			"tier", ss.TierAccess, "country", ss.TierCountry)
+			"country", ss.CountryCode)
 		// Track the activity and end any idle-maintenance pause: the next
 		// maintain tick resumes rotation/refresh work.
 		p.lastActiveMu.Lock()
 		p.lastActive = time.Now()
 		p.idleFinished = false
 		p.lastActiveMu.Unlock()
-		provisioned := provisionedFromQuota(ss)
 		return &Lease{Token: idx, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: instanceID,
-			TierAccess: ss.TierAccess, TierCountry: ss.TierCountry, ProvisionedModels: provisioned, entry: tok, AcquiredAt: time.Now()}, nil
+			entry: tok, AcquiredAt: time.Now()}, nil
 	}
 
 	// Failover precedence (PRD §6 error matrix): when buckets are mixed the
@@ -452,7 +451,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 // known positive remaining session quota for the requested model rank above
 // unknown-quota tokens, ordered by smallest remaining first (drain the
 // account closest to its limit; preserve fuller quotas —
-// reference/freebuff-reverse .../scheduler.go:472-496 tier ordering). Tokens
+// reference/freebuff-reverse .../scheduler.go:472-496). Tokens
 // whose quota is exhausted for the model (RecentCount >= Limit with a future
 // ResetAt) are excluded from this pass entirely; their rate-limit reasons
 // are returned so the caller surfaces a real 429 when every token is capped.

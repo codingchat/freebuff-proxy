@@ -102,7 +102,7 @@ func runSetup(autoYes bool) {
 	// The model list is served live by the proxy; pointing at the endpoint
 	// beats maintaining a hardcoded, drifting copy here.
 	fmt.Println("Models available: query http://localhost:3457/v1/models for the live list")
-	fmt.Println("Note: For limited-tier accounts, use 'mimo/mimo-v2.5' as DeepSeek Flash is restricted to full-tier accounts.")
+	fmt.Println("Note: which models your account can use is per-account; query that endpoint to see the live availability.")
 	os.Exit(0)
 }
 

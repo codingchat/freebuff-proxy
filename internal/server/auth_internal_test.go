@@ -449,10 +449,10 @@ func TestWriteErrorIpCappedAndSessionLimit(t *testing.T) {
 	})
 }
 
-// TestQuotaSummaryTierAndGlmPromo verifies #76: quotaSummary surfaces the
-// account tier and glmPromo from a probe response carrying the unused rate
-// limits, and still returns "" when the response has no quota data.
-func TestQuotaSummaryTierAndGlmPromo(t *testing.T) {
+// TestQuotaSummaryGlmPromo verifies #76: quotaSummary surfaces glmPromo from
+// a probe response carrying the unused rate limits, and still returns ""
+// when the response has no quota data.
+func TestQuotaSummaryGlmPromo(t *testing.T) {
 	if got := quotaSummary(nil); got != "" {
 		t.Errorf("quotaSummary(nil) = %q, want empty", got)
 	}
@@ -460,14 +460,13 @@ func TestQuotaSummaryTierAndGlmPromo(t *testing.T) {
 		t.Errorf("quotaSummary(no data) = %q, want empty", got)
 	}
 	st := &upstream.SessionState{
-		AccessTier: "limited",
-		GlmPromo:   `{"dailySessions":2,"endsAt":"2026-08-20T07:00:00.000Z"}`,
+		GlmPromo: `{"dailySessions":2,"endsAt":"2026-08-20T07:00:00.000Z"}`,
 		RateLimitsByModel: map[string]upstream.ModelQuota{
 			"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 6, RecentCount: 2, Period: "pacific_day", ResetAt: time.Date(2026, 8, 18, 7, 0, 0, 0, time.UTC)},
 		},
 	}
 	got := quotaSummary(st)
-	for _, want := range []string{"tier limited", "deepseek/deepseek-v4-flash 6/2 pacific_day", "glmPromo", "dailySessions"} {
+	for _, want := range []string{"deepseek/deepseek-v4-flash 6/2 pacific_day", "glmPromo", "dailySessions"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("quotaSummary = %q, missing %q", got, want)
 		}

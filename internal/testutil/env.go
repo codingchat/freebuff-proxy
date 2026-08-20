@@ -27,7 +27,6 @@ var configEnvKeys = []string{
 	"ACTING_USER_ID",
 	"USER_ID", // legacy alias (pre-rename knob, #126)
 	"PREFER_MAX_MODELS",
-	"ACCESS_TIER",
 }
 
 // UnsetConfigEnv removes every ambient freebuff-proxy config env var for the

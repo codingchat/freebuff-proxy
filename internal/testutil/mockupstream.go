@@ -71,10 +71,9 @@ type MockUpstream struct {
 	// model id) so tests can exercise quota parsing end-to-end.
 	RateLimitsByModel map[string]any
 
-	// AccessTier / CountryCode / CountryBlockReason, when non-empty, are
-	// embedded in the active session body (wire shape parsed by upstream's
-	// sessionCall) so tests can exercise tier/region reporting end-to-end.
-	AccessTier         string
+	// CountryCode / CountryBlockReason, when non-empty, are embedded in the
+	// active session body (wire shape parsed by upstream's sessionCall) so
+	// tests can exercise region reporting end-to-end.
 	CountryCode        string
 	CountryBlockReason string
 
@@ -325,7 +324,7 @@ func (m *MockUpstream) handleSession(w http.ResponseWriter, r *http.Request) {
 	position, depth, waitMs := m.QueuePosition, m.QueueDepth, m.EstimatedWaitMs
 	instanceID, expiresIn := m.InstanceID, m.ExpiresIn
 	limits := m.RateLimitsByModel
-	tier, countryCode, countryBlockReason := m.AccessTier, m.CountryCode, m.CountryBlockReason
+	countryCode, countryBlockReason := m.CountryCode, m.CountryBlockReason
 	standing := m.Standing
 	m.mu.Unlock()
 
@@ -341,9 +340,6 @@ func (m *MockUpstream) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(limits) > 0 {
 			body["rateLimitsByModel"] = limits
-		}
-		if tier != "" {
-			body["accessTier"] = tier
 		}
 		if countryCode != "" {
 			body["countryCode"] = countryCode
@@ -416,7 +412,7 @@ func (m *MockUpstream) handleProbe(w http.ResponseWriter) {
 	m.mu.Lock()
 	instanceID := m.InstanceID
 	limits := m.RateLimitsByModel
-	tier, countryCode, countryBlockReason := m.AccessTier, m.CountryCode, m.CountryBlockReason
+	countryCode, countryBlockReason := m.CountryCode, m.CountryBlockReason
 	m.mu.Unlock()
 	if len(limits) == 0 {
 		limits = defaultProbeQuota
@@ -426,13 +422,9 @@ func (m *MockUpstream) handleProbe(w http.ResponseWriter) {
 		"instanceId":        instanceID,
 		"rateLimitsByModel": limits,
 	}
-	// The probe mirrors the full admission shape (tier/region state
-	// included — the vendored CLI's session GET serves the same without any
-	// fingerprint header, #140), so probe tests can assert accessTier
-	// capture without a custom SessionHandler.
-	if tier != "" {
-		body["accessTier"] = tier
-	}
+	// The probe mirrors the full admission shape (region state included —
+	// the vendored CLI's session GET serves the same without any
+	// fingerprint header, #140).
 	if countryCode != "" {
 		body["countryCode"] = countryCode
 	}

@@ -10,8 +10,8 @@ import (
 )
 
 // probeModel returns the safest model to default a smoke test to: the
-// fallback default (deepseek-v4-flash — the model every account gets, incl.
-// limited tier) when it is in the catalog, else the first catalog model.
+// fallback default (deepseek-v4-flash — the model every account gets) when
+// it is in the catalog, else the first catalog model.
 // Alphabetical models[0] would otherwise pick anthropic/claude-fable-5, a
 // capacity-gated offer model that makes smoke tests fail on most accounts.
 func probeModel(reg *registry.Registry) string {
@@ -79,8 +79,8 @@ func (s *Server) modelListed(model string) bool {
 // handleModels serves the OpenAI model-list shape with the registry's
 // current models; created is pinned to server start so every entry matches.
 // Each row carries an advisory availability annotation derived from the pool
-// token snapshots (available/status/current_access_tier) so clients can
-// surface quota or lock signals without probing.
+// token snapshots (available/status) so clients can surface quota or lock
+// signals without probing.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	created := s.started.Unix()
 	snaps := s.pool.Snapshot()
@@ -94,9 +94,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	hideUnavailable := s.cfg.Load().ModelsHideUnavailable
 	data := make([]map[string]any, 0, len(models))
 	for _, id := range models {
-		available, status, tier := modelAvailability(id, snaps)
+		available, status := modelAvailability(id, snaps)
 		if hideUnavailable && !available {
-			// MODELS_HIDE_UNAVAILABLE=true: prune region/tier/quota-locked
+			// MODELS_HIDE_UNAVAILABLE=true: prune quota/lock-unavailable
 			// models so picker clients never auto-select one. Off by default
 			// because a stale signal could hide a working model.
 			continue
@@ -109,13 +109,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		data = append(data, map[string]any{
-			"id":                  id,
-			"object":              "model",
-			"created":             created,
-			"owned_by":            "freebuff",
-			"available":           available,
-			"status":              status,
-			"current_access_tier": tier,
+			"id":        id,
+			"object":    "model",
+			"created":   created,
+			"owned_by":  "freebuff",
+			"available": available,
+			"status":    status,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -136,38 +135,31 @@ func (s *Server) handleModelRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 	created := s.started.Unix()
 	snaps := s.pool.Snapshot()
-	available, status, tier := modelAvailability(model, snaps)
+	available, status := modelAvailability(model, snaps)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id":                  modelName,
-		"object":              "model",
-		"created":             created,
-		"owned_by":            "freebuff",
-		"available":           available,
-		"status":              status,
-		"current_access_tier": tier,
+		"id":        modelName,
+		"object":    "model",
+		"created":   created,
+		"owned_by":  "freebuff",
+		"available": available,
+		"status":    status,
 	})
 }
 
 // modelAvailability derives the advisory per-model annotation from the pool
 // token snapshots. The snapshot does not carry the model of a live session,
 // so the signal set is: quotaByModel presence (the session admitted this
-// model), quota exhaustion (recent >= limit), session-level locks, and the
-// access tier. A token demoted to the 'limited' tier (region/privacy
-// demotion) can only use LimitedTierModels — every other model is marked
-// unavailable with status "region_limited" (kept in the list, never hidden,
-// so a stale tier can't strand a working model). available defaults to true
-// when no signal exists, so a working model is never hidden.
-func modelAvailability(id string, snaps []pool.TokenSnapshot) (available bool, status, tier string) {
+// model), quota exhaustion (recent >= limit), and session-level locks.
+// available defaults to true when no signal exists, so a working model is
+// never hidden.
+func modelAvailability(id string, snaps []pool.TokenSnapshot) (available bool, status string) {
 	available = true
 	status = "unknown"
 	quotaHit := false
 	quotaExhausted := false
 	locked := false
 	for _, snap := range snaps {
-		if tier == "" {
-			tier = snap.TierAccess
-		}
 		switch snap.SessionStatus {
 		case "model_locked", "disabled":
 			locked = true
@@ -187,13 +179,5 @@ func modelAvailability(id string, snaps []pool.TokenSnapshot) (available bool, s
 	case quotaHit:
 		status = "available"
 	}
-	if status == "unknown" && tier == "limited" && !registry.LimitedTierModels[id] {
-		// Region/privacy demotion: the model is not on the limited tier's
-		// allowlist and the session never admitted it. Keep it listed but
-		// honest — clients that auto-pick on the available flag skip it,
-		// and a stale tier can never hide a model the session admitted
-		// (admission is ground truth, handled above).
-		return false, "region_limited", tier
-	}
-	return available, status, tier
+	return available, status
 }

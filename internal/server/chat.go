@@ -275,14 +275,6 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 		s.writeError(w, r, err, model, lease)
 		return
 	}
-	// PREFER_MAX_MODELS gating: the admission just reported the token's
-	// accessTier + provisioned model set (QuotaByModel keys from the
-	// session snapshot); fold them into the runtime config so the next
-	// request's ResolveModel gates -max upgrades for limited tokens and
-	// refuses -max variants the account was not provisioned (upstream
-	// provisions -max roots per-account — issue #140). First request for a
-	// token still resolves with the previously-known (or env-set) tier.
-	s.rememberAccessTier(lease.TierAccess, lease.ProvisionedModels)
 	defer func() { _ = up.Close() }()
 	// Issue #53: when the downstream client disconnects mid-stream, abandon
 	// the lease instead of a plain release — the run is FINISHed through the
@@ -309,8 +301,6 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 		"model", model,
 		"agent", lease.AgentID,
 		"instance_id", lease.SessionInstanceID,
-		"tier", lease.TierAccess,
-		"country", lease.TierCountry,
 	}
 	if reasoningEffort != "" {
 		routingAttrs = append(routingAttrs, "reasoning_effort", reasoningEffort)
@@ -340,57 +330,6 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 	ms := time.Since(start).Milliseconds()
 	s.logger.Info(kind+" done", chatDoneAttrs(reqID, model, lease.AgentID, stream, ms, stats.chunks, stats.bytes, reasoningEffort)...)
 	s.traceChat(lease, model, ms, "ok", "", phases.All(), st)
-}
-
-// provisionedSet derives the set of model ids upstream provisioned for the
-// probed token from a probe session state's RateLimitsByModel map (key =
-// model id). Absent/empty map → nil (unknown, tier gate alone decides).
-// Mirrors pool.provisionedFromQuota for the probe path.
-func provisionedSet(st *upstream.SessionState) map[string]bool {
-	if st == nil || len(st.RateLimitsByModel) == 0 {
-		return nil
-	}
-	out := make(map[string]bool, len(st.RateLimitsByModel))
-	for id := range st.RateLimitsByModel {
-		out[id] = true
-	}
-	return out
-}
-
-// rememberAccessTier folds an upstream session-probe/admission-observed
-// accessTier ("full"/"limited") into the runtime config — s.cfg plus the
-// registry and pool copies, mirroring the reload triple-store — so
-// ResolveModel's -max upgrade gate consults it on the next request. A probe
-// observation never overrides an operator-set ACCESS_TIER
-// (AccessTierExplicit); empty tiers are ignored (unknown tier keeps the
-// current value, so a fresh config still treats empty as full).
-//
-// When provisioned is non-empty it is ALSO folded in as the account's
-// provisioned model set (rateLimitsByModel keys from the same response):
-// the -max upgrade gate then refuses variants absent from the set, which is
-// the accurate per-account signal — upstream provisions -max roots
-// per-account, so most full-tier tokens have only base models and would
-// otherwise trip 403 free_mode_invalid_agent_model on every upgrade
-// (issue #140).
-func (s *Server) rememberAccessTier(tier string, provisioned map[string]bool) {
-	tier = strings.TrimSpace(tier)
-	if tier == "" && len(provisioned) == 0 {
-		return
-	}
-	cur := s.cfg.Load()
-	next := *cur
-	if tier != "" && !cur.AccessTierExplicit {
-		next.AccessTier = tier
-	}
-	if len(provisioned) > 0 {
-		next.ProvisionedModels = provisioned
-	}
-	if next.AccessTier == cur.AccessTier && next.ProvisionedModels == nil {
-		return
-	}
-	s.cfg.Store(&next)
-	s.reg.SetConfig(&next)
-	s.pool.SetConfig(&next)
 }
 
 // traceChat records a structured "chat trace" entry for the dashboard
@@ -663,8 +602,8 @@ func (s *Server) chatAttempt(
 			// model. Mark (egress, model) unfit for ~5 min so new requests
 			// refuse fast instead of re-admitting against a known-limited
 			// gate (each admission burns a daily session slot). Retry once
-			// through a fresh acquire — a different token (full-tier
-			// account) may still serve the model. The session is bound to
+			// through a fresh acquire — a different token may still
+			// serve the model. The session is bound to
 			// its admitted model and is NOT invalidated.
 			var lie *upstream.LimitedIpError
 			if errors.As(err, &lie) {

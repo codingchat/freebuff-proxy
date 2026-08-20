@@ -163,30 +163,6 @@ type Config struct {
 	// (DASHBOARD_ENABLED; default true). Set to false to disable all /admin
 	// routes.
 	DashboardEnabled bool
-	// AccessTier is the account access tier the proxy assumes for -max model
-	// upgrades (ACCESS_TIER, or learned at runtime from the upstream session
-	// probe/admission response's accessTier field): "full" (default when
-	// empty) or "limited". A limited tier may only reach -max variants that
-	// are explicitly in registry.LimitedTierModels — none today — so the
-	// registry keeps the base model instead of tripping upstream 403
-	// free_mode_invalid_agent_model (the -max agent roots require full
-	// access). Empty = unknown = treated as full.
-	AccessTier string
-	// AccessTierExplicit records that AccessTier came from a configured
-	// source (ACCESS_TIER env/.env/JSON), so runtime session-probe
-	// observations never override the operator's explicit choice.
-	AccessTierExplicit bool
-	// ProvisionedModels is the set of model ids upstream actually
-	// provisioned for the pooled token(s), learned from the session
-	// probe/admission response's rateLimitsByModel map (keys = model ids).
-	// The -max upgrade gate (registry.maxUpgradeAllowed) refuses variants
-	// absent from this set: upstream provisions -max roots "per-account"
-	// rather than for every full-tier token, so a full tier with only base
-	// models provisioned would otherwise trip 403 free_mode_invalid_
-	// agent_model on every upgraded request — the ban amplifier (issue
-	// #140). Empty = unknown = the tier gate alone decides (historic
-	// behavior). Never operator-set; JSON/env cannot populate it.
-	ProvisionedModels map[string]bool `json:"-"`
 	// EnvFile is the .env path actually loaded ("" when none existed).
 	// Resolved via ResolveEnvFile (issue #39): ./.env in the working
 	// directory wins; otherwise the platform config dir is tried.
@@ -273,7 +249,6 @@ type rawConfig struct {
 	RateLimitBurst                   *int            `json:"RATE_LIMIT_BURST"`
 	PreferMaxModels                  bool            `json:"PREFER_MAX_MODELS"`
 	DashboardEnabled                 bool            `json:"DASHBOARD_ENABLED"`
-	AccessTier                       string          `json:"ACCESS_TIER"`
 }
 
 // modelsAllowList is the raw MODELS_ALLOW value. The README documents list
@@ -498,7 +473,6 @@ func Load(configPath string) (Config, error) {
 	overrideInt(&raw.RateLimitBurst, "RATE_LIMIT_BURST")
 	overrideBool(&raw.PreferMaxModels, "PREFER_MAX_MODELS")
 	overrideBool(&raw.DashboardEnabled, "DASHBOARD_ENABLED")
-	overrideString(&raw.AccessTier, "ACCESS_TIER")
 
 	parseDuration := func(raw, name string) (time.Duration, error) {
 		d, err := time.ParseDuration(strings.TrimSpace(raw))
@@ -761,8 +735,6 @@ func Load(configPath string) (Config, error) {
 		RateLimitBurst:                   rateLimitBurst,
 		PreferMaxModels:                  raw.PreferMaxModels,
 		DashboardEnabled:                 raw.DashboardEnabled,
-		AccessTier:                       strings.TrimSpace(raw.AccessTier),
-		AccessTierExplicit:               strings.TrimSpace(raw.AccessTier) != "",
 		EnvFile:                          envFileUsed,
 	}
 
@@ -1099,7 +1071,6 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideIntFrom(&raw.RateLimitBurst, get, "RATE_LIMIT_BURST")
 	overrideBoolFrom(&raw.PreferMaxModels, get, "PREFER_MAX_MODELS")
 	overrideBoolFrom(&raw.DashboardEnabled, get, "DASHBOARD_ENABLED")
-	overrideStringFrom(&raw.AccessTier, get, "ACCESS_TIER")
 	return nil
 }
 

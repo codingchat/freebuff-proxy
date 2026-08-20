@@ -63,17 +63,6 @@ const fetchTimeout = 30 * time.Second
 // than this fails the fetch, which keeps the previous registry state.
 const maxFetchBytes = 2 << 20
 
-// LimitedTierModels is the model set available to 'limited' access-tier
-// accounts (egress region demotion, privacy-signal demotion). DeepSeek Flash
-// was disabled for limited tier on 2026-08-18 due to upstream provider price
-// increases (mimo-v2.5 remains active for limited tier).
-// Used to annotate /v1/models availability per token tier and to gate -max
-// upgrades for limited-tier tokens (no -max variant is in the set today, so
-// limited accounts always keep the base model).
-var LimitedTierModels = map[string]bool{
-	"mimo/mimo-v2.5": true,
-}
-
 // SmartToyModels is the hardcoded set of models available through 9router's
 // smart_toy component. Used as a code-level gate so the proxy never serves
 // or advertises a model the account cannot use, regardless of MODELS_ALLOW
@@ -114,8 +103,8 @@ var maxVariants = map[string]string{
 // when MODEL_ALIASES is explicitly configured without them (the default
 // aliases resolve gpt-4o → deepseek-v4-pro and deepseek-chat →
 // deepseek-v4-flash first; deepseek-reasoner has no alias at all). They keep
-// the historic PREFER_MAX_MODELS behavior through the same routed/tier
-// gates as MaxVariantOf.
+// the historic PREFER_MAX_MODELS behavior through the same routed gate as
+// MaxVariantOf.
 var legacyMaxVariants = map[string]string{
 	"gpt-4o":            "deepseek/deepseek-v4-pro-max",
 	"deepseek-reasoner": "deepseek/deepseek-v4-pro-max",
@@ -374,10 +363,8 @@ func (r *Registry) LoadFallback() {
 // when requested by suffix or when cfg.PreferMaxModels is enabled. A -max
 // upgrade applies ONLY when the upgraded variant is actually routed by the
 // live registry (a phantom variant would trip upstream 403
-// free_mode_invalid_agent_model) and the config's access tier may serve it:
-// a limited tier (ACCESS_TIER or learned from the session probe) is never
-// upgraded to a variant outside LimitedTierModels. When the upgrade is not
-// applicable the base model is kept.
+// free_mode_invalid_agent_model). When the upgrade is not applicable the
+// base model is kept.
 func (r *Registry) ResolveModel(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -424,7 +411,7 @@ func (r *Registry) ResolveModel(model string) string {
 
 	if preferMax {
 		if upgraded, ok := MaxVariantOf(model); ok {
-			if maxUpgradeAllowed(r, cfg, upgraded) {
+			if maxUpgradeAllowed(r, upgraded) {
 				return upgraded
 			}
 			return model
@@ -432,7 +419,7 @@ func (r *Registry) ResolveModel(model string) string {
 		// Stock client names the default aliases already resolved (or that
 		// have none): keep the historic upgrade path through the same gates.
 		if upgraded, ok := legacyMaxVariants[model]; ok {
-			if maxUpgradeAllowed(r, cfg, upgraded) {
+			if maxUpgradeAllowed(r, upgraded) {
 				return upgraded
 			}
 			return model
@@ -443,32 +430,14 @@ func (r *Registry) ResolveModel(model string) string {
 }
 
 // maxUpgradeAllowed reports whether an upgrade to the given -max variant is
-// safe for the registry's current route table, the config's access tier, and
-// the account's provisioned model set:
-//   - the variant must be routed by the live registry (modelToAgent);
-//   - a 'limited' tier may only reach variants explicitly in
-//     LimitedTierModels (none today — the -max agent roots require full
-//     access upstream, so a limited token would trip 403
-//     free_mode_invalid_agent_model);
-//   - when cfg.ProvisionedModels is non-empty (learned from the upstream
-//     session probe), the variant must be IN the provisioned set: upstream
-//     provisions -max roots per-account, so a full tier with only base
-//     models provisioned (the common case) must keep the base model
-//     instead of tripping 403 on every upgraded request (issue #140).
+// safe for the registry's current route table: the variant must be routed by
+// the live registry (modelToAgent) — a phantom variant would trip upstream
+// 403 free_mode_invalid_agent_model.
 //
-// cfg may be nil (no config stored); r may be nil (no route table — treated
-// as routed for compatibility with a bare registry).
-func maxUpgradeAllowed(r *Registry, cfg *config.Config, upgraded string) bool {
+// r may be nil (no route table — treated as routed for compatibility with a
+// bare registry).
+func maxUpgradeAllowed(r *Registry, upgraded string) bool {
 	if r != nil && !r.IsModelRouted(upgraded) {
-		return false
-	}
-	if cfg == nil {
-		return true
-	}
-	if strings.EqualFold(cfg.AccessTier, "limited") {
-		return LimitedTierModels[upgraded]
-	}
-	if len(cfg.ProvisionedModels) > 0 && !cfg.ProvisionedModels[upgraded] {
 		return false
 	}
 	return true
