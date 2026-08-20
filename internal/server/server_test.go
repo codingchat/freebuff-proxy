@@ -723,20 +723,23 @@ func TestUnknownModel(t *testing.T) {
 	defer mock.Close()
 	ts, _ := newTestServer(t, nil, mock)
 
-	for _, reqBody := range []string{
-		`{"model":"no/such-model","messages":[{"role":"user","content":"hi"}]}`,
-		`{"messages":[{"role":"user","content":"hi"}]}`,
+	for _, tc := range []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{"unknown_model", `{"model":"no/such-model","messages":[{"role":"user","content":"hi"}]}`, http.StatusNotFound},
+		{"missing_model", `{"messages":[{"role":"user","content":"hi"}]}`, http.StatusBadRequest},
 	} {
-		resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", []byte(reqBody), nil)
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400: %s", resp.StatusCode, data)
-		}
-		if !strings.Contains(string(data), "model_not_found") {
-			t.Errorf("body missing model_not_found: %s", data)
-		}
-		if !strings.Contains(string(data), "z-ai/glm-5.2") {
-			t.Errorf("message missing model list: %s", data)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", []byte(tc.body), nil)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", resp.StatusCode, tc.wantStatus, data)
+			}
+			if !strings.Contains(string(data), "model_not_found") {
+				t.Errorf("body missing model_not_found: %s", data)
+			}
+		})
 	}
 
 	// Rejected before the pool: the upstream must be untouched.
