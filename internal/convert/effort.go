@@ -86,26 +86,42 @@ var reasoningLadder = [...]string{"minimal", "low", "medium", "high", "xhigh", "
 const defaultReasoningEffort = "high"
 
 // modelReasoningEfforts is the per-model effort allowance, mirroring
-// freebuff-models.ts (08/13 catalog): deepseek-v4-flash AND deepseek-v4-pro
-// expose [low, high, max] (Pro gained low on 08/13; medium intentionally
-// absent — rewritten to high, see normalizeReasoning), gpt-5.6-luna
-// EFFORTS_THROUGH_MAX low..max (xhigh included), muse-spark
-// EFFORTS_THROUGH_XHIGH minimal..xhigh. The provisioned -max variants
-// (deepseek-v4-flash-max, deepseek-v4-pro-max, gpt-5.6-luna-max) mirror
-// their base model's ladder — same lanes, higher provisioning tier. Models
-// absent from the table get the full ladder (no clamping): kimi/glm are
-// deliberately absent (CrofAI ignores reasoning_effort) and gemini rows
-// are absent (helper models, no upstream restriction). The table is
+// reference/freebuff/common/src/constants/freebuff-models.ts (08/20 catalog).
+// Rows, per model:
+//
+//	deepseek-v4-flash / deepseek-v4-pro  DEEPSEEK_V4_REASONING_EFFORTS
+//	                                     ['low','high','max'] — medium is not a
+//	                                     distinct level and rewrites to high
+//	                                     (see normalizeReasoning).
+//	gpt-5.6-luna / claude-fable-5        EFFORTS_THROUGH_MAX low..max (xhigh
+//	                                     included, OpenRouter metadata).
+//	muse-spark-1.2-contributor           EFFORTS_THROUGH_XHIGH minimal..xhigh
+//	                                     (measured ladder, 08/06).
+//	mimo-v2.5                            {'high'} — Xiaomi exposes only
+//	                                     disabled/high (enabled); there is no
+//	                                     depth ladder, so the source comments
+//	                                     call low/medium/max "compatibility
+//	                                     aliases".
+//	minimax-m3                           {'high'} — "supports adaptive thinking
+//	                                     or disabled thinking, but no effort
+//	                                     levels"; a depth picker is cosmetic.
+//	z-ai/glm-5.2, crof/kimi-k3-eco        absent — the CrofAI routes accept but
+//	                                     ignore reasoning_effort (including
+//	                                     invalid values), so no clamp.
+//	google/*-flash-lite rows             absent — helper models, no upstream
+//	                                     restriction.
+//
+// Models absent from the table get the full ladder (no clamping). The
+// provisioned -max variants are NOT listed: they are blocked at the
+// ServedModels gate (issue #153) before conversion ever runs. The table is
 // refreshable at runtime via SetModelEffortLookup.
 var modelReasoningEfforts = map[string][]string{
 	"deepseek/deepseek-v4-flash":      {"low", "high", "max"},
 	"deepseek/deepseek-v4-pro":        {"low", "high", "max"},
-	"deepseek/deepseek-v4-flash-max":  {"low", "high", "max"},
-	"deepseek/deepseek-v4-pro-max":    {"low", "high", "max"},
 	"mimo/mimo-v2.5":                  {"high"},
+	"minimax/minimax-m3":              {"high"},
 	"anthropic/claude-fable-5":        {"low", "medium", "high", "xhigh", "max"},
 	"openai/gpt-5.6-luna":             {"low", "medium", "high", "xhigh", "max"},
-	"openai/gpt-5.6-luna-max":         {"low", "medium", "high", "xhigh", "max"},
 	"meta/muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
 }
 
@@ -207,14 +223,12 @@ func clampReasoningEffort(requested string, allowed []string, fallback string) s
 // isDeepSeekModel reports whether the route is one of the DeepSeek V4 models.
 // DeepSeek routes accept prompt-cache hints (#84) and rewrite requested
 // "medium" to "high" (#112). Tolerates both the registry's full ids and bare
-// model ids, and the provisioned `-max` variants (which upstream routes to the
-// same DeepSeek lanes).
+// model ids. The provisioned -max variants are blocked at the ServedModels
+// gate (issue #153) and never reach conversion.
 func isDeepSeekModel(model string) bool {
 	m := strings.ToLower(model)
 	return strings.HasSuffix(m, "deepseek-v4-flash") ||
-		strings.HasSuffix(m, "deepseek-v4-pro") ||
-		strings.HasSuffix(m, "deepseek-v4-flash-max") ||
-		strings.HasSuffix(m, "deepseek-v4-pro-max")
+		strings.HasSuffix(m, "deepseek-v4-pro")
 }
 
 // isStrictReasoningModel reports whether the model requires an explicit reasoning_content

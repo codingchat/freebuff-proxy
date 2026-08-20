@@ -1646,14 +1646,14 @@ func TestNormalizeRequestCacheControlInjection(t *testing.T) {
 		}
 	})
 
-	t.Run("on for deepseek -max variant", func(t *testing.T) {
+	t.Run("on for deepseek pro", func(t *testing.T) {
 		t.Setenv("CACHE_CONTROL_INJECTION", "")
-		out, err := NormalizeRequest(mustJSON(t, mkBody("deepseek/deepseek-v4-pro-max")), "")
+		out, err := NormalizeRequest(mustJSON(t, mkBody("deepseek/deepseek-v4-pro")), "")
 		if err != nil {
 			t.Fatalf("NormalizeRequest: %v", err)
 		}
 		if !hasHints(out) {
-			t.Error("deepseek -max request without cache_control hints")
+			t.Error("deepseek pro request without cache_control hints")
 		}
 	})
 
@@ -1700,10 +1700,6 @@ func TestDeepSeekPlainReasoningEffort(t *testing.T) {
 		{"pro medium rewrites to high", "deepseek/deepseek-v4-pro", "medium", "high"},
 		{"pro max stays max", "deepseek/deepseek-v4-pro", "max", "max"},
 		{"bare model id tolerated", "deepseek-v4-flash", "max", "max"},
-		{"flash-max medium rewrites to high", "deepseek/deepseek-v4-flash-max", "medium", "high"},
-		{"flash-max max stays max", "deepseek/deepseek-v4-flash-max", "max", "max"},
-		{"pro-max medium rewrites to high", "deepseek/deepseek-v4-pro-max", "medium", "high"},
-		{"pro-max high stays high", "deepseek/deepseek-v4-pro-max", "high", "high"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1812,33 +1808,41 @@ func TestClampReasoningEffort(t *testing.T) {
 }
 
 func TestEffortsForModel(t *testing.T) {
-	if got := effortsForModel("deepseek/deepseek-v4-flash"); !reflect.DeepEqual(got, []string{"low", "high", "max"}) {
-		t.Errorf("flash efforts = %v", got)
+	// Every id the ServedModels gate serves, with its upstream-verified
+	// ladder (reference/freebuff/common/src/constants/freebuff-models.ts,
+	// 08/20 catalog).
+	for model, want := range map[string][]string{
+		"deepseek/deepseek-v4-flash":      {"low", "high", "max"},
+		"deepseek/deepseek-v4-pro":        {"low", "high", "max"},
+		"mimo/mimo-v2.5":                  {"high"}, // Xiaomi: disabled/high only
+		"minimax/minimax-m3":              {"high"}, // adaptive/disabled only
+		"anthropic/claude-fable-5":        {"low", "medium", "high", "xhigh", "max"},
+		"openai/gpt-5.6-luna":             {"low", "medium", "high", "xhigh", "max"},
+		"meta/muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	} {
+		if got := effortsForModel(model); !reflect.DeepEqual(got, want) {
+			t.Errorf("effortsForModel(%s) = %v, want %v", model, got, want)
+		}
 	}
-	if got := effortsForModel("deepseek/deepseek-v4-pro"); !reflect.DeepEqual(got, []string{"low", "high", "max"}) {
-		t.Errorf("pro efforts = %v", got)
+
+	// Ignore-routes (CrofAI accepts but ignores reasoning_effort, including
+	// invalid values: GLM/Kimi) and helper models (gemini lite rows) get the
+	// full ladder — nothing to clamp to.
+	for _, model := range []string{
+		"z-ai/glm-5.2",
+		"crof/kimi-k3-eco",
+		"google/gemini-2.5-flash-lite",
+		"google/gemini-3.1-flash-lite",
+		"google/gemini-3.5-flash-lite",
+	} {
+		if got := effortsForModel(model); !reflect.DeepEqual(got, reasoningLadder[:]) {
+			t.Errorf("effortsForModel(%s) = %v, want full ladder", model, got)
+		}
 	}
-	// Luna EFFORTS_THROUGH_MAX includes xhigh; muse EFFORTS_THROUGH_XHIGH
-	// includes minimal (08/13 catalog).
-	if got := effortsForModel("openai/gpt-5.6-luna"); !reflect.DeepEqual(got, []string{"low", "medium", "high", "xhigh", "max"}) {
-		t.Errorf("luna efforts = %v", got)
-	}
-	if got := effortsForModel("meta/muse-spark-1.2-contributor"); !reflect.DeepEqual(got, []string{"minimal", "low", "medium", "high", "xhigh"}) {
-		t.Errorf("muse efforts = %v", got)
-	}
-	// Provisioned -max variants share their base model's ladder.
-	if got := effortsForModel("deepseek/deepseek-v4-flash-max"); !reflect.DeepEqual(got, []string{"low", "high", "max"}) {
-		t.Errorf("flash-max efforts = %v", got)
-	}
-	if got := effortsForModel("deepseek/deepseek-v4-pro-max"); !reflect.DeepEqual(got, []string{"low", "high", "max"}) {
-		t.Errorf("pro-max efforts = %v", got)
-	}
-	if got := effortsForModel("openai/gpt-5.6-luna-max"); !reflect.DeepEqual(got, []string{"low", "medium", "high", "xhigh", "max"}) {
-		t.Errorf("luna-max efforts = %v", got)
-	}
-	// Unlisted models get the full ladder (no clamping).
-	if got := effortsForModel("minimax/minimax-m3"); !reflect.DeepEqual(got, reasoningLadder[:]) {
-		t.Errorf("unlisted efforts = %v, want full ladder", got)
+	// Blocked -max variants are gone from the table (issue #153); a stray id
+	// falls back to the full ladder, never a hidden row.
+	if got := effortsForModel("deepseek/deepseek-v4-flash-max"); !reflect.DeepEqual(got, reasoningLadder[:]) {
+		t.Errorf("flash-max efforts = %v, want full ladder (blocked model)", got)
 	}
 	// mimo-v2.5-pro was removed from free mode 2026-08-04 (paid-only in
 	// model-config.ts) — it must NOT pretend to be a free-catalog row.
@@ -1893,19 +1897,28 @@ func TestNormalizeRequestEffortClamp(t *testing.T) {
 	if got := effortFor("deepseek/deepseek-v4-flash", "medium"); got != "high" {
 		t.Errorf("deepseek-v4-flash medium = %q, want high", got)
 	}
-	// -max variants clamp like their base models.
-	if got := effortFor("deepseek/deepseek-v4-pro-max", "medium"); got != "high" {
-		t.Errorf("deepseek-v4-pro-max medium = %q, want high", got)
+	// mimo/mimo-v2.5 exposes only disabled/high: every depth rung is a
+	// compatibility alias and clamps to high.
+	if got := effortFor("mimo/mimo-v2.5", "low"); got != "high" {
+		t.Errorf("mimo low = %q, want high", got)
 	}
-	if got := effortFor("deepseek/deepseek-v4-pro-max", "xhigh"); got != "high" {
-		t.Errorf("deepseek-v4-pro-max xhigh = %q, want high", got)
+	if got := effortFor("mimo/mimo-v2.5", "max"); got != "high" {
+		t.Errorf("mimo max = %q, want high", got)
 	}
-	if got := effortFor("openai/gpt-5.6-luna-max", "xhigh"); got != "xhigh" {
-		t.Errorf("gpt-5.6-luna-max xhigh = %q, want xhigh", got)
+	// minimax/mimax-m3 likewise has no effort levels (adaptive or disabled
+	// thinking only) — every rung clamps to high.
+	if got := effortFor("minimax/minimax-m3", "minimal"); got != "high" {
+		t.Errorf("minimax-m3 minimal = %q, want high", got)
 	}
-	// Unlisted models pass every rung through.
-	if got := effortFor("minimax/minimax-m3", "ultra"); got != "ultra" {
-		t.Errorf("minimax-m3 ultra = %q, want ultra", got)
+	if got := effortFor("minimax/minimax-m3", "max"); got != "high" {
+		t.Errorf("minimax-m3 max = %q, want high", got)
+	}
+	// Ignore-routes pass every rung through untouched (CrofAI ignores them).
+	if got := effortFor("z-ai/glm-5.2", "ultra"); got != "ultra" {
+		t.Errorf("glm-5.2 ultra = %q, want ultra", got)
+	}
+	if got := effortFor("crof/kimi-k3-eco", "max"); got != "max" {
+		t.Errorf("kimi-k3-eco max = %q, want max", got)
 	}
 	// Unrecognized effort falls back to the default.
 	if got := effortFor("openai/gpt-5.6-luna", "banana"); got != defaultReasoningEffort {
