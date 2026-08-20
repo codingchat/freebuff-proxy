@@ -27,14 +27,16 @@ func probeModel(reg *registry.Registry) string {
 	return models[0]
 }
 
-// modelAllowed reports whether a model may be served. An empty MODELS_ALLOW
-// allowlist imposes no restriction; otherwise the RESOLVED model id (after
-// registry alias resolution and -max upgrades) must be listed exactly — OR,
-// when PREFER_MAX_MODELS is enabled, the resolved id may be the -max variant
-// of an allowlisted base model. Base-only allowlists (e.g.
-// "deepseek/deepseek-v4-flash") therefore keep working with auto-upgrade on:
-// clients see and request the base id, the proxy upgrades it server-side.
+// modelAllowed reports whether a model may be served. Every model must first
+// pass the hardcoded SmartToyModels gate (9router smart_toy component); then,
+// when MODELS_ALLOW is non-empty, the RESOLVED model id (after registry alias
+// resolution and -max upgrades) must be listed exactly — OR, when
+// PREFER_MAX_MODELS is enabled, the resolved id may be the -max variant of
+// an allowlisted base model.
 func (s *Server) modelAllowed(model string) bool {
+	if !registry.SmartToyModels[model] {
+		return false
+	}
 	cfg := s.cfg.Load()
 	allow := cfg.ModelsAllow
 	if len(allow) == 0 {
@@ -53,12 +55,15 @@ func (s *Server) modelAllowed(model string) bool {
 	return false
 }
 
-// modelListed is the strict listing filter for /v1/models: unlike
-// modelAllowed it does NOT expand base ids to their -max variants, so
-// PREFER_MAX_MODELS keeps the catalog surface exactly the MODELS_ALLOW list
-// (clients request the base id; the proxy serves the extended-context
-// variant invisibly).
+// modelListed is the strict listing filter for /v1/models: like modelAllowed
+// it gates on SmartToyModels first; unlike modelAllowed it does NOT expand
+// base ids to their -max variants, so PREFER_MAX_MODELS keeps the catalog
+// surface exactly the MODELS_ALLOW list (clients request the base id; the
+// proxy serves the extended-context variant invisibly).
 func (s *Server) modelListed(model string) bool {
+	if !registry.SmartToyModels[model] {
+		return false
+	}
 	allow := s.cfg.Load().ModelsAllow
 	if len(allow) == 0 {
 		return true

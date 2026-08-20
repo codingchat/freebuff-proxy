@@ -2,7 +2,7 @@
   import {
     LayoutDashboard, Key, Cpu, Activity, MessageSquare,
     Settings, Wrench, FileText, BarChart3, ChevronRight,
-    Menu, X, ArrowUpCircle, LogOut
+    Menu, X, ArrowUpCircle, LogOut, Monitor, Wrench as WrenchIcon, FlaskConical
   } from '@lucide/svelte';
 
   /**
@@ -28,11 +28,37 @@
     { id: 'metrics',    label: 'Metrics',     icon: BarChart3 },
   ];
 
+  // Mobile grouped tabs for better organization
+  const mobileGroups = [
+    {
+      label: 'Monitor',
+      icon: Monitor,
+      items: tabs.filter(t => ['overview', 'traces', 'logs', 'metrics'].includes(t.id)),
+    },
+    {
+      label: 'Manage',
+      icon: WrenchIcon,
+      items: tabs.filter(t => ['tokens', 'models', 'config', 'setup'].includes(t.id)),
+    },
+    {
+      label: 'Test',
+      icon: FlaskConical,
+      items: tabs.filter(t => ['playground'].includes(t.id)),
+    },
+  ];
+
+  let expandedGroup = $state(null);
+
+  function toggleGroup(label) {
+    expandedGroup = expandedGroup === label ? null : label;
+  }
+
   function switchTab(id) {
     activeTab = id;
     onTabChange?.(id);
     window.location.hash = id;
     mobileOpen = false;
+    expandedGroup = null;
   }
 
   // ARIA tabs pattern: Arrow keys move selection and focus (roving tabindex).
@@ -70,6 +96,7 @@
 
 <header
   class="sticky top-0 z-50 border-b border-[var(--fp-border)] bg-[var(--fp-bg)]/80 backdrop-blur-xl backdrop-saturate-150"
+  onkeydown={handleDrawerKeydown}
 >
   <nav class="max-w-7xl mx-auto px-4 sm:px-6" aria-label="Main navigation">
     <div class="flex items-center justify-between h-14">
@@ -152,28 +179,52 @@
     {#if mobileOpen}
       <div
         id="mobile-nav"
-        class="md:hidden py-3 border-t border-[var(--fp-border)] space-y-1"
+        class="md:hidden py-3 border-t border-[var(--fp-border)] space-y-0.5 max-h-[70vh] overflow-y-auto"
         tabindex="-1"
         role="tablist"
         aria-label="Mobile navigation"
-        onkeydown={handleDrawerKeydown}
       >
-        {#each tabs as tab, i}
-          <button
-            bind:this={mobileTabEls[i]}
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            tabindex={activeTab === tab.id ? 0 : -1}
-            onclick={() => switchTab(tab.id)}
-            onkeydown={(e) => handleTabKeydown(e, i, mobileTabEls)}
-            class="w-full min-h-11 flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors
-              {activeTab === tab.id
-                ? 'text-[var(--fp-amber)] bg-[var(--fp-amber)]/10'
-                : 'text-[var(--fp-muted)] hover:text-white hover:bg-[var(--fp-surface-3)]'}"
-          >
-            <tab.icon size={16} />
-            <span>{tab.label}</span>
-          </button>
+        {#each mobileGroups as group, gi}
+          {@const isActiveGroup = group.items.some(t => t.id === activeTab)}
+          <div class="mb-1">
+            <button
+              type="button"
+              onclick={() => toggleGroup(group.label)}
+              class="w-full min-h-11 flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors
+                {isActiveGroup ? 'text-[var(--fp-amber)]' : 'text-[var(--fp-dim)]'}
+                hover:text-white hover:bg-[var(--fp-surface-3)]"
+              aria-expanded={expandedGroup === group.label || isActiveGroup}
+            >
+              <group.icon size={14} />
+              <span>{group.label}</span>
+              <span class="ml-auto text-[10px] text-[var(--fp-dim)]">{group.items.length}</span>
+              <span class="shrink-0 transition-transform duration-200 {expandedGroup === group.label || isActiveGroup ? 'rotate-90' : ''}">
+                <ChevronRight size={14} />
+              </span>
+            </button>
+            {#if expandedGroup === group.label || isActiveGroup}
+              <div class="ml-2 pl-3 border-l border-[var(--fp-border)] space-y-0.5 mt-0.5">
+                {#each group.items as tab, ti}
+                  {@const flatIdx = tabs.findIndex(t => t.id === tab.id)}
+                  <button
+                    bind:this={mobileTabEls[flatIdx]}
+                    role="tab"
+                    aria-selected={activeTab === tab.id}
+                    tabindex={activeTab === tab.id ? 0 : -1}
+                    onclick={() => switchTab(tab.id)}
+                    onkeydown={(e) => handleTabKeydown(e, flatIdx, mobileTabEls)}
+                    class="w-full min-h-11 flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                      {activeTab === tab.id
+                        ? 'text-[var(--fp-amber)] bg-[var(--fp-amber)]/10'
+                        : 'text-[var(--fp-muted)] hover:text-white hover:bg-[var(--fp-surface-3)]'}"
+                  >
+                    <tab.icon size={15} />
+                    <span>{tab.label}</span>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
         {/each}
 
         {#if versionInfo?.has_update}
