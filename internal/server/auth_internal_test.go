@@ -341,7 +341,7 @@ func TestUpdateEnvKeys(t *testing.T) {
 	}
 	if _, err := updateEnvKeys([]envUpdate{
 		{Key: "AUTH_TOKENS", Value: ""},
-		{Key: "HYBRID_MODE", Value: "false"},
+		{Key: "SAFE_MODE", Value: "false"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -349,22 +349,22 @@ func TestUpdateEnvKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "SAFE_MODE=true\r\nAUTH_TOKENS=\r\nHYBRID_MODE=false\r\n"
+	want := "SAFE_MODE=false\r\nAUTH_TOKENS=\r\n"
 	if string(got) != want {
 		t.Errorf(".env after update = %q, want %q", got, want)
 	}
 	assertNoTmpFiles(t, ".", ".env")
 
-	// Flip HYBRID_MODE back to true: in-place replace, no duplicate line.
-	if _, err := updateEnvKeys([]envUpdate{{Key: "HYBRID_MODE", Value: "true"}}); err != nil {
+	// Flip SAFE_MODE back to true: in-place replace, no duplicate line.
+	if _, err := updateEnvKeys([]envUpdate{{Key: "SAFE_MODE", Value: "true"}}); err != nil {
 		t.Fatal(err)
 	}
 	got, err = os.ReadFile(".env")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(got), "HYBRID_MODE=") != 1 || !strings.Contains(string(got), "HYBRID_MODE=true") {
-		t.Errorf(".env after flip = %q, want single HYBRID_MODE=true line", got)
+	if strings.Count(string(got), "SAFE_MODE=") != 1 || !strings.Contains(string(got), "SAFE_MODE=true") {
+		t.Errorf(".env after flip = %q, want single SAFE_MODE=true line", got)
 	}
 }
 

@@ -322,7 +322,7 @@ func TestDashboardModeSwitchBranchMatrix(t *testing.T) {
 
 	// Invalid mode string (JSON response, not HTML-escaped).
 	resp := postJSON(t, ts.URL, cookie, "/admin/mode", `{"mode":"warp"}`)
-	if body := bodyOf(t, resp); !strings.Contains(body, "Mode must be 'bridge', 'pooled', or 'hybrid'.") {
+	if body := bodyOf(t, resp); !strings.Contains(body, "Mode must be 'bridge' or 'pooled'.") {
 		t.Errorf("invalid-mode response = %q", body)
 	}
 
@@ -467,7 +467,7 @@ func TestDashboardModeSwitchPersistFailure(t *testing.T) {
 	ts, p := newTestServerCfg(t, nil, func(c *config.Config) { c.AdminToken = "secret" }, testutil.NewMock())
 	cookie := authedCookie(t, ts)
 
-	resp := postJSON(t, ts.URL, cookie, "/admin/mode", `{"mode":"hybrid"}`)
+	resp := postJSON(t, ts.URL, cookie, "/admin/mode", `{"mode":"bridge"}`)
 	body := bodyOf(t, resp)
 	if !strings.Contains(body, "Failed to persist .env") {
 		t.Fatalf("mode response = %q, want persist failure", body)

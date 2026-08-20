@@ -116,8 +116,6 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 	switch cfg.EffectiveMode() {
 	case "bridge":
 		checks = append(checks, dashboard.DiagCheck{OK: true, Message: "Configuration: bridge mode (clients relay their own token)"})
-	case "hybrid":
-		checks = append(checks, dashboard.DiagCheck{OK: true, Message: fmt.Sprintf("Configuration: hybrid mode, %d pooled token(s) (client tokens relayed; token-less requests use the pool)", len(cfg.AuthTokens))})
 	default:
 		checks = append(checks, dashboard.DiagCheck{OK: true, Message: fmt.Sprintf("Configuration: pooled mode, %d token(s)", len(cfg.AuthTokens))})
 	}
@@ -152,7 +150,7 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 
 	checks = append(checks, dashboard.DiagCheck{OK: true, Message: fmt.Sprintf("Model registry: %d models", s.reg.ModelCount())})
 
-	// Per-token validity probes (pooled and hybrid-with-tokens modes). Each
+	// Per-token validity probes (pooled mode only). Each
 	// probe is a zero-cost upstream GET /api/v1/freebuff/session (no session
 	// claim, no model needed), so they always run; a token with no active
 	// session still counts as valid.
@@ -364,7 +362,6 @@ func effectiveConfigKV(cfg *config.Config) map[string]string {
 		"MAX_SPEND_PER_DAY":                     strconv.FormatInt(cfg.MaxSpendPerDay, 10),
 		"IDLE_ROTATION_TIMEOUT":                 cfg.IdleRotationTimeout.String(),
 		"SAFE_MODE":                             strconv.FormatBool(cfg.SafeMode),
-		"HYBRID_MODE":                           strconv.FormatBool(cfg.HybridMode),
 		"MODELS_HIDE_UNAVAILABLE":               strconv.FormatBool(cfg.ModelsHideUnavailable),
 		"MODELS_ALLOW":                          strings.Join(cfg.ModelsAllow, ","),
 		"CORS_ALLOWED_ORIGIN":                   cfg.CORSAllowedOrigin,

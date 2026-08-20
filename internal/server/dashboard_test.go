@@ -609,82 +609,6 @@ func TestDashboardModeSwitchClearsJSONConfigTokens(t *testing.T) {
 	}
 }
 
-// TestDashboardModeSwitchToHybridPersistsEnv verifies the hybrid mode switch
-// persists HYBRID_MODE=true (keeping AUTH_TOKENS), the reload lands in hybrid
-// mode (healthz "mode"), pooled and bridge switches clear HYBRID_MODE, and a
-// bridge switch still empties the tokens.
-func TestDashboardModeSwitchToHybridPersistsEnv(t *testing.T) {
-	t.Chdir(t.TempDir())
-	ts := dashboardServer(t, "secret", nil)
-	cookie := authedCookie(t, ts)
-
-	// Add a token so hybrid has a pool to fall back on.
-	resp := postJSON(t, ts.URL, cookie, "/admin/tokens/add", `{"token":"cb_hybrid123"}`)
-	if !strings.Contains(bodyOf(t, resp), "Token added") {
-		t.Fatalf("add response = %q, want success", bodyOf(t, resp))
-	}
-
-	// Pooled → hybrid: HYBRID_MODE=true persisted, tokens kept.
-	resp = postJSON(t, ts.URL, cookie, "/admin/mode", `{"mode":"hybrid"}`)
-	if !strings.Contains(bodyOf(t, resp), "Switched to hybrid mode") {
-		t.Fatalf("hybrid response = %q, want hybrid switch", bodyOf(t, resp))
-	}
-	env, err := os.ReadFile(".env")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(env), "HYBRID_MODE=true") {
-		t.Errorf(".env missing HYBRID_MODE=true: %s", env)
-	}
-	if !strings.Contains(string(env), "cb_hybrid123") {
-		t.Errorf("hybrid switch must keep AUTH_TOKENS: %s", env)
-	}
-
-	// The live config reports hybrid via healthz.
-	resp, data := doJSON(t, http.MethodGet, ts.URL+"/healthz", nil, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("healthz status = %d, want 200: %s", resp.StatusCode, data)
-	}
-	var hz struct {
-		Mode string `json:"mode"`
-	}
-	if err := json.Unmarshal(data, &hz); err != nil {
-		t.Fatalf("healthz is not JSON: %v: %s", err, data)
-	}
-	if hz.Mode != "hybrid" {
-		t.Errorf("healthz mode = %q, want hybrid", hz.Mode)
-	}
-
-	// Hybrid → pooled: HYBRID_MODE=false, tokens kept.
-	resp = postJSON(t, ts.URL, cookie, "/admin/mode", `{"mode":"pooled"}`)
-	if !strings.Contains(bodyOf(t, resp), "Switched to pooled mode") {
-		t.Fatalf("pooled response = %q, want pooled switch", bodyOf(t, resp))
-	}
-	env, _ = os.ReadFile(".env")
-	if !strings.Contains(string(env), "HYBRID_MODE=false") {
-		t.Errorf(".env missing HYBRID_MODE=false after pooled switch: %s", env)
-	}
-	if !strings.Contains(string(env), "cb_hybrid123") {
-		t.Errorf("pooled switch must keep AUTH_TOKENS: %s", env)
-	}
-
-	// Pooled → bridge: HYBRID_MODE=false AND tokens cleared.
-	resp = postJSON(t, ts.URL, cookie, "/admin/mode", `{"mode":"bridge"}`)
-	if !strings.Contains(bodyOf(t, resp), "Switched to bridge mode") {
-		t.Fatalf("bridge response = %q, want bridge switch", bodyOf(t, resp))
-	}
-	env, _ = os.ReadFile(".env")
-	if strings.Contains(string(env), "HYBRID_MODE=true") {
-		t.Errorf("HYBRID_MODE still true after bridge switch: %s", env)
-	}
-	if !strings.Contains(string(env), "HYBRID_MODE=false") {
-		t.Errorf(".env missing HYBRID_MODE=false after bridge switch: %s", env)
-	}
-	if strings.Contains(string(env), "cb_hybrid123") {
-		t.Errorf("token still in .env after bridge switch: %s", env)
-	}
-}
-
 func postJSON(t *testing.T, url, cookie, path, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, url+path, strings.NewReader(body))
@@ -698,35 +622,6 @@ func postJSON(t *testing.T, url, cookie, path, body string) *http.Response {
 		t.Fatal(err)
 	}
 	return resp
-}
-
-// TestDashboardTokensPageHybrid verifies the tokens page renders the hybrid
-// pill, the hybrid mode-card, and the "Switch to hybrid mode" button when the
-// proxy runs in hybrid mode (pooled-style token table + hybrid labels).
-func TestDashboardTokensPageHybrid(t *testing.T) {
-	t.Chdir(t.TempDir())
-	ts := dashboardServer(t, "secret", func(c *config.Config) {
-		c.HybridMode = true
-		c.AuthTokens = []string{"tok-0"}
-	})
-	cookie := authedCookie(t, ts)
-	req, err := http.NewRequest(http.MethodGet, ts.URL+"/admin/api/tokens", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Cookie", cookie)
-	rec := httptest.NewRecorder()
-	ts.Config.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("tokens api status = %d, want 200", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `"mode":"hybrid"`) {
-		t.Errorf("tokens api missing hybrid mode in: %s", body)
-	}
-	if !strings.Contains(body, `"has_tokens":true`) {
-		t.Errorf("tokens api missing has_tokens in: %s", body)
-	}
 }
 
 // A valid .env save persists the file and reports success.

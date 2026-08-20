@@ -90,7 +90,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 // chatCore is the shared acquire→relay core for every completion-style
 // endpoint (chat completions, Responses, Anthropic messages): acquire a
-// token lease (bridge/hybrid routing included), call upstream with
+// token lease (bridge routing included), call upstream with
 // retry-once recovery, then relay the forced stream to the client through
 // relay. kind names the endpoint in request/done log lines.
 func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, stream bool, normalized []byte, reasoningEffort, kind string, relay relayFunc) {
@@ -137,28 +137,20 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 			"rate_limit_exceeded", "rate_limit_exceeded", 0)
 		return
 	}
-	// Bridge routing: pure bridge (no AUTH_TOKENS, not hybrid) always relays
-	// the client's Authorization header as the upstream token; hybrid mode
-	// relays when a token is present and falls back to the pool otherwise.
-	// No token in pure bridge → 401 before touching the pool.
+	// Bridge routing: bridge mode relays the client's Authorization header
+	// as the upstream token.  No token in bridge → 401 before touching
+	// the pool.
 	var up io.ReadCloser
 	var lease *pool.Lease
 	cfg := s.cfg.Load()
 	fallbackUsed := false
-	// In hybrid, only an Authorization: Bearer token selects the bridge
-	// path — an x-api-key is the API_KEYS scheme for pooled clients and
-	// must never be relayed upstream as a FreeBuff credential.
 	tok := bearerToken(r)
 	bridge := false
 	switch {
-	case cfg.BridgeMode() && !cfg.HybridMode:
-		// Pure bridge: the client token is the only upstream credential.
+	case cfg.BridgeMode():
+		// Bridge: the client token is the only upstream credential.
 		bridge = true
 		tok = clientToken(r)
-	case cfg.HybridMode:
-		// Hybrid: a Bearer token is relayed like bridge; token-less
-		// requests fall back to the pool.
-		bridge = tok != ""
 	}
 	// Issue #74 P2: refuse new requests fast when (egress, model) is marked
 	// unfit — the direct egress cannot serve this model for ~5 min. The

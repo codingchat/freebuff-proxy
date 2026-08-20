@@ -60,13 +60,6 @@
       type: 'preset',
       options: ['0s', '500ms', '1s', '2s', '3s', '5s'],
     },
-    HYBRID_MODE: {
-      name: 'Hybrid Routing Mode',
-      desc: 'When enabled, requests with client-supplied Bearer tokens relay directly (bridge), while token-less requests use the server pool.',
-      defaultValue: 'false',
-      category: 'Routing & Pool',
-      type: 'boolean',
-    },
     ROTATION_INTERVAL: {
       name: 'Token Rotation Interval',
       desc: 'How often active upstream tokens in the pool rotate to distribute usage evenly across credentials.',
@@ -216,16 +209,6 @@
       apply: () => {
         setEnvValue('LOG_LEVEL', 'debug');
         setEnvValue('DEBUG_DUMP', 'true');
-      }
-    },
-    {
-      id: 'hybrid',
-      label: 'Hybrid Relay',
-      icon: RefreshCw,
-      desc: 'Relays client credentials alongside the shared server pool',
-      apply: () => {
-        setEnvValue('HYBRID_MODE', 'true');
-        setEnvValue('SAFE_MODE', 'true');
       }
     }
   ];

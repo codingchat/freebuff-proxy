@@ -557,8 +557,6 @@ func (d *Dashboard) setupData() setupData {
 	switch mode {
 	case "bridge":
 		sd.KeyHint = "your FreeBuff token (bridge mode: the client's Authorization header IS the upstream token)"
-	case "hybrid":
-		sd.KeyHint = "your FreeBuff token — sent when present; otherwise the proxy picks from AUTH_TOKENS (hybrid mode)"
 	default:
 		sd.KeyHint = "sk-any (pooled mode; the proxy picks from AUTH_TOKENS)"
 	}
@@ -794,7 +792,6 @@ func (d *Dashboard) configData() configData {
 		{Key: "MAX_MESSAGES_PER_DAY", Value: strconv.Itoa(cfg.MaxMessagesPerDay)},
 		{Key: "IDLE_ROTATION_TIMEOUT", Value: cfg.IdleRotationTimeout.String()},
 		{Key: "SAFE_MODE", Value: strconv.FormatBool(cfg.SafeMode)},
-		{Key: "HYBRID_MODE", Value: strconv.FormatBool(cfg.HybridMode)},
 		{Key: "REQUEST_JITTER", Value: cfg.RequestJitter.String()},
 		{Key: "CLI_VERSION", Value: cfg.CLIVersion},
 		{Key: "MODEL_ALIASES", Value: fmt.Sprintf("%d alias(es)", len(cfg.ModelAliases)), Secret: true},
@@ -832,7 +829,6 @@ const defaultEnvTemplate = `# freebuff-proxy configuration (.env)
 #MAX_MESSAGES_PER_DAY=0
 #IDLE_ROTATION_TIMEOUT=0
 #SAFE_MODE=true
-#HYBRID_MODE=false
 #REQUEST_JITTER=0s
 #CLI_VERSION=0.10.7
 #MODEL_ALIASES=

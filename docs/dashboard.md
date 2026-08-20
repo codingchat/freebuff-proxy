@@ -15,9 +15,9 @@ The session cookie is stateless (HMAC-signed expiry, per-process random key): re
 
 ## Pages & Capabilities
 
-- **Overview**: Live status header with active mode (`Pooled`, `Hybrid`, `Bridge`), registered model count, process uptime, and safe mode status badge. Features a 1-click **End-to-End Smoke Test** (sends a real request through the proxy and renders timing breakdown and preview) alongside live token cards detailing session status, risk scores, daily messages vs `MAX_MESSAGES_PER_DAY`, queue position, and transient retries.
+- **Overview**: Live status header with active mode (`Pooled`, `Bridge`), registered model count, process uptime, and safe mode status badge. Features a 1-click **End-to-End Smoke Test** (sends a real request through the proxy and renders timing breakdown and preview) alongside live token cards detailing session status, risk scores, daily messages vs `MAX_MESSAGES_PER_DAY`, queue position, and transient retries.
 - **Tokens & Quotas**: Comprehensive token pool management featuring:
-  - **Always-Visible 3-Mode Controller**: Toggle seamlessly between `Pooled`, `Hybrid`, and `Bridge` modes.
+  - **Always-Visible 3-Mode Controller**: Toggle seamlessly between `Pooled` and `Bridge` modes.
   - **Per-Model Quotas Table**: Displays live limits, recent usage, period reset times, and entitlements with color-coded usage bars.
   - **Runtime Token Actions**: Add Token to Pool form (`cb_...`), **Test** (zero-cost upstream validity probe), **Unlock** (clears cooldown/locks), **Finish runs**, **Remove last token**, and **Test all tokens**.
   - All token additions and mode switches are automatically persisted to `.env` without requiring a server restart.
@@ -25,8 +25,8 @@ The session cookie is stateless (HMAC-signed expiry, per-process random key): re
 - **Live Traces**: In-memory ring buffer (last 200 requests) showing timestamp, chosen token, requested model, status (`ok`, `rate_limited`, `banned`, `upstream`), latency, and error breakdown. Refreshes every 3s.
 - **Model Playground**: Interactive prompt console with real-time **Server-Sent Events (SSE) chat streaming**, model picker, shortcut support (`Ctrl+Enter`), and collapsible thinking/reasoning blocks.
 - **Configuration Studio**: Visual hot-reloading `.env` management studio:
-  - **One-Click Presets**: *🛡️ Stealth Anti-Ban*, *⚡ Maximum Speed (0 Jitter)*, *🐞 Deep Debugging*, *🔄 Hybrid Relay*.
-  - **Interactive Quick Knobs**: 1-click boolean switches (`SAFE_MODE`, `HYBRID_MODE`, `DEBUG_DUMP`), enum pills (`COST_MODE`, `TLS_FINGERPRINT`, `LOG_LEVEL`), and duration chips (`REQUEST_JITTER`, `ROTATION_INTERVAL`, `REQUEST_TIMEOUT`) that synchronize with the `.env` editor in real-time.
+  - **One-Click Presets**: *🛡️ Stealth Anti-Ban*, *⚡ Maximum Speed (0 Jitter)*, *🐞 Deep Debugging*.
+  - **Interactive Quick Knobs**: 1-click boolean switches (`SAFE_MODE`, `DEBUG_DUMP`), enum pills (`COST_MODE`, `TLS_FINGERPRINT`, `LOG_LEVEL`), and duration chips (`REQUEST_JITTER`, `ROTATION_INTERVAL`, `REQUEST_TIMEOUT`) that synchronize with the `.env` editor in real-time.
   - **Hover & Click Quick Info Cards**: Explains every parameter, category, and default fallback value.
   - **Atomic Validation**: Saves are validated against strict schema rules with automatic rollback on error.
 - **Client Setup & Tool Integration**:

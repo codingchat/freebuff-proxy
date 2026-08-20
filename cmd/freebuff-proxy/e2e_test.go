@@ -255,7 +255,7 @@ func postBody(t *testing.T, client *http.Client, url, body string) (*http.Respon
 }
 
 // healthzMode polls /healthz until it answers 200 and returns the parsed
-// mode field ("pooled" / "bridge" / "hybrid").
+// mode field ("pooled" / "bridge").
 func healthzMode(t *testing.T, base string) string {
 	t.Helper()
 	client := e2eHTTPClient()

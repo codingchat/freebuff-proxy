@@ -19,7 +19,7 @@ var envKeys = []string{
 	"LISTEN_ADDR", "UPSTREAM_BASE_URL", "AUTH_TOKENS", "ROTATION_INTERVAL",
 	"REQUEST_TIMEOUT", "SESSION_CALL_TIMEOUT", "API_KEYS", "COST_MODE", "ACTING_USER_ID", "USER_ID",
 	"TLS_FINGERPRINT", "REGISTRY_REFRESH", "DEBUG_DUMP", "LOG_FILE", "LOG_LEVEL", "LOG_FORMAT", "LOG_ACCESS", "LOG_RING_SIZE",
-	"MAX_MESSAGES_PER_DAY", "IDLE_ROTATION_TIMEOUT", "SAFE_MODE", "HYBRID_MODE",
+	"MAX_MESSAGES_PER_DAY", "IDLE_ROTATION_TIMEOUT", "SAFE_MODE",
 	"MODELS_HIDE_UNAVAILABLE", "MODELS_ALLOW", "CORS_ALLOWED_ORIGIN", "REQUEST_JITTER", "CLI_VERSION", "MODEL_ALIASES",
 	"AUTO_DISCOVER_TOKEN", "TRANSIENT_RETRIES", "ADMIN_TOKEN",
 	"SESSION_PERSIST", "SESSION_STATE_FILE",
@@ -97,9 +97,6 @@ func TestDefaults(t *testing.T) {
 	}
 	if !cfg.SafeMode {
 		t.Error("SafeMode = false, want true (default)")
-	}
-	if cfg.HybridMode {
-		t.Error("HybridMode = true, want false (default)")
 	}
 	if cfg.CORSAllowedOrigin != "*" {
 		t.Errorf("CORSAllowedOrigin = %q, want %q (default)", cfg.CORSAllowedOrigin, "*")
@@ -726,73 +723,6 @@ func TestValidateModeKnobs(t *testing.T) {
 	}
 }
 
-// TestHybridMode verifies HYBRID_MODE loads from env and .env, EffectiveMode
-// reports hybrid before bridge/pooled, and Validate accepts hybrid with and
-// without AUTH_TOKENS (token-less requests 502 until a token is added, but
-// client-token requests relay like bridge).
-func TestHybridMode(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("AUTH_TOKENS", "tok-1")
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.HybridMode {
-		t.Error("HybridMode = true by default, want false")
-	}
-	if got := cfg.EffectiveMode(); got != "pooled" {
-		t.Errorf("EffectiveMode = %q, want pooled", got)
-	}
-
-	// HYBRID_MODE=true via env.
-	clearEnv(t)
-	t.Setenv("AUTH_TOKENS", "tok-1")
-	t.Setenv("HYBRID_MODE", "true")
-	cfg, err = Load("")
-	if err != nil {
-		t.Fatalf("Load(HYBRID_MODE=true): %v", err)
-	}
-	if !cfg.HybridMode {
-		t.Error("HybridMode = false, want true (from env)")
-	}
-	if got := cfg.EffectiveMode(); got != "hybrid" {
-		t.Errorf("EffectiveMode = %q, want hybrid", got)
-	}
-
-	// Hybrid without tokens is legal; EffectiveMode still wins over bridge.
-	clearEnv(t)
-	t.Setenv("HYBRID_MODE", "true")
-	cfg, err = Load("")
-	if err != nil {
-		t.Fatalf("Load(HYBRID_MODE=true, no tokens): %v", err)
-	}
-	if !cfg.BridgeMode() {
-		t.Error("BridgeMode = false, want true (no AUTH_TOKENS)")
-	}
-	if got := cfg.EffectiveMode(); got != "hybrid" {
-		t.Errorf("EffectiveMode = %q, want hybrid (hybrid beats bridge)", got)
-	}
-
-	// Validate accepts hybrid in both token configurations.
-	c := Config{
-		ListenAddr:         ":3457",
-		UpstreamBaseURL:    "https://www.codebuff.com",
-		AuthTokens:         []string{"tok"},
-		RotationInterval:   6 * time.Hour,
-		RequestTimeout:     15 * time.Minute,
-		SessionCallTimeout: 30 * time.Second,
-		RegistryRefresh:    6 * time.Hour,
-		HybridMode:         true,
-	}
-	if err := c.Validate(); err != nil {
-		t.Fatalf("hybrid with tokens Validate: %v", err)
-	}
-	c.AuthTokens = nil
-	if err := c.Validate(); err != nil {
-		t.Fatalf("hybrid without tokens Validate: %v", err)
-	}
-}
 
 func TestDotenv(t *testing.T) {
 	clearEnv(t) // chdirs to a fresh temp dir; .env is written relative to it
@@ -1956,7 +1886,6 @@ func TestDotenvFullKeySet(t *testing.T) {
 
 	content := strings.Join([]string{
 		"SAFE_MODE=false",
-		"HYBRID_MODE=true",
 		"REQUEST_JITTER=5s",
 		"CLI_VERSION=9.9.9",
 		"MODEL_ALIASES=gpt-4o:deepseek/deepseek-v4-flash,glm:z-ai/glm-5.2",
@@ -1974,9 +1903,6 @@ func TestDotenvFullKeySet(t *testing.T) {
 	}
 	if cfg.SafeMode {
 		t.Error("SafeMode = true, want false (from .env)")
-	}
-	if !cfg.HybridMode {
-		t.Error("HybridMode = false, want true (from .env)")
 	}
 	if cfg.RequestJitter != 5*time.Second {
 		t.Errorf("RequestJitter = %v, want 5s (from .env)", cfg.RequestJitter)
@@ -2003,11 +1929,10 @@ func TestDotenvFullKeySet(t *testing.T) {
 func TestDotenvFullKeySetEnvWins(t *testing.T) {
 	clearEnv(t)
 
-	if err := os.WriteFile(".env", []byte("SAFE_MODE=false\nHYBRID_MODE=true\nCLI_VERSION=9.9.9\nTRANSIENT_RETRIES=2\n"), 0o644); err != nil {
+	if err := os.WriteFile(".env", []byte("SAFE_MODE=false\nCLI_VERSION=9.9.9\nTRANSIENT_RETRIES=2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("SAFE_MODE", "true")
-	t.Setenv("HYBRID_MODE", "false")
 	t.Setenv("CLI_VERSION", "1.2.3")
 	t.Setenv("TRANSIENT_RETRIES", "5")
 
@@ -2017,9 +1942,6 @@ func TestDotenvFullKeySetEnvWins(t *testing.T) {
 	}
 	if !cfg.SafeMode {
 		t.Error("SafeMode = false, want true (env wins over .env)")
-	}
-	if cfg.HybridMode {
-		t.Error("HybridMode = true, want false (env wins over .env)")
 	}
 	if cfg.CLIVersion != "1.2.3" {
 		t.Errorf("CLIVersion = %q, want 1.2.3 (env wins)", cfg.CLIVersion)

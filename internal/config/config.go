@@ -61,7 +61,6 @@ type Config struct {
 	MaxSpendPerDay        int64         // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $0.50 restricted, compose by minimum, server-enforced) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
 	IdleRotationTimeout   time.Duration // 0 = disabled: pause rotation/refresh after this idle period
 	SafeMode              bool          // true = apply recommended anti-ban safe defaults
-	HybridMode            bool          // true = relay client tokens like bridge AND serve token-less requests from the pool
 	ModelsHideUnavailable bool          // true = /v1/models prunes models marked unavailable (region/tier/quota)
 	// ModelsAllow is the operator-set model allowlist (MODELS_ALLOW,
 	// comma-separated). When non-empty, /v1/models lists only the allowed
@@ -193,14 +192,8 @@ type Config struct {
 func (c Config) BridgeMode() bool { return len(c.AuthTokens) == 0 }
 
 // EffectiveMode reports the routing mode label for dashboards and healthz:
-// "hybrid" when HYBRID_MODE is set, "bridge" when no AUTH_TOKENS are
-// configured, else "pooled". Hybrid wins over bridge so a hybrid config with
-// zero tokens still reports hybrid (token-less requests 502 until a token is
-// added, while client-token requests relay like bridge).
+// "bridge" when no AUTH_TOKENS are configured, else "pooled".
 func (c Config) EffectiveMode() string {
-	if c.HybridMode {
-		return "hybrid"
-	}
 	if c.BridgeMode() {
 		return "bridge"
 	}
@@ -241,7 +234,6 @@ type rawConfig struct {
 	MaxSpendPerDay                   *int            `json:"MAX_SPEND_PER_DAY"`
 	IdleRotationTimeout              string          `json:"IDLE_ROTATION_TIMEOUT"`
 	SafeMode                         bool            `json:"SAFE_MODE"`
-	HybridMode                       bool            `json:"HYBRID_MODE"`
 	ModelsHideUnavailable            bool            `json:"MODELS_HIDE_UNAVAILABLE"`
 	ModelsAllow                      modelsAllowList `json:"MODELS_ALLOW"`
 	CORSAllowedOrigin                string          `json:"CORS_ALLOWED_ORIGIN"`
@@ -308,7 +300,6 @@ func defaultRawConfig() rawConfig {
 		SafeMode:                         true,        // anti-ban presets on by default; set SAFE_MODE=false to disable
 		LogAccess:                        true,        // per-request access lines on by default; LOG_ACCESS=false disables them
 		LogRingSize:                      ptrInt(500), // dashboard log viewer ring capacity (T19)
-		HybridMode:                       false,       // relay client tokens AND serve the pool (off by default)
 		CORSAllowedOrigin:                "*",         // browser clients reach /v1/* cross-origin by default
 		RequestJitter:                    "",          // "" = disabled (unset → SAFE_MODE preset may fill)
 		CLIVersion:                       "0.10.7",
@@ -465,7 +456,6 @@ func Load(configPath string) (Config, error) {
 	overrideInt(&raw.MaxSpendPerDay, "MAX_SPEND_PER_DAY")
 	overrideString(&raw.IdleRotationTimeout, "IDLE_ROTATION_TIMEOUT")
 	overrideBool(&raw.SafeMode, "SAFE_MODE")
-	overrideBool(&raw.HybridMode, "HYBRID_MODE")
 	overrideBool(&raw.ModelsHideUnavailable, "MODELS_HIDE_UNAVAILABLE")
 	overrideString((*string)(&raw.ModelsAllow), "MODELS_ALLOW")
 	overrideString(&raw.CORSAllowedOrigin, "CORS_ALLOWED_ORIGIN")
@@ -721,7 +711,6 @@ func Load(configPath string) (Config, error) {
 		MaxSpendPerDay:                   maxSpendPerDay,
 		IdleRotationTimeout:              idleRotationTimeout,
 		SafeMode:                         raw.SafeMode,
-		HybridMode:                       raw.HybridMode,
 		ModelsHideUnavailable:            raw.ModelsHideUnavailable,
 		ModelsAllow:                      splitList(string(raw.ModelsAllow)),
 		CORSAllowedOrigin:                strings.TrimSpace(raw.CORSAllowedOrigin),
@@ -907,11 +896,6 @@ func (c Config) Validate() error {
 		return fmt.Errorf("LISTEN_ADDR %q has invalid port %q (must be an integer in 1-65535)", c.ListenAddr, portStr)
 	}
 
-	// HYBRID_MODE deliberately has no constraint: hybrid with zero
-	// AUTH_TOKENS is legal — the dashboard warns that token-less requests
-	// will 502 until a token is added, while client-token requests relay
-	// like bridge mode.
-
 	for i, tok := range c.AuthTokens {
 		if strings.HasPrefix(strings.ToLower(tok), "bearer ") {
 			return fmt.Errorf("AUTH_TOKENS token #%d starts with 'Bearer ' prefix -- remove 'Bearer ' (the proxy adds it upstream automatically)", i+1)
@@ -1061,7 +1045,6 @@ func applyDotenv(raw *rawConfig, path string) error {
 	// AUTO_DISCOVER_TOKEN is intentionally env-only (it controls the .env
 	// read itself, so honoring it from .env would be circular).
 	overrideBoolFrom(&raw.SafeMode, get, "SAFE_MODE")
-	overrideBoolFrom(&raw.HybridMode, get, "HYBRID_MODE")
 	overrideBoolFrom(&raw.ModelsHideUnavailable, get, "MODELS_HIDE_UNAVAILABLE")
 	overrideStringFrom((*string)(&raw.ModelsAllow), get, "MODELS_ALLOW")
 	overrideStringFrom(&raw.RequestJitter, get, "REQUEST_JITTER")

@@ -352,7 +352,7 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Load()
 	switch strings.ToLower(strings.TrimSpace(req.Mode)) {
 	case "bridge":
-		if cfg.BridgeMode() && !cfg.HybridMode {
+		if cfg.BridgeMode() {
 			s.dash.RenderConfigResult(w, r, false, "Already in bridge mode.")
 			return
 		}
@@ -363,11 +363,11 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 		// verified (persist → verify → drain).
 		s.adminSaveMu.Lock()
 		defer s.adminSaveMu.Unlock()
-		// Persist AUTH_TOKENS= (explicit empty) + HYBRID_MODE=false and
+		// Persist AUTH_TOKENS= (explicit empty) and
 		// reload, verifying the effective config actually lands in bridge
 		// mode before touching the live pool. Roll the .env back on failure.
 		old, oldErr := os.ReadFile(".env")
-		if _, err := updateEnvKeys([]envUpdate{{Key: "AUTH_TOKENS", Value: ""}, {Key: "HYBRID_MODE", Value: "false"}}); err != nil {
+		if _, err := updateEnvKeys([]envUpdate{{Key: "AUTH_TOKENS", Value: ""}}); err != nil {
 			s.dash.RenderConfigResult(w, r, false, "Failed to persist .env: "+err.Error())
 			return
 		}
@@ -393,76 +393,13 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("dashboard switched to bridge mode")
 		s.dash.RenderConfigResult(w, r, true, "Switched to bridge mode — AUTH_TOKENS cleared; clients now send their own token.")
 	case "pooled":
-		if !cfg.BridgeMode() && !cfg.HybridMode {
+		if !cfg.BridgeMode() {
 			s.dash.RenderConfigResult(w, r, false, "Already in pooled mode.")
 			return
 		}
-		if cfg.BridgeMode() {
-			s.dash.RenderConfigResult(w, r, false, "Pooled mode needs tokens — add one via the Add-token form first.")
-			return
-		}
-		// Hybrid → pooled: keep the tokens, just clear HYBRID_MODE.
-		s.adminSaveMu.Lock()
-		defer s.adminSaveMu.Unlock()
-		old, oldErr := os.ReadFile(".env")
-		if _, err := updateEnvKeys([]envUpdate{{Key: "HYBRID_MODE", Value: "false"}}); err != nil {
-			s.dash.RenderConfigResult(w, r, false, "Failed to persist .env: "+err.Error())
-			return
-		}
-		newCfg, err := config.Load(s.configPath)
-		if err != nil {
-			restoreEnvFile(old, oldErr)
-			s.dash.RenderConfigResult(w, r, false, "Reload rejected: "+err.Error())
-			return
-		}
-		if newCfg.HybridMode {
-			restoreEnvFile(old, oldErr)
-			s.dash.RenderConfigResult(w, r, false, "Could not switch to pooled mode: HYBRID_MODE is still true via a -config JSON file or the environment, which overrides .env. Clear it there, then retry.")
-			return
-		}
-		s.cfg.Store(&newCfg)
-		s.reg.SetConfig(&newCfg)
-		s.pool.SetConfig(&newCfg)
-		s.rateLimiter.SetRate(newCfg.RateLimitPerIP, newCfg.RateLimitBurst)
-		s.logger.Info("dashboard switched to pooled mode", "auth_tokens", len(newCfg.AuthTokens))
-		s.dash.RenderConfigResult(w, r, true, "Switched to pooled mode — HYBRID_MODE cleared; all requests now use the pool.")
-	case "hybrid":
-		if cfg.HybridMode {
-			s.dash.RenderConfigResult(w, r, false, "Already in hybrid mode.")
-			return
-		}
-		// Hybrid → pooled: keep the tokens, just clear HYBRID_MODE.
-		s.adminSaveMu.Lock()
-		defer s.adminSaveMu.Unlock()
-		old, oldErr := os.ReadFile(".env")
-		if _, err := updateEnvKeys([]envUpdate{{Key: "HYBRID_MODE", Value: "true"}}); err != nil {
-			s.dash.RenderConfigResult(w, r, false, "Failed to persist .env: "+err.Error())
-			return
-		}
-		newCfg, err := config.Load(s.configPath)
-		if err != nil {
-			restoreEnvFile(old, oldErr)
-			s.dash.RenderConfigResult(w, r, false, "Reload rejected: "+err.Error())
-			return
-		}
-		if !newCfg.HybridMode {
-			restoreEnvFile(old, oldErr)
-			s.dash.RenderConfigResult(w, r, false, "Could not switch to hybrid mode: HYBRID_MODE is still false via a -config JSON file or the environment, which overrides .env. Set it there, then retry.")
-			return
-		}
-		s.cfg.Store(&newCfg)
-		s.reg.SetConfig(&newCfg)
-		s.pool.SetConfig(&newCfg)
-		s.rateLimiter.SetRate(newCfg.RateLimitPerIP, newCfg.RateLimitBurst)
-		msg := "Switched to hybrid mode — clients with a token relay it; token-less requests use the pool."
-		if len(newCfg.AuthTokens) == 0 {
-			msg += " Warning: no AUTH_TOKENS — token-less requests will fail (502) until a token is added."
-			s.logger.Warn("hybrid mode enabled without AUTH_TOKENS: token-less requests will 502 until a token is added")
-		} else {
-			s.logger.Info("dashboard switched to hybrid mode", "auth_tokens", len(newCfg.AuthTokens))
-		}
-		s.dash.RenderConfigResult(w, r, true, msg)
+		s.dash.RenderConfigResult(w, r, false, "Pooled mode needs tokens — add one via the Add-token form first.")
+		return
 	default:
-		s.dash.RenderConfigResult(w, r, false, "Mode must be 'bridge', 'pooled', or 'hybrid'.")
+		s.dash.RenderConfigResult(w, r, false, "Mode must be 'bridge' or 'pooled'.")
 	}
 }

@@ -78,7 +78,6 @@
 
   function modeVariant(data) {
     if (data?.in_bridge) return 'blue';
-    if (data?.mode === 'hybrid') return 'purple';
     return 'amber';
   }
 </script>

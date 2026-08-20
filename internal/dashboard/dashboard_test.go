@@ -636,19 +636,6 @@ func TestSetupPageKeyHintModes(t *testing.T) {
 	if data["key_hint"] == nil || data["key_hint"].(string) == "" {
 		t.Error("setup page missing key_hint")
 	}
-
-	tsHybrid, _ := pageServer(t, 1, "setup", func(c *config.Config) { c.HybridMode = true }, nil)
-	resp, err = http.Get(tsHybrid.URL + "/setup")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(mustReadAll(t, resp), &data); err != nil {
-		t.Fatalf("response is not valid JSON: %v", err)
-	}
-	_ = resp.Body.Close()
-	if data["mode"] != "hybrid" {
-		t.Errorf("mode = %v, want hybrid", data["mode"])
-	}
 }
 
 // TestConfigPageEnvAbsentTemplate pins the editor seed JSON.

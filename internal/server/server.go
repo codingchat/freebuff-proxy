@@ -433,18 +433,11 @@ func remoteHost(r *http.Request) string {
 // are configured the handler passes through untouched; /healthz is always
 // exempt (the caller wires it without requireAuth). Bridge mode (no
 // AUTH_TOKENS) also passes through: the Authorization header IS the upstream
-// token there, and API_KEYS is meaningless. Hybrid mode passes a Bearer
-// token through (bridge relay: the client's own FreeBuff credential), but
-// token-less requests fall back to the pool and must still pass the
-// API_KEYS gate — an x-api-key is the API_KEYS scheme, never a bridge token.
+// token there, and API_KEYS is meaningless.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cfg := s.cfg.Load()
 		if len(cfg.APIKeys) == 0 || cfg.BridgeMode() {
-			next(w, r)
-			return
-		}
-		if cfg.HybridMode && bearerToken(r) != "" {
 			next(w, r)
 			return
 		}
@@ -541,10 +534,9 @@ func clientToken(r *http.Request) string {
 	return strings.TrimSpace(provided)
 }
 
-// bearerToken returns only the Authorization: Bearer token. In hybrid mode
-// this is the discriminator between bridge traffic (client relays its own
-// FreeBuff token) and pooled traffic (no bearer; x-api-key is the API_KEYS
-// scheme and must never be relayed upstream as a FreeBuff credential).
+// bearerToken returns only the Authorization: Bearer token (the
+// Authorization header value without the "Bearer " prefix). Returns "" if
+// no Bearer token is present.
 func bearerToken(r *http.Request) string {
 	if tok, ok := extractBearerToken(r.Header.Get("Authorization")); ok {
 		return tok

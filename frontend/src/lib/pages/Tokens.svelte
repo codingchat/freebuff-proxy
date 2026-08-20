@@ -189,7 +189,7 @@
 
   function handleModeSwitch(targetMode) {
     if (!data) return;
-    const current = data.in_bridge ? 'bridge' : data.mode === 'hybrid' ? 'hybrid' : 'pooled';
+    const current = data.in_bridge ? 'bridge' : 'pooled';
     if (current === targetMode) return;
 
     if (targetMode === 'pooled') {
@@ -199,8 +199,6 @@
         return;
       }
       triggerAction('/admin/mode', { mode: 'pooled' }, 'Switch to pooled mode? All client requests will share the server pool.');
-    } else if (targetMode === 'hybrid') {
-      triggerAction('/admin/mode', { mode: 'hybrid' }, 'Switch to hybrid mode? Client-provided tokens relay like bridge; token-less requests use the pool.');
     } else if (targetMode === 'bridge') {
       triggerAction('/admin/mode', { mode: 'bridge' }, 'Switch to bridge mode? Pooled tokens are cleared from memory and .env; clients send their own credentials.');
     }
@@ -214,7 +212,6 @@
 
   function modeVariant(d) {
     if (d?.in_bridge) return 'blue';
-    if (d?.mode === 'hybrid') return 'purple';
     return 'amber';
   }
 
@@ -287,30 +284,14 @@
           onclick={() => handleModeSwitch('pooled')}
           disabled={!data}
           class="px-3.5 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-40
-            {data && !data.in_bridge && data.mode !== 'hybrid'
+            {data && !data.in_bridge
               ? 'bg-[var(--fp-amber)]/20 text-[var(--fp-amber)] border border-[var(--fp-amber)]/50 shadow-sm'
               : 'bg-[var(--fp-surface-3)] hover:enabled:bg-[var(--fp-border-bright)] text-[var(--fp-muted)] hover:enabled:text-white border border-[var(--fp-border)]'}"
           title="All requests share the server token pool"
         >
           <Server size={14} />
           <span>Pooled</span>
-          {data && !data.in_bridge && data.mode !== 'hybrid' ? '✓' : ''}
-        </button>
-
-        <!-- Hybrid Mode -->
-        <button
-          type="button"
-          onclick={() => handleModeSwitch('hybrid')}
-          disabled={!data}
-          class="px-3.5 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-40
-            {data?.mode === 'hybrid'
-              ? 'bg-[#AC94FA]/20 text-[#AC94FA] border border-[#AC94FA]/50 shadow-sm'
-              : 'bg-[var(--fp-surface-3)] hover:enabled:bg-[var(--fp-border-bright)] text-[var(--fp-muted)] hover:enabled:text-white border border-[var(--fp-border)]'}"
-          title="Relays client tokens when sent, falls back to server pool"
-        >
-          <Layers size={14} />
-          <span>Hybrid</span>
-          {data?.mode === 'hybrid' ? '✓' : ''}
+          {data && !data.in_bridge ? '✓' : ''}
         </button>
 
         <!-- Bridge Mode -->
@@ -329,7 +310,6 @@
           {data?.in_bridge ? '✓' : ''}
         </button>
 
-        <!-- Batch actions for pooled/hybrid -->
         {#if data?.has_tokens}
           <div class="h-6 w-[1px] bg-[var(--fp-border)] mx-1 hidden sm:block"></div>
           <button
@@ -357,10 +337,6 @@
       {#if data?.in_bridge}
         <span class="text-[var(--fp-muted)]">
           <strong class="text-[#60A5FA]">Bridge Mode Active:</strong> Server pool is empty. Clients must provide their own FreeBuff token per request (<code class="font-mono text-[var(--fp-text)]">Authorization: Bearer cb_...</code>).
-        </span>
-      {:else if data?.mode === 'hybrid'}
-        <span class="text-[var(--fp-muted)]">
-          <strong class="text-[#AC94FA]">Hybrid Mode Active:</strong> Client-provided tokens relay directly; token-less requests safely use the {data?.token_count || 0} server pool token(s).
         </span>
       {:else if data}
         <span class="text-[var(--fp-muted)]">
