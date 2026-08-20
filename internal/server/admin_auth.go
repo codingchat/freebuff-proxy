@@ -300,12 +300,17 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 // logging out an already-expired session must work — and it is not wrapped
 // in adminSensitive because it exposes nothing.
 func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	// Match the Secure flag with the current transport, same as login.
+	// A clearing cookie without Secure cannot overwrite a Secure cookie
+	// set during an HTTPS login, leaving the session alive.
+	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminCookieName,
 		Value:    "",
 		Path:     "/admin",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
+		Secure:   secure,
 		MaxAge:   -1,
 	})
 	if r.Method == http.MethodPost {
