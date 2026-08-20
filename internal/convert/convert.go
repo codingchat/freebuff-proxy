@@ -1849,12 +1849,16 @@ func (a *Accumulator) addToolCall(tc map[string]any) {
 //	</tool_call>
 //
 // or <tool_call>{"name":"...","arguments":{...}}</tool_call>
+//
+// codebuff_tool_call is the upstream's own canonical XML tag (issue #144;
+// reference common/src/tools/constants.ts — the CLI's stream parser
+// util/stream-xml-parser.ts extracts exactly this tag from model output).
 var (
-	xmlToolCallBlockRe = regexp.MustCompile(`(?s)<tool_call>(.*?)</tool_call>|<function_call>(.*?)</function_call>|<\|?tool[_\-]?call[_\-]?start\|?>(.*?)<\|?tool[_\-]?call[_\-]?end\|?>`)
+	xmlToolCallBlockRe = regexp.MustCompile(`(?s)<tool_call>(.*?)</tool_call>|<codebuff_tool_call>(.*?)</codebuff_tool_call>|<function_call>(.*?)</function_call>|<\|?tool[_\-]?call[_\-]?start\|?>(.*?)<\|?tool[_\-]?call[_\-]?end\|?>`)
 	fencedToolCallRe   = regexp.MustCompile("(?s)```(?:json|tool_?call)?\\s*\\n?(\\{\\s*\"(?:name|function)\"\\s*:\\s*.*?\\})\\s*\\n?```")
 	xmlFunctionHeadRe  = regexp.MustCompile(`(?i)<function[=\s]+["']?([^>"\s]+)["']?>`)
 	xmlParamRe         = regexp.MustCompile(`(?s)<parameter[=\s]+["']?([^>"\s]+)["']?>(.*?)</parameter>|<param[=\s]+["']?([^>"\s]+)["']?>(.*?)</param>`)
-	danglingToolTagsRe = regexp.MustCompile(`(?i)</?(?:tool_call|function_call|function|parameter|param|\|?tool[_\-]?call[_\-]?(?:start|end)\|?)(?:[=\s][^>]*)?>`)
+	danglingToolTagsRe = regexp.MustCompile(`(?i)</?(?:tool_call|codebuff_tool_call|function_call|function|parameter|param|\|?tool[_\-]?call[_\-]?(?:start|end)\|?)(?:[=\s][^>]*)?>`)
 )
 
 // extractXMLToolCalls parses text-based tool calls (Hermes/Qwen/MiMo XML format)
@@ -1882,6 +1886,9 @@ func extractXMLToolCalls(content string) (string, []*toolCall) {
 		}
 		if raw == "" && len(inner) > 3 {
 			raw = inner[3]
+		}
+		if raw == "" && len(inner) > 4 {
+			raw = inner[4]
 		}
 		raw = strings.TrimSpace(raw)
 		if raw == "" {

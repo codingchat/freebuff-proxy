@@ -2308,6 +2308,48 @@ func TestExtractXMLToolCalls(t *testing.T) {
 			t.Errorf("name = %q, want 'get_weather'", calls[0].Function.Name)
 		}
 	})
+
+	// Issue #144: the upstream's own canonical XML tag (codebuff_tool_call,
+	// common/src/tools/constants.ts) must be extracted like the model-native
+	// Hermes/Qwen/MiMo formats — models stream it when they ignore the stop
+	// sequences, and the CLI parses it with util/stream-xml-parser.ts.
+	t.Run("codebuff_tool_call xml format", func(t *testing.T) {
+		raw := "Plan:\n<codebuff_tool_call>\n<function=bash>\n<parameter=command>pwd</parameter>\n</function>\n</codebuff_tool_call>"
+		cleaned, calls := extractXMLToolCalls(raw)
+		if cleaned != "Plan:" {
+			t.Errorf("cleaned = %q, want 'Plan:'", cleaned)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("calls len = %d, want 1", len(calls))
+		}
+		if calls[0].Function.Name != "bash" {
+			t.Errorf("name = %q, want 'bash'", calls[0].Function.Name)
+		}
+		var argsMap map[string]string
+		if err := json.Unmarshal([]byte(calls[0].Function.Arguments), &argsMap); err != nil {
+			t.Fatalf("unmarshal args: %v", err)
+		}
+		if argsMap["command"] != "pwd" {
+			t.Errorf("command = %q, want 'pwd'", argsMap["command"])
+		}
+	})
+
+	// Pip/wrap-wrapped MiMo format exercises the regex's 4th capture group
+	// (the fallback chain after codebuff_tool_call was added); a group-shift
+	// regression would return the raw text with no call.
+	t.Run("pipe-wrapped mimo format", func(t *testing.T) {
+		raw := "I will help:\n<|tool_call_start|>\n<function=bash>\n<parameter=command>echo hi</parameter>\n</function>\n<|tool_call_end|>"
+		cleaned, calls := extractXMLToolCalls(raw)
+		if cleaned != "I will help:" {
+			t.Errorf("cleaned = %q, want 'I will help:'", cleaned)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("calls len = %d, want 1", len(calls))
+		}
+		if calls[0].Function.Name != "bash" {
+			t.Errorf("name = %q, want 'bash'", calls[0].Function.Name)
+		}
+	})
 	t.Run("fenced code block tool call", func(t *testing.T) {
 		raw := "I will list the directory:\n```tool_call\n{\"name\": \"bash\", \"arguments\": {\"command\": \"ls -la\"}}\n```"
 		cleaned, calls := extractXMLToolCalls(raw)
