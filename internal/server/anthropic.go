@@ -79,7 +79,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	rawModel, _ := raw["model"].(string)
 	if rawModel == "" {
 		s.writeAnthropicError(w, r, http.StatusBadRequest,
-			"missing required field \"model\"; available: "+strings.Join(s.reg.Models(), ", "),
+			"missing required field \"model\"; available: "+strings.Join(s.servedModels(), ", "),
 			"model_not_found", 0)
 		return
 	}
@@ -163,7 +163,7 @@ func (s *Server) handleMessagesCountTokens(w http.ResponseWriter, r *http.Reques
 	rawModel, _ := raw["model"].(string)
 	if rawModel == "" {
 		s.writeAnthropicError(w, r, http.StatusBadRequest,
-			"missing required field \"model\"; available: "+strings.Join(s.reg.Models(), ", "),
+			"missing required field \"model\"; available: "+strings.Join(s.servedModels(), ", "),
 			"model_not_found", 0)
 		return
 	}

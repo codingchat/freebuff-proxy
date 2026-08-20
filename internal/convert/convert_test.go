@@ -1849,21 +1849,6 @@ func TestEffortsForModel(t *testing.T) {
 	if got := effortsForModel("mimo/mimo-v2.5-pro"); !reflect.DeepEqual(got, reasoningLadder[:]) {
 		t.Errorf("mimo-v2.5-pro efforts = %v, want full ladder (removed model)", got)
 	}
-
-	// Runtime override (registry data when present), nil → hardcoded table.
-	SetModelEffortLookup(func(model string) []string {
-		if model == "custom/model" {
-			return []string{"low"}
-		}
-		return nil
-	})
-	t.Cleanup(func() { SetModelEffortLookup(nil) })
-	if got := effortsForModel("custom/model"); !reflect.DeepEqual(got, []string{"low"}) {
-		t.Errorf("overridden efforts = %v, want [low]", got)
-	}
-	if got := effortsForModel("deepseek/deepseek-v4-flash"); !reflect.DeepEqual(got, []string{"low", "high", "max"}) {
-		t.Errorf("nil override must fall back to the table, got %v", got)
-	}
 }
 
 func TestNormalizeRequestEffortClamp(t *testing.T) {

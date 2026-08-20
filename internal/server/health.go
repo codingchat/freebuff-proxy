@@ -70,7 +70,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		"status":         "ok",
 		"mode":           cfg.EffectiveMode(),
 		"uptime_seconds": time.Since(s.started).Seconds(),
-		"models":         s.reg.ModelCount(),
+		"models":         s.servedModelCount(),
 		"tokens":         tokens,
 		"bridge_tokens":  s.pool.BridgeCount(),
 	})
@@ -113,7 +113,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	sb.WriteString("# HELP freebuff_proxy_models_total Count of models available in registry\n")
 	sb.WriteString("# TYPE freebuff_proxy_models_total gauge\n")
-	fmt.Fprintf(&sb, "freebuff_proxy_models_total %d\n\n", s.reg.ModelCount())
+	fmt.Fprintf(&sb, "freebuff_proxy_models_total %d\n\n", s.servedModelCount())
 
 	sb.WriteString("# HELP freebuff_proxy_tokens_total Count of configured tokens in pool\n")
 	sb.WriteString("# TYPE freebuff_proxy_tokens_total gauge\n")

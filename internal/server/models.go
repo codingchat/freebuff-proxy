@@ -14,6 +14,30 @@ import (
 // it is in the catalog, else the first catalog model.
 // Alphabetical models[0] would otherwise pick anthropic/claude-fable-5, a
 // capacity-gated offer model that makes smoke tests fail on most accounts.
+// servedModels returns the registry catalog filtered to the ServedModels
+// gate: the ids this gateway actually serves (blocked -max variants and any
+// future non-gated registry row excluded). Used for the /v1/models
+// surface-equivalent counts (/healthz, /metrics) and the "available:" model
+// hints in error bodies, so nothing advertises an id that 404s.
+func (s *Server) servedModels() []string {
+	all := s.reg.Models()
+	out := make([]string, 0, len(all))
+	for _, id := range all {
+		if registry.ServedModels[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// servedModelCount reports how many registry models pass the ServedModels
+// gate. Mirrors the /v1/models row count (modulo ModelsHideUnavailable).
+func (s *Server) servedModelCount() int {
+	return len(s.servedModels())
+}
+
+// probeModel returns a default model for smoke-test paths: the configured
+// fallback when listed, else the first served model.
 func probeModel(reg *registry.Registry) string {
 	models := reg.Models()
 	if len(models) == 0 {

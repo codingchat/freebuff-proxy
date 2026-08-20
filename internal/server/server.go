@@ -281,6 +281,6 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	s.logger.Warn("unsupported endpoint requested", "path", r.URL.Path, "remote", remoteHost(r), "status", http.StatusBadRequest)
 	s.writeJSONError(w, http.StatusBadRequest,
-		"this proxy serves chat completions only; embeddings are not supported. Use POST /v1/chat/completions with one of: "+strings.Join(s.reg.Models(), ", "),
+		"this proxy serves chat completions only; embeddings are not supported. Use POST /v1/chat/completions with one of: "+strings.Join(s.servedModels(), ", "),
 		"unsupported_endpoint", "unsupported_endpoint", 0)
 }

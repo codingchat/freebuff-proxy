@@ -111,10 +111,19 @@ const defaultReasoningEffort = "high"
 //	google/*-flash-lite rows             absent — helper models, no upstream
 //	                                     restriction.
 //
+//	google/*-flash-lite rows             absent — helper models, no upstream
+//	                                     restriction.
+//
+// Clamping mirrors upstream's resolveFreebuffReasoningEffort
+// (reference/freebuff/common/src/constants/freebuff-models.ts): clamp-DOWN,
+// keyed on the actually-served model, medium→high on DeepSeek V4. For rows
+// with no ladder upstream returns null and passes the client value through
+// untouched (MIMO/MiniMax treat any rung as thinking-on; GLM/Kimi ignore it)
+// — clamping those rows to "high" is the alias-equivalent normalization.
+//
 // Models absent from the table get the full ladder (no clamping). The
 // provisioned -max variants are NOT listed: they are blocked at the
-// ServedModels gate (issue #153) before conversion ever runs. The table is
-// refreshable at runtime via SetModelEffortLookup.
+// ServedModels gate (issue #153) before conversion ever runs.
 var modelReasoningEfforts = map[string][]string{
 	"deepseek/deepseek-v4-flash":      {"low", "high", "max"},
 	"deepseek/deepseek-v4-pro":        {"low", "high", "max"},
@@ -141,32 +150,9 @@ func SetReasoningLookup(fn ReasoningLookupFn) {
 	globalReasoningLookup.Store(&fn)
 }
 
-// modelEffortLookup, when set, overrides modelReasoningEfforts for the model
-// in question. Main wires this to registry data when the registry exposes
-// per-model effort arrays; the hardcoded table is the fallback.
-var modelEffortLookup atomic.Pointer[func(string) []string]
-
-// SetModelEffortLookup installs a per-model effort lookup used by the
-// reasoning clamp. The function receives a model id and returns the allowed
-// effort rungs (ascending ladder order), or nil to fall back to the
-// hardcoded table. Passing nil removes the override.
-func SetModelEffortLookup(fn func(string) []string) {
-	if fn == nil {
-		modelEffortLookup.Store(nil)
-		return
-	}
-	modelEffortLookup.Store(&fn)
-}
-
-// effortsForModel returns the allowed effort rungs for a model: the override
-// lookup when it answers, else the hardcoded table (with the full ladder for
-// unlisted models).
+// effortsForModel returns the allowed effort rungs for a model: the hardcoded
+// table, else the full ladder for unlisted models.
 func effortsForModel(model string) []string {
-	if p := modelEffortLookup.Load(); p != nil {
-		if allowed := (*p)(model); allowed != nil {
-			return allowed
-		}
-	}
 	if allowed, ok := modelReasoningEfforts[model]; ok {
 		return allowed
 	}

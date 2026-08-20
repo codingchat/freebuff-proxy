@@ -65,7 +65,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		model = probeModel(s.reg)
 		if model == "" {
 			s.writeJSONError(w, http.StatusBadRequest,
-				"missing required field \"model\"; available: "+strings.Join(s.reg.Models(), ", "),
+				"missing required field \"model\"; available: "+strings.Join(s.servedModels(), ", "),
 				"invalid_request_error", "model_not_found", 0)
 			return
 		}

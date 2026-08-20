@@ -299,7 +299,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 		retryAfter = ue.RetryAfter
 	case errors.Is(err, registry.ErrModelNotFound):
 		status, code = http.StatusBadRequest, "model_not_found"
-		message = err.Error() + "; available: " + strings.Join(s.reg.Models(), ", ")
+		message = err.Error() + "; available: " + strings.Join(s.servedModels(), ", ")
 	case errors.Is(err, upstream.ErrAuthRejected):
 		status, code = http.StatusBadGateway, "upstream_auth_rejected"
 		message = err.Error()

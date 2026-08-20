@@ -55,7 +55,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	rawModel, _ := raw["model"].(string)
 	if rawModel == "" {
 		s.writeJSONError(w, http.StatusBadRequest,
-			"missing required field \"model\"; available: "+strings.Join(s.reg.Models(), ", "),
+			"missing required field \"model\"; available: "+strings.Join(s.servedModels(), ", "),
 			"invalid_request_error", "model_not_found", 0)
 		return
 	}
