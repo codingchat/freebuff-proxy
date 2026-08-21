@@ -694,6 +694,151 @@ func TestClientAbortPropagates(t *testing.T) {
 	<-errCh
 }
 
+// TestClientCancelMidRelayAbandonsRun pins issue #157: when the client
+// disconnects mid-relay (stream already running), the proxy must release
+// the upstream slot and FINISH the run as "cancelled" PROMPTLY — without
+// waiting for upstream EOF. The mock holds the upstream stream open with no
+// further data, so the FINISH can only arrive via the abandon path
+// (LeaseAbandon → ReleaseAbandoned), never from a natural stream end.
+func TestClientCancelMidRelayAbandonsRun(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	chatSeen := make(chan struct{})
+	firstChunk := make(chan struct{})
+	mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-chatSeen:
+		default:
+			close(chatSeen)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, testutil.SSEEvent(chunk("chatcmpl-cancel", 100,
+			`"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]`)))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		close(firstChunk)
+		// Hold the stream open with NO further data and NO EOF until the
+		// request context dies.
+		select {
+		case <-r.Context().Done():
+			mock.AbortDetected.Store(true)
+		case <-time.After(30 * time.Second):
+		}
+	}
+	ts, _ := newTestServer(t, nil, mock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(chatBody(modelA)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if resp != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+		errCh <- err
+	}()
+
+	select {
+	case <-chatSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream never saw the chat request")
+	}
+	select {
+	case <-firstChunk:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first chunk never relayed (relay not mid-stream)")
+	}
+
+	// Client cancel mid-relay: the slot must be released and the run
+	// FINISHed as cancelled WITHOUT waiting for upstream EOF (the mock
+	// never sends one).
+	cancel()
+	eventually(t, "run FINISHed cancelled on mid-relay client cancel", func() bool {
+		for _, f := range mock.FinishedRunsSnapshot() {
+			if f.Status == "cancelled" {
+				return true
+			}
+		}
+		return false
+	})
+	// The proxy must have aborted the held-open upstream stream (context
+	// propagation to the wire), not merely stopped relaying.
+	eventually(t, "upstream abort detection", func() bool {
+		return mock.AbortDetected.Load()
+	})
+	<-errCh
+}
+
+// TestClientCancelBeforeFirstByteAbandonsRun pins issue #157's observed
+// failure mode: the client cancels while the upstream request is still in
+// flight (long reasoning before the first byte — the ~59s harness-timeout
+// pattern). The lease must be ABANDONED, not plain-released: the run
+// FINISHes as "cancelled" promptly instead of lingering active (and
+// upstream-alive) until the 6h rotation.
+func TestClientCancelBeforeFirstByteAbandonsRun(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	chatSeen := make(chan struct{})
+	mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-chatSeen:
+		default:
+			close(chatSeen)
+		}
+		// Hold the request open before writing any response headers: the
+		// upstream call is still in flight when the client cancels.
+		select {
+		case <-r.Context().Done():
+			mock.AbortDetected.Store(true)
+		case <-time.After(30 * time.Second):
+		}
+	}
+	ts, _ := newTestServer(t, nil, mock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(chatBody(modelA)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		errCh <- err
+	}()
+
+	select {
+	case <-chatSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream never saw the chat request")
+	}
+
+	cancel()
+	eventually(t, "run FINISHed cancelled on pre-first-byte client cancel", func() bool {
+		for _, f := range mock.FinishedRunsSnapshot() {
+			if f.Status == "cancelled" {
+				return true
+			}
+		}
+		return false
+	})
+	// The upstream HTTP request must have been canceled on the wire (the
+	// request context propagation), not left running until the mock's
+	// 30s fallback.
+	eventually(t, "upstream abort detection", func() bool {
+		return mock.AbortDetected.Load()
+	})
+	<-errCh
+}
+
 func TestAuth(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
