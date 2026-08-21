@@ -518,6 +518,19 @@ func (s *Server) chatAttempt(
 	release := func() {
 		if !released {
 			released = true
+			if ctx.Err() != nil {
+				// Issue #157: the downstream client is gone (context
+				// canceled — 72 hits/5k logs as 60s harness timeouts and
+				// Ctrl-C on long runs). Abandon the lease instead of a
+				// plain release: the run is dropped from the active set
+				// and FINISHed as "cancelled" through the bounded queue
+				// (CLI DELETE-on-exit parity, issue #53) so upstream does
+				// not keep an abandoned agent run alive until the 6h
+				// rotation. Plain releasing here left the run active for
+				// the full duration, then wasted it.
+				s.pool.LeaseAbandon(lease)
+				return
+			}
 			s.pool.LeaseRelease(lease)
 		}
 	}
