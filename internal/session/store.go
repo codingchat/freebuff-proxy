@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"freebuff-proxy/internal/upstream"
 )
 
 // storeVersion guards the on-disk format; bump it when the schema changes so
@@ -22,16 +24,27 @@ const maxStoreFileSize = 8 << 20 // 8 MiB
 // instance id + expiry are the fields that matter for restart-resume; the
 // rest are carried so a resumed session keeps its country/queue view.
 type persistedState struct {
-	InstanceID         string    `json:"instance_id"`
-	Model              string    `json:"model"`
-	Status             string    `json:"status"`
-	ExpiresAt          time.Time `json:"expires_at"`
-	GracePeriodEndsAt  time.Time `json:"grace_period_ends_at"`
-	Position           int       `json:"position"`
-	QueueDepth         int       `json:"queue_depth"`
-	PollAt             time.Time `json:"poll_at"`
-	CountryCode        string    `json:"country_code"`
-	CountryBlockReason string    `json:"country_block_reason"`
+	InstanceID         string                    `json:"instance_id"`
+	Model              string                    `json:"model"`
+	Status             string                    `json:"status"`
+	ExpiresAt          time.Time                 `json:"expires_at"`
+	GracePeriodEndsAt  time.Time                 `json:"grace_period_ends_at"`
+	Position           int                       `json:"position"`
+	QueueDepth         int                       `json:"queue_depth"`
+	PollAt             time.Time                 `json:"poll_at"`
+	CountryCode        string                    `json:"country_code"`
+	CountryBlockReason string                    `json:"country_block_reason"`
+	QuotaByModel       map[string]persistedQuota `json:"quota_by_model,omitempty"`
+}
+
+// persistedQuota is one model's live session quota persisted on disk.
+type persistedQuota struct {
+	Model       string             `json:"model"`
+	Limit       float64            `json:"limit"`
+	RecentCount float64            `json:"recent_count"`
+	ResetAt     time.Time          `json:"reset_at"`
+	Period      string             `json:"period"`
+	Entitlement map[string]float64 `json:"entitlement,omitempty"`
 }
 
 // PersistedRun is the on-disk shape of one token's active agent run
@@ -194,7 +207,7 @@ func (s *Store) Load(key string) *cachedState {
 		}
 		return nil
 	}
-	return &cachedState{
+	cs := &cachedState{
 		status:             ps.Status,
 		instanceID:         ps.InstanceID,
 		model:              ps.Model,
@@ -206,6 +219,26 @@ func (s *Store) Load(key string) *cachedState {
 		countryCode:        ps.CountryCode,
 		countryBlockReason: ps.CountryBlockReason,
 	}
+	if len(ps.QuotaByModel) > 0 {
+		cs.quotaByModel = make(map[string]upstream.ModelQuota, len(ps.QuotaByModel))
+		for k, q := range ps.QuotaByModel {
+			mq := upstream.ModelQuota{
+				Model:       q.Model,
+				Limit:       q.Limit,
+				RecentCount: q.RecentCount,
+				ResetAt:     q.ResetAt,
+				Period:      q.Period,
+			}
+			if len(q.Entitlement) > 0 {
+				mq.Entitlement = make(map[string]float64, len(q.Entitlement))
+				for ek, ev := range q.Entitlement {
+					mq.Entitlement[ek] = ev
+				}
+			}
+			cs.quotaByModel[k] = mq
+		}
+	}
+	return cs
 }
 
 // Save persists cs under key. A nil cs removes the key. Disabled sessions
@@ -236,6 +269,27 @@ func (s *Store) Save(key string, cs *cachedState) {
 		PollAt:             cs.pollAt,
 		CountryCode:        cs.countryCode,
 		CountryBlockReason: cs.countryBlockReason,
+	}
+	if len(cs.quotaByModel) > 0 {
+		ps := s.data[key]
+		ps.QuotaByModel = make(map[string]persistedQuota, len(cs.quotaByModel))
+		for k, q := range cs.quotaByModel {
+			pq := persistedQuota{
+				Model:       q.Model,
+				Limit:       q.Limit,
+				RecentCount: q.RecentCount,
+				ResetAt:     q.ResetAt,
+				Period:      q.Period,
+			}
+			if len(q.Entitlement) > 0 {
+				pq.Entitlement = make(map[string]float64, len(q.Entitlement))
+				for ek, ev := range q.Entitlement {
+					pq.Entitlement[ek] = ev
+				}
+			}
+			ps.QuotaByModel[k] = pq
+		}
+		s.data[key] = ps
 	}
 	if s.flushLockedUnlessReadFailed() {
 		ps := s.data[key]

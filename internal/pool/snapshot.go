@@ -61,6 +61,13 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 
 		spend := p.spendSnapshot(i)
 
+		sessionRemaining := int64(0)
+		if ss.Status == "active" && !ss.ExpiresAt.IsZero() {
+			if rem := time.Until(ss.ExpiresAt); rem > 0 {
+				sessionRemaining = int64(rem.Seconds())
+			}
+		}
+
 		// Advisory spend ceiling (issue #122): the Pacific-day bucket vs
 		// MAX_SPEND_PER_DAY, capped at 100% like UsagePct. Informational only —
 		// the upstream $ ceilings are server-enforced.
@@ -85,6 +92,8 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			SessionInstanceID:       ss.InstanceID,
 			SessionQueuePosition:    ss.QueuePosition,
 			SessionQueueDepth:       ss.QueueDepth,
+			SessionModel:            ss.Model,
+			SessionRemainingSeconds: sessionRemaining,
 			CountryCode:             countryCode,
 			CountryBlockReason:      countryReason,
 			SessionActiveUsersForIP: ss.ActiveUsersForIP,

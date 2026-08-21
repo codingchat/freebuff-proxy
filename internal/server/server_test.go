@@ -1318,6 +1318,8 @@ func TestMetricsQuotaLines(t *testing.T) {
 	for _, want := range []string{
 		`freebuff_proxy_quota_recent{token="1",model="z-ai/glm-5.2",period="pacific_day"} 4`,
 		`freebuff_proxy_quota_limit{token="1",model="z-ai/glm-5.2",period="pacific_day"} 5`,
+		`freebuff_proxy_quota_remaining{token="1",model="z-ai/glm-5.2",period="pacific_day"} 1`,
+		`freebuff_proxy_session_remaining_seconds{token="1",model="z-ai/glm-5.2"}`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %s in:\n%s", want, body)

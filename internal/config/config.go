@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -137,6 +138,14 @@ type Config struct {
 	// muse→deepseek-v4-pro target mirrors the upstream
 	// MUSE_SPARK_FALLBACK_MODEL_ID.
 	FallbackModels map[string]string
+	// ScarceSessionModels lists the irreplaceable 1-session/day models the proxy
+	// keeps alive for their full hour (SCARCE_SESSION_MODELS; comma-separated).
+	// Default: ["deepseek/deepseek-v4-pro", "openai/gpt-5.6-luna"].
+	ScarceSessionModels []string
+	// QuotaFallbackModels maps a model to its fallback model when its session
+	// quota is exhausted (QUOTA_FALLBACK_MODELS; comma-separated k=v pairs).
+	// Default: {"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5"}.
+	QuotaFallbackModels map[string]string
 	// AdoptCLISession, when enabled (ADOPT_CLI_SESSION=false default),
 	// makes the proxy behave like the official CLI for a single account:
 	// with AUTH_TOKENS empty the token is sourced from
@@ -215,36 +224,38 @@ type rawConfig struct {
 	MaxMessagesPerDay  *int   `json:"MAX_MESSAGES_PER_DAY"`
 	// BridgeDailyLimit is the global daily chat cap across all bridge
 	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited).
-	BridgeDailyLimit                 *int            `json:"BRIDGE_DAILY_LIMIT"`
-	MaxSpendPerDay                   *int            `json:"MAX_SPEND_PER_DAY"`
-	IdleRotationTimeout              string          `json:"IDLE_ROTATION_TIMEOUT"`
-	SafeMode                         bool            `json:"SAFE_MODE"`
-	ModelsHideUnavailable            bool            `json:"MODELS_HIDE_UNAVAILABLE"`
-	ModelsAllow                      modelsAllowList `json:"MODELS_ALLOW"`
-	CORSAllowedOrigin                string          `json:"CORS_ALLOWED_ORIGIN"`
-	RequestJitter                    string          `json:"REQUEST_JITTER"`
-	CLIVersion                       string          `json:"CLI_VERSION"`
-	ModelAliases                     string          `json:"MODEL_ALIASES"`
-	TransientRetries                 *int            `json:"TRANSIENT_RETRIES"`
-	SessionPersist                   bool            `json:"SESSION_PERSIST"`
-	SessionStateFile                 string          `json:"SESSION_STATE_FILE"`
-	HTTP2Upstream                    bool            `json:"HTTP2_UPSTREAM"`
-	SessionCreateMaxParallelGlobal   *int            `json:"SESSION_CREATE_MAX_PARALLEL_GLOBAL"`
-	SessionCreateMaxParallelPerModel *int            `json:"SESSION_CREATE_MAX_PARALLEL_PER_MODEL"`
-	RunFinishQueueSize               *int            `json:"RUN_FINISH_QUEUE_SIZE"`
-	RunFinishInlineTimeout           string          `json:"RUN_FINISH_INLINE_TIMEOUT"`
-	RunsDrainQueueCap                *int            `json:"RUNS_DRAIN_QUEUE_CAP"`
-	RunsDrainTTL                     string          `json:"RUNS_DRAIN_TTL"`
-	SessionReAdmitLead               string          `json:"SESSION_RE_ADMIT_LEAD"`
-	SessionProbeCacheTTL             string          `json:"SESSION_PROBE_CACHE_TTL"`
-	WebhookURL                       string          `json:"WEBHOOK_URL"`
-	FallbackAfter                    string          `json:"FALLBACK_AFTER_MS"`
-	FallbackModels                   string          `json:"FALLBACK_MODEL"`
-	AdoptCLISession                  bool            `json:"ADOPT_CLI_SESSION"`
-	WaitingRoomChain                 bool            `json:"WAITING_ROOM_CHAIN"`
-	RateLimitPerIP                   *float64        `json:"RATE_LIMIT_PER_IP"`
-	RateLimitBurst                   *int            `json:"RATE_LIMIT_BURST"`
-	DashboardEnabled                 bool            `json:"DASHBOARD_ENABLED"`
+	BridgeDailyLimit                 *int                    `json:"BRIDGE_DAILY_LIMIT"`
+	MaxSpendPerDay                   *int                    `json:"MAX_SPEND_PER_DAY"`
+	IdleRotationTimeout              string                  `json:"IDLE_ROTATION_TIMEOUT"`
+	SafeMode                         bool                    `json:"SAFE_MODE"`
+	ModelsHideUnavailable            bool                    `json:"MODELS_HIDE_UNAVAILABLE"`
+	ModelsAllow                      modelsAllowList         `json:"MODELS_ALLOW"`
+	CORSAllowedOrigin                string                  `json:"CORS_ALLOWED_ORIGIN"`
+	RequestJitter                    string                  `json:"REQUEST_JITTER"`
+	CLIVersion                       string                  `json:"CLI_VERSION"`
+	ModelAliases                     string                  `json:"MODEL_ALIASES"`
+	TransientRetries                 *int                    `json:"TRANSIENT_RETRIES"`
+	SessionPersist                   bool                    `json:"SESSION_PERSIST"`
+	SessionStateFile                 string                  `json:"SESSION_STATE_FILE"`
+	HTTP2Upstream                    bool                    `json:"HTTP2_UPSTREAM"`
+	SessionCreateMaxParallelGlobal   *int                    `json:"SESSION_CREATE_MAX_PARALLEL_GLOBAL"`
+	SessionCreateMaxParallelPerModel *int                    `json:"SESSION_CREATE_MAX_PARALLEL_PER_MODEL"`
+	RunFinishQueueSize               *int                    `json:"RUN_FINISH_QUEUE_SIZE"`
+	RunFinishInlineTimeout           string                  `json:"RUN_FINISH_INLINE_TIMEOUT"`
+	RunsDrainQueueCap                *int                    `json:"RUNS_DRAIN_QUEUE_CAP"`
+	RunsDrainTTL                     string                  `json:"RUNS_DRAIN_TTL"`
+	SessionReAdmitLead               string                  `json:"SESSION_RE_ADMIT_LEAD"`
+	SessionProbeCacheTTL             string                  `json:"SESSION_PROBE_CACHE_TTL"`
+	ScarceSessionModels              scarceSessionModelsList `json:"SCARCE_SESSION_MODELS"`
+	QuotaFallbackModels              quotaFallbackModelsList `json:"QUOTA_FALLBACK_MODELS"`
+	WebhookURL                       string                  `json:"WEBHOOK_URL"`
+	FallbackAfter                    string                  `json:"FALLBACK_AFTER_MS"`
+	FallbackModels                   string                  `json:"FALLBACK_MODEL"`
+	AdoptCLISession                  bool                    `json:"ADOPT_CLI_SESSION"`
+	WaitingRoomChain                 bool                    `json:"WAITING_ROOM_CHAIN"`
+	RateLimitPerIP                   *float64                `json:"RATE_LIMIT_PER_IP"`
+	RateLimitBurst                   *int                    `json:"RATE_LIMIT_BURST"`
+	DashboardEnabled                 bool                    `json:"DASHBOARD_ENABLED"`
 }
 
 // modelsAllowList is the raw MODELS_ALLOW value. The README documents list
@@ -267,6 +278,47 @@ func (m *modelsAllowList) UnmarshalJSON(data []byte) error {
 	}
 	*m = modelsAllowList(strings.Join(arr, ","))
 	return nil
+}
+
+// scarceSessionModelsList is the raw SCARCE_SESSION_MODELS value (issue #155):
+// env is a comma-separated list, JSON may be a string or an array of strings.
+type scarceSessionModelsList string
+
+func (s *scarceSessionModelsList) UnmarshalJSON(data []byte) error {
+	var v string
+	if err := json.Unmarshal(data, &v); err == nil {
+		*s = scarceSessionModelsList(v)
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*s = scarceSessionModelsList(strings.Join(arr, ","))
+		return nil
+	}
+	return fmt.Errorf("SCARCE_SESSION_MODELS must be a comma-separated string or an array of strings, got: %s", data)
+}
+
+// quotaFallbackModelsList is the raw QUOTA_FALLBACK_MODELS value (issue #155):
+// env is a comma-separated list of k=v pairs, JSON may be a string or a map.
+type quotaFallbackModelsList string
+
+func (q *quotaFallbackModelsList) UnmarshalJSON(data []byte) error {
+	var v string
+	if err := json.Unmarshal(data, &v); err == nil {
+		*q = quotaFallbackModelsList(v)
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err == nil {
+		parts := make([]string, 0, len(m))
+		for k, val := range m {
+			parts = append(parts, k+"="+val)
+		}
+		sort.Strings(parts)
+		*q = quotaFallbackModelsList(strings.Join(parts, ","))
+		return nil
+	}
+	return fmt.Errorf("QUOTA_FALLBACK_MODELS must be a comma-separated k=v string or a map, got: %s", data)
 }
 
 func defaultRawConfig() rawConfig {
@@ -336,6 +388,24 @@ func defaultFallbackModels() map[string]string {
 		"anthropic/claude-fable-5":        "deepseek/deepseek-v4-flash",
 		"z-ai/glm-5.2":                    "deepseek/deepseek-v4-flash",
 		"meta/muse-spark-1.2-contributor": "deepseek/deepseek-v4-pro",
+	}
+}
+
+// defaultQuotaFallbackModels returns the QUOTA_FALLBACK_MODELS defaults (issue #155):
+// when a model's session quota is exhausted (all 5 premium sessions used for flash),
+// the proxy falls back to the unlimited-session mimo-v2.5 model.
+func defaultQuotaFallbackModels() map[string]string {
+	return map[string]string{
+		"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5",
+	}
+}
+
+// defaultScarceSessionModels returns the SCARCE_SESSION_MODELS defaults (issue #155):
+// the 1-session/day irreplaceable models kept alive for their full 1 hour.
+func defaultScarceSessionModels() []string {
+	return []string{
+		"deepseek/deepseek-v4-pro",
+		"openai/gpt-5.6-luna",
 	}
 }
 
@@ -460,6 +530,8 @@ func Load(configPath string) (Config, error) {
 	overrideString(&raw.RunsDrainTTL, "RUNS_DRAIN_TTL")
 	overrideString(&raw.SessionReAdmitLead, "SESSION_RE_ADMIT_LEAD")
 	overrideString(&raw.SessionProbeCacheTTL, "SESSION_PROBE_CACHE_TTL")
+	overrideString((*string)(&raw.ScarceSessionModels), "SCARCE_SESSION_MODELS")
+	overrideString((*string)(&raw.QuotaFallbackModels), "QUOTA_FALLBACK_MODELS")
 	overrideString(&raw.WebhookURL, "WEBHOOK_URL")
 	overrideString(&raw.FallbackAfter, "FALLBACK_AFTER_MS")
 	overrideString(&raw.FallbackModels, "FALLBACK_MODEL")
@@ -666,6 +738,20 @@ func Load(configPath string) (Config, error) {
 		fallbackModels = defaultFallbackModels()
 	}
 
+	// SCARCE_SESSION_MODELS defaults (issue #155): irreplaceable 1-session/day
+	// models kept alive for their full 1 hour window.
+	scarceSessionModels := splitList(string(raw.ScarceSessionModels))
+	if len(scarceSessionModels) == 0 && string(raw.ScarceSessionModels) == "" {
+		scarceSessionModels = defaultScarceSessionModels()
+	}
+
+	// QUOTA_FALLBACK_MODELS defaults (issue #155): when a model's session
+	// quota is exhausted, fall back to an unlimited model (flash → mimo).
+	quotaFallbackModels := parseMap(string(raw.QuotaFallbackModels))
+	if len(quotaFallbackModels) == 0 && string(raw.QuotaFallbackModels) == "" {
+		quotaFallbackModels = defaultQuotaFallbackModels()
+	}
+
 	// Backward-compat (#126): a JSON config carrying the pre-rename USER_ID
 	// key still works when no ACTING_USER_ID source (env/.env/JSON) set a
 	// value. Weakest source — env and .env override it via the aliases above.
@@ -725,6 +811,8 @@ func Load(configPath string) (Config, error) {
 		FallbackAfter:                    fallbackAfter,
 		FallbackModels:                   fallbackModels,
 		AdoptCLISession:                  raw.AdoptCLISession,
+		ScarceSessionModels:              dedupeStrings(scarceSessionModels),
+		QuotaFallbackModels:              quotaFallbackModels,
 		WaitingRoomChain:                 raw.WaitingRoomChain,
 		RateLimitPerIP:                   rateLimitPerIP,
 		RateLimitBurst:                   rateLimitBurst,
@@ -865,6 +953,19 @@ func (c Config) Validate() error {
 		return errors.New("RATE_LIMIT_PER_IP cannot be negative")
 	case c.RateLimitBurst < 0:
 		return errors.New("RATE_LIMIT_BURST cannot be negative")
+	}
+	for _, m := range c.ScarceSessionModels {
+		if strings.TrimSpace(m) == "" {
+			return errors.New("SCARCE_SESSION_MODELS cannot contain empty model IDs")
+		}
+	}
+	for src, target := range c.QuotaFallbackModels {
+		if strings.TrimSpace(src) == "" || strings.TrimSpace(target) == "" {
+			return errors.New("QUOTA_FALLBACK_MODELS cannot contain empty model IDs")
+		}
+		if src == target {
+			return fmt.Errorf("QUOTA_FALLBACK_MODELS source and target cannot be identical: %q", src)
+		}
 	}
 
 	if c.WebhookURL != "" {
@@ -1057,6 +1158,8 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideStringFrom(&raw.SessionReAdmitLead, get, "SESSION_RE_ADMIT_LEAD")
 	overrideStringFrom(&raw.SessionProbeCacheTTL, get, "SESSION_PROBE_CACHE_TTL")
 	overrideStringFrom(&raw.WebhookURL, get, "WEBHOOK_URL")
+	overrideStringFrom((*string)(&raw.ScarceSessionModels), get, "SCARCE_SESSION_MODELS")
+	overrideStringFrom((*string)(&raw.QuotaFallbackModels), get, "QUOTA_FALLBACK_MODELS")
 	overrideStringFrom(&raw.FallbackAfter, get, "FALLBACK_AFTER_MS")
 	overrideStringFrom(&raw.FallbackModels, get, "FALLBACK_MODEL")
 	overrideBoolFrom(&raw.AdoptCLISession, get, "ADOPT_CLI_SESSION")

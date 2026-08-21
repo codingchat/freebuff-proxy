@@ -32,16 +32,18 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			// plus the advisory MAX_SPEND_PER_DAY ceiling (SpendLimit/
 			// SpendPct, informational — the upstream $ ceilings are
 			// server-enforced) and the spend_limited refusal counter.
-			"Spend24h":      snap.Spend24h,
-			"SpendDay":      snap.SpendDay,
-			"SpendWeek":     snap.SpendWeek,
-			"SpendMonth":    snap.SpendMonth,
-			"SpendDayStart": snap.SpendDayStart,
-			"SpendLimit":    snap.SpendLimit,
-			"SpendPct":      snap.SpendPct,
-			"SpendLimited":  snap.SpendLimited,
-			"RiskLevel":     snap.RiskLevel,
-			"country":       snap.CountryCode,
+			"Spend24h":                  snap.Spend24h,
+			"SpendDay":                  snap.SpendDay,
+			"SpendWeek":                 snap.SpendWeek,
+			"SpendMonth":                snap.SpendMonth,
+			"SpendDayStart":             snap.SpendDayStart,
+			"SpendLimit":                snap.SpendLimit,
+			"SpendPct":                  snap.SpendPct,
+			"SpendLimited":              snap.SpendLimited,
+			"RiskLevel":                 snap.RiskLevel,
+			"country":                   snap.CountryCode,
+			"session_model":             snap.SessionModel,
+			"session_remaining_seconds": snap.SessionRemainingSeconds,
 		}
 		if len(snap.QuotaByModel) > 0 {
 			quota := make(map[string]any, len(snap.QuotaByModel))
@@ -171,6 +173,32 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		for model, q := range snap.QuotaByModel {
 			fmt.Fprintf(&sb, "freebuff_proxy_quota_limit{token=\"%d\",model=\"%s\",period=\"%s\"} %g\n",
 				snap.Token+1, escapeLabelValue(model), escapeLabelValue(q.Period), q.Limit)
+		}
+	}
+
+	sb.WriteString("# HELP freebuff_proxy_quota_remaining Remaining allowance toward the per-model quota window\n")
+	sb.WriteString("# TYPE freebuff_proxy_quota_remaining gauge\n")
+	for _, snap := range snaps {
+		for model, q := range snap.QuotaByModel {
+			rem := float64(0)
+			if q.Limit > 0 {
+				rem = q.Limit - q.RecentCount
+				if rem < 0 {
+					rem = 0
+				}
+			}
+			fmt.Fprintf(&sb, "freebuff_proxy_quota_remaining{token=\"%d\",model=\"%s\",period=\"%s\"} %g\n",
+				snap.Token+1, escapeLabelValue(model), escapeLabelValue(q.Period), rem)
+		}
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString("# HELP freebuff_proxy_session_remaining_seconds Remaining time in seconds for the active session\n")
+	sb.WriteString("# TYPE freebuff_proxy_session_remaining_seconds gauge\n")
+	for _, snap := range snaps {
+		if snap.SessionModel != "" && snap.SessionRemainingSeconds > 0 {
+			fmt.Fprintf(&sb, "freebuff_proxy_session_remaining_seconds{token=\"%d\",model=\"%s\"} %d\n",
+				snap.Token+1, escapeLabelValue(snap.SessionModel), snap.SessionRemainingSeconds)
 		}
 	}
 	sb.WriteString("\n")

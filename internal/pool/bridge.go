@@ -73,25 +73,49 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	// branch). The remembered errors are mutually exclusive in the run
 	// manager; checked in pool precedence order.
 	if until := entry.runs.CooldownUntil(); time.Now().Before(until) {
-		if be := entry.runs.BanError(); be != nil {
-			return nil, be
+		if rle := entry.runs.RateLimitError(); rle != nil && rle.Model != "" && rle.Model != model && isQuotaExhaustedError(rle) {
+			// Entry is only quota-capped for rle.Model, proceed for `model`.
+		} else {
+			if be := entry.runs.BanError(); be != nil {
+				return nil, be
+			}
+			if cbe := entry.runs.CountryBlockedError(); cbe != nil {
+				return nil, cbe
+			}
+			if rle := entry.runs.RateLimitError(); rle != nil {
+				return nil, rle
+			}
+			if ice := entry.runs.IpCappedError(); ice != nil {
+				return nil, ice
+			}
+			return nil, fmt.Errorf("bridge: token cooling down until %s", until.Format(time.RFC3339))
 		}
-		if cbe := entry.runs.CountryBlockedError(); cbe != nil {
-			return nil, cbe
-		}
-		if rle := entry.runs.RateLimitError(); rle != nil {
-			return nil, rle
-		}
-		if ice := entry.runs.IpCappedError(); ice != nil {
-			return nil, ice
-		}
-		return nil, fmt.Errorf("bridge: token cooling down until %s", until.Format(time.RFC3339))
 	}
 
 	// Daily rolling cap, per client token (mirrors the fixed-token path).
 	if cfg.MaxMessagesPerDay > 0 && p.bridgeUsageCount(entry) >= cfg.MaxMessagesPerDay {
 		p.logger.Debug("pool: bridge entry daily message limit", "limit", cfg.MaxMessagesPerDay)
 		return nil, p.bridgeDailyLimitError(entry)
+	}
+	// Issue #155: scarce-model session protection in bridge mode.
+	scarceSet := scarceModelSet(cfg.ScarceSessionModels)
+	if scarceHeld(entry.session.Snapshot(), model, scarceSet) {
+		return nil, &ScarceSessionError{Model: model, ExpiresAt: entry.session.Snapshot().ExpiresAt}
+	}
+
+	// Issue #155: quota-exhaustion fallback in bridge mode.
+	if bridgeQuotaCapped(entry, model) {
+		if fb := cfg.QuotaFallbackModels[model]; fb != "" && fb != model {
+			p.logger.Info("pool: bridge token quota exhausted, falling back", "token", bridgeTokenLabel(entry), "requested", model, "fallback", fb)
+			fbAgent, err := p.reg.AgentForModel(fb)
+			if err != nil {
+				return nil, err
+			}
+			model = fb
+			agentID = fbAgent
+		} else {
+			return nil, bridgeQuotaLimitError(entry, model)
+		}
 	}
 
 	// Session-create admission gate (issue #86), mirroring the fixed-token
@@ -114,13 +138,17 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		}
 		if rle := asRateLimit(err); rle != nil {
 			entry.runs.CooldownRateLimit(rle)
-			// Issue #122: count admission-path spend_limited refusals on
-			// the bridge entry's ledger (same counter as the chat-path
-			// refusal in CooldownBridgeRateLimit).
 			if rle.Status == "spend_limited" {
 				p.bridgeMu.Lock()
 				p.bridgeRecordSpendLimited(entry)
 				p.bridgeMu.Unlock()
+			}
+			// Issue #155: bridge quota exhaustion fallback
+			if isQuotaExhaustedError(rle) {
+				if fb := cfg.QuotaFallbackModels[model]; fb != "" && fb != model {
+					p.logger.Info("pool: bridge token quota exhausted on admission, falling back", "token", bridgeTokenLabel(entry), "requested", model, "fallback", fb)
+					return p.AcquireBridge(ctx, clientToken, fb)
+				}
 			}
 		}
 		if ice := asIpCapped(err); ice != nil {
@@ -134,6 +162,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		}
 		return nil, err
 	}
+	entry.runs.ClearCooldowns()
 	ss := entry.session.Snapshot()
 	effectiveModel := model
 	effectiveAgentID := agentID
@@ -320,6 +349,7 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	entry.session = session.NewManagerWithStore(client, p.store)
 	entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 	entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
+	entry.session.SetScarceModels(cfg.ScarceSessionModels)
 	entry.runs = runs.NewRunManagerOpts(client, entry.session, runOptions(cfg))
 	entry.lastUsed = time.Now()
 
@@ -375,27 +405,20 @@ func (p *Pool) bridgeEvictLocked(keep *bridgeEntry) []*bridgeEntry {
 		// the idle sweep (bridgeMaintain) once their leases drain; when
 		// every entry is busy, nothing is evicted this pass.
 		evicted := false
+		scarceSet := scarceModelSet(p.cfg.Load().ScarceSessionModels)
 		for i := 0; i < len(p.bridgeOrder); {
 			oldest := p.bridgeOrder[i]
 			entry, ok := p.bridge[oldest]
 			if !ok {
-				// Stale LRU token (cache entry dropped elsewhere): trim it
-				// and keep scanning.
 				p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, oldest)
 				continue
 			}
-			// The just-created entry is never its own eviction victim: the
-			// caller will admit a session and START a run on it, and an
-			// entry outside the cache is invisible to bridgeMaintain and
-			// Pool.Shutdown — a leaked upstream run + admitted session
-			// burning a daily slot per new client under saturation. Skip it
-			// like a busy entry; the cache may briefly sit one over the cap
-			// until an older entry's lease drains.
-			if entry == keep {
+			if entry == keep || entry.runs.InflightCount() > 0 {
 				i++
 				continue
 			}
-			if entry.runs.InflightCount() > 0 {
+			// Prefer evicting non-scarce entries first.
+			if scarceActive(entry.session.Snapshot(), scarceSet) {
 				i++
 				continue
 			}
@@ -405,6 +428,27 @@ func (p *Pool) bridgeEvictLocked(keep *bridgeEntry) []*bridgeEntry {
 			p.logger.Debug("pool: bridge entry evicted (cache full)", "bridge_entries", len(p.bridge))
 			evicted = true
 			break
+		}
+		if !evicted {
+			// Fallback: if every idle entry is scarce-active, evict the oldest anyway.
+			for i := 0; i < len(p.bridgeOrder); {
+				oldest := p.bridgeOrder[i]
+				entry, ok := p.bridge[oldest]
+				if !ok {
+					p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, oldest)
+					continue
+				}
+				if entry == keep || entry.runs.InflightCount() > 0 {
+					i++
+					continue
+				}
+				victims = append(victims, entry)
+				delete(p.bridge, oldest)
+				p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, oldest)
+				p.logger.Debug("pool: bridge entry evicted (cache full, scarce fallback)", "bridge_entries", len(p.bridge))
+				evicted = true
+				break
+			}
 		}
 		if !evicted {
 			break
@@ -509,6 +553,14 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 			continue
 		}
 		if now.Sub(entry.lastUsed) > bridgeIdleEvict {
+			// Issue #155: do not evict bridge entries that still hold an active
+			// scarce-model session with remaining lifetime (> 0).
+			scarceSet := scarceModelSet(cfg.ScarceSessionModels)
+			if scarceActive(entry.session.Snapshot(), scarceSet) {
+				toMaintain = append(toMaintain, entry)
+				p.logger.Debug("pool: bridge entry idle eviction skipped (active scarce session)", "token_label", bridgeTokenLabel(entry))
+				continue
+			}
 			toEvict = append(toEvict, entry)
 			delete(p.bridge, token)
 			p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, token)

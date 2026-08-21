@@ -28,6 +28,7 @@ var envKeys = []string{
 	"SESSION_CREATE_MAX_PARALLEL_GLOBAL", "SESSION_CREATE_MAX_PARALLEL_PER_MODEL",
 	"RUN_FINISH_QUEUE_SIZE", "RUN_FINISH_INLINE_TIMEOUT", "RUNS_DRAIN_QUEUE_CAP", "RUNS_DRAIN_TTL",
 	"WEBHOOK_URL", "FALLBACK_AFTER_MS", "FALLBACK_MODEL", "ADOPT_CLI_SESSION", "WAITING_ROOM_CHAIN",
+	"SCARCE_SESSION_MODELS", "QUOTA_FALLBACK_MODELS",
 }
 
 // TestMain strips ambient freebuff-proxy config env vars for the whole test
@@ -2208,6 +2209,73 @@ func TestActingUserID(t *testing.T) {
 		}
 		if cfg.ActingUserID != "user-json-legacy" {
 			t.Errorf("ActingUserID = %q, want user-json-legacy (legacy USER_ID JSON key)", cfg.ActingUserID)
+		}
+	})
+}
+
+func TestScarceSessionModels(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("AUTH_TOKENS", "tok-1")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"deepseek/deepseek-v4-pro", "openai/gpt-5.6-luna"}
+		if len(cfg.ScarceSessionModels) != len(want) {
+			t.Fatalf("len(ScarceSessionModels) = %d, want %d", len(cfg.ScarceSessionModels), len(want))
+		}
+		for i, m := range want {
+			if cfg.ScarceSessionModels[i] != m {
+				t.Errorf("ScarceSessionModels[%d] = %q, want %q", i, cfg.ScarceSessionModels[i], m)
+			}
+		}
+	})
+	t.Run("env override", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("AUTH_TOKENS", "tok-1")
+		t.Setenv("SCARCE_SESSION_MODELS", "model-a,model-b")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cfg.ScarceSessionModels) != 2 || cfg.ScarceSessionModels[0] != "model-a" || cfg.ScarceSessionModels[1] != "model-b" {
+			t.Errorf("ScarceSessionModels = %v, want [model-a model-b]", cfg.ScarceSessionModels)
+		}
+	})
+}
+
+func TestQuotaFallbackModels(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("AUTH_TOKENS", "tok-1")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.QuotaFallbackModels["deepseek/deepseek-v4-flash"]; got != "mimo/mimo-v2.5" {
+			t.Errorf("QuotaFallbackModels[flash] = %q, want mimo/mimo-v2.5", got)
+		}
+	})
+	t.Run("env override", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("AUTH_TOKENS", "tok-1")
+		t.Setenv("QUOTA_FALLBACK_MODELS", "model-a=model-b,model-c=model-d")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.QuotaFallbackModels["model-a"] != "model-b" || cfg.QuotaFallbackModels["model-c"] != "model-d" {
+			t.Errorf("QuotaFallbackModels = %v, want mapped pairs", cfg.QuotaFallbackModels)
+		}
+	})
+	t.Run("validation identical src and target", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("AUTH_TOKENS", "tok-1")
+		t.Setenv("QUOTA_FALLBACK_MODELS", "model-a=model-a")
+		_, err := Load("")
+		if err == nil {
+			t.Error("expected error for identical source and target in QUOTA_FALLBACK_MODELS, got nil")
 		}
 	})
 }

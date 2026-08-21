@@ -66,7 +66,8 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	var countryBlocked []*upstream.CountryBlockedError
 	var modelLimited []*upstream.LimitedIpError
 	var dailyLimited []*upstream.RateLimitError
-
+	var scarceUntil []time.Time
+	scarceSet := scarceModelSet(cfg.ScarceSessionModels)
 	for _, idx := range order {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -82,57 +83,64 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		name := fmt.Sprintf("token-%d", idx+1)
 
 		if until := tok.runs.CooldownUntil(); time.Now().Before(until) {
-			errs = append(errs, fmt.Sprintf("%s: cooling down until %s", name, until.Format(time.RFC3339)))
-			p.logger.Debug("pool: token skipped (cooldown)", "token", idx+1, "until", until.Format(time.RFC3339))
-			if be := tok.runs.BanError(); be != nil {
-				dup := false
-				for _, existing := range banned {
-					if existing.Error() == be.Error() {
-						dup = true
-						break
+			// Issue #155: if the cooldown was caused by a specific model's quota exhaustion,
+			// and we are requesting a different model (e.g. fallback to mimo-v2.5),
+			// do not block this token from serving the requested model.
+			if rle := tok.runs.RateLimitError(); rle != nil && rle.Model != "" && rle.Model != model && isQuotaExhaustedError(rle) {
+				// Token is only quota-capped for rle.Model, but can still serve `model`.
+			} else {
+				errs = append(errs, fmt.Sprintf("%s: cooling down until %s", name, until.Format(time.RFC3339)))
+				p.logger.Debug("pool: token skipped (cooldown)", "token", idx+1, "until", until.Format(time.RFC3339))
+				if be := tok.runs.BanError(); be != nil {
+					dup := false
+					for _, existing := range banned {
+						if existing.Error() == be.Error() {
+							dup = true
+							break
+						}
+					}
+					if !dup {
+						banned = append(banned, be)
 					}
 				}
-				if !dup {
-					banned = append(banned, be)
-				}
-			}
-			if cbe := tok.runs.CountryBlockedError(); cbe != nil {
-				dup := false
-				for _, existing := range countryBlocked {
-					if existing.Error() == cbe.Error() {
-						dup = true
-						break
+				if cbe := tok.runs.CountryBlockedError(); cbe != nil {
+					dup := false
+					for _, existing := range countryBlocked {
+						if existing.Error() == cbe.Error() {
+							dup = true
+							break
+						}
+					}
+					if !dup {
+						countryBlocked = append(countryBlocked, cbe)
 					}
 				}
-				if !dup {
-					countryBlocked = append(countryBlocked, cbe)
-				}
-			}
-			if rle := tok.runs.RateLimitError(); rle != nil {
-				dup := false
-				for _, existing := range rateLimited {
-					if existing.Error() == rle.Error() {
-						dup = true
-						break
+				if rle := tok.runs.RateLimitError(); rle != nil {
+					dup := false
+					for _, existing := range rateLimited {
+						if existing.Error() == rle.Error() {
+							dup = true
+							break
+						}
+					}
+					if !dup {
+						rateLimited = append(rateLimited, rle)
 					}
 				}
-				if !dup {
-					rateLimited = append(rateLimited, rle)
-				}
-			}
-			if ice := tok.runs.IpCappedError(); ice != nil {
-				dup := false
-				for _, existing := range ipCapped {
-					if existing.Error() == ice.Error() {
-						dup = true
-						break
+				if ice := tok.runs.IpCappedError(); ice != nil {
+					dup := false
+					for _, existing := range ipCapped {
+						if existing.Error() == ice.Error() {
+							dup = true
+							break
+						}
+					}
+					if !dup {
+						ipCapped = append(ipCapped, ice)
 					}
 				}
-				if !dup {
-					ipCapped = append(ipCapped, ice)
-				}
+				continue
 			}
-			continue
 		}
 
 		// Daily rolling cap: a token that already sent its
@@ -143,6 +151,17 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			dailyLimited = append(dailyLimited, p.dailyLimitError(idx))
 			errs = append(errs, fmt.Sprintf("%s: daily message limit (%d) reached", name, cfg.MaxMessagesPerDay))
 			p.logger.Debug("pool: token skipped (daily message limit)", "token", idx+1, "limit", cfg.MaxMessagesPerDay)
+			continue
+		}
+		// Issue #155: scarce-model session protection. If the token holds an
+		// active scarce session (pro/luna) with > 1 minute remaining, do not
+		// switch away from it to serve a different model — that would burn
+		// the irreplaceable 1-session/day allocation.
+		if scarceHeld(tok.session.Snapshot(), model, scarceSet) {
+			exp := tok.session.Snapshot().ExpiresAt
+			scarceUntil = append(scarceUntil, exp)
+			errs = append(errs, fmt.Sprintf("%s: scarce session (%s) in use until %s", name, tok.session.Snapshot().Model, exp.Format(time.RFC3339)))
+			p.logger.Debug("pool: token skipped (scarce session in use)", "token", idx+1, "model", tok.session.Snapshot().Model, "until", exp.Format(time.RFC3339))
 			continue
 		}
 
@@ -273,6 +292,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
+		tok.runs.ClearCooldowns()
 
 		// Re-validate the token is still current: a concurrent
 		// RemoveLastToken may have swapped the snapshot while the session
@@ -404,14 +424,26 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		return nil, countryBlocked[0]
 	}
 	if len(modelLimited) > 0 {
-		// Egress-model gate dominates per-token windows (issue #74 P2):
-		// every token shares the one egress, so no token can serve the
-		// model within the unfit window — retrying any token is pointless.
-		// Surface the refusal (409 model_ip_limited) and let the server's
-		// new-request guard fast-refuse until the window lapses.
 		return nil, modelLimited[0]
 	}
 	if len(rateLimited) > 0 {
+		// Issue #155: quota-exhaustion fallback — when every rate-limited error
+		// is a session quota exhaustion for the requested model, fall back to
+		// the unlimited model (mimo-v2.5) if configured.
+		allQuotaCapped := true
+		for _, rle := range rateLimited {
+			if !isQuotaExhaustedError(rle) {
+				allQuotaCapped = false
+				break
+			}
+		}
+		if allQuotaCapped {
+			if fb := cfg.QuotaFallbackModels[model]; fb != "" && fb != model {
+				p.logger.Info("pool: quota exhausted, falling back to unlimited model", "requested", model, "fallback", fb)
+				return p.Acquire(ctx, fb)
+			}
+		}
+
 		// Pool exhausted (issue #48): every token failed and the highest-
 		// precedence bucket is rate-limit — no ban/country is present, so
 		// this is the "all tokens are at their quota/window limit" state the
@@ -428,6 +460,15 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	}
 	if len(ipCapped) > 0 {
 		return nil, ipCapped[0]
+	}
+	if len(scarceUntil) > 0 {
+		earliest := scarceUntil[0]
+		for _, t := range scarceUntil[1:] {
+			if t.Before(earliest) {
+				earliest = t
+			}
+		}
+		return nil, &ScarceSessionError{Model: model, ExpiresAt: earliest}
 	}
 	if len(waiting) > 0 {
 		wr := bestWaitingRoom(waiting)
@@ -456,7 +497,6 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 // ResetAt) are excluded from this pass entirely; their rate-limit reasons
 // are returned so the caller surfaces a real 429 when every token is capped.
 func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int, []*upstream.RateLimitError) {
-	cfg := p.cfg.Load()
 	// eligible mirrors the per-token checks the failover loop applies:
 	// not cooling down, under the daily message cap, and not quota-capped
 	// for the requested model (issue #85). It never records the exclusion
@@ -472,54 +512,37 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 		return true
 	}
 
-	// Cooldown and daily-message-capped tokens stay ELIGIBLE for the cold
-	// fallback (they are simply not hot): the failover loop visits them and
-	// records their remembered ban/country-block/rate-limit/ip-capped/daily
-	// reasons, matching the historical linear-failover behavior. Excluding
-	// them here would drop those reasons from the error matrix when a hot
-	// token fails (review finding).
-	eligibleForHot := func(idx int) bool {
-		tok := (*toks)[idx]
-		if time.Now().Before(tok.runs.CooldownUntil()) {
-			return false
-		}
-		if cfg.MaxMessagesPerDay > 0 && p.usageCount(idx) >= cfg.MaxMessagesPerDay {
-			return false
-		}
-		return eligible(idx)
-	}
+	// Issue #155 & Model Stickiness: Token prioritization order:
+	// 1. Matching Hot: tokens with active session for the EXACT model (0 cost reuse).
+	// 2. Cold Tokens: tokens with no active session (fresh session, avoids 0.1 switch penalty).
+	// 3. Mismatched Hot: tokens with active session for a DIFFERENT model (switching costs 0.1 quota).
+	var matchingHot []int
+	var coldTokens []int
+	var mismatchedHot []int
 
-	var hotBuf [32]int // stack-allocated hot-set buffer; >32 tokens spill to heap
-	hot := hotBuf[:0]
 	for offset := 0; offset < len(*toks); offset++ {
 		idx := (start + offset) % len(*toks)
-		if !eligibleForHot(idx) || !tokenHasLiveSession((*toks)[idx]) {
+		if !eligible(idx) {
 			continue
 		}
-		hot = append(hot, idx)
-	}
-	if len(hot) == 0 {
-		// No hot tokens: plain round-robin over every token, exactly like
-		// the historical behavior. Capped/cooldown tokens stay in the order
-		// — the failover loop re-checks and records their reasons.
-		order := make([]int, len(*toks))
-		for i := range order {
-			order[i] = (start + i) % len(*toks)
+		tok := (*toks)[idx]
+		snap := tok.session.Snapshot()
+		hasLive := snap.Status == "active" && !snap.ExpiresAt.IsZero() && snap.ExpiresAt.After(time.Now())
+
+		if hasLive {
+			if snap.Model == model {
+				matchingHot = append(matchingHot, idx)
+			} else {
+				mismatchedHot = append(mismatchedHot, idx)
+			}
+		} else {
+			coldTokens = append(coldTokens, idx)
 		}
-		return order, nil
 	}
 
-	// Quota-aware secondary sort (issue #85), stable over the round-robin
-	// base order: session-model match first (existing tiebreak), then known
-	// positive remaining quota before unknown, then smallest remaining
-	// first.
-	sort.SliceStable(hot, func(i, j int) bool {
-		a, b := hot[i], hot[j]
-		aMatch := (*toks)[a].session.Snapshot().Model == model
-		bMatch := (*toks)[b].session.Snapshot().Model == model
-		if aMatch != bMatch {
-			return aMatch
-		}
+	// Sort matchingHot by smallest remaining quota first (issue #85).
+	sort.SliceStable(matchingHot, func(i, j int) bool {
+		a, b := matchingHot[i], matchingHot[j]
 		aKnown, aRem, _ := quotaRemaining((*toks)[a], model)
 		bKnown, bRem, _ := quotaRemaining((*toks)[b], model)
 		if aKnown != bKnown {
@@ -531,24 +554,20 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 		return false
 	})
 
-	// Cold fallback: the remaining eligible tokens from the round-robin
-	// start, excluding the hot tokens already attempted this pass (each
-	// token is attempted at most once, as in the historical failover).
-	attemptedBuf := make([]bool, len(*toks))
-	for _, idx := range hot {
-		if idx >= 0 && idx < len(*toks) {
-			attemptedBuf[idx] = true
-		}
-	}
-	order := hot
-	for offset := 0; offset < len(*toks); offset++ {
-		idx := (start + offset) % len(*toks)
-		if idx >= 0 && idx < len(*toks) && attemptedBuf[idx] || !eligible(idx) {
-			continue
-		}
-		order = append(order, idx)
-	}
+	order := make([]int, 0, len(*toks))
+	order = append(order, matchingHot...)
+	order = append(order, coldTokens...)
+	order = append(order, mismatchedHot...)
 
+	if len(order) == 0 {
+		// All tokens are cooling down or capped: fallback to round-robin
+		// so the failover loop visits them and records their errors.
+		order = make([]int, len(*toks))
+		for i := range order {
+			order[i] = (start + i) % len(*toks)
+		}
+		return order, nil
+	}
 	// The capped tokens excluded above are never visited by the failover
 	// loop, so their rate-limit reasons must ride back with the order: when
 	// every token is capped the pool surfaces a real 429 with the earliest
