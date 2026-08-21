@@ -1,11 +1,15 @@
 <script>
-  import { Lock } from '@lucide/svelte';
+  import { onMount } from 'svelte';
+  import { Zap } from '@lucide/svelte';
   import Alert from '../components/Alert.svelte';
+  import Button from '../components/Button.svelte';
+  import Card from '../components/Card.svelte';
+  import Field from '../components/Field.svelte';
 
   let token = $state('');
   let errorMsg = $state('');
   let loading = $state(false);
-  let attempts = $state(0);
+  let tokenInput = $state(null);
 
   const GENERIC_LOGIN_ERROR = 'Invalid password.';
 
@@ -41,7 +45,6 @@
       if (res.ok || res.redirected) {
         window.location.href = '/admin';
       } else {
-        attempts += 1;
         errorMsg = cleanLoginError(await res.text());
       }
     } catch (e) {
@@ -50,60 +53,63 @@
       loading = false;
     }
   }
+
+  onMount(() => tokenInput?.focus());
 </script>
 
-<div class="min-h-[80vh] flex items-center justify-center px-4">
-  <div class="max-w-md w-full fp-card p-8 space-y-6" style="box-shadow: var(--fp-shadow-lg);">
-    <div class="text-center space-y-2">
-      <div class="w-12 h-12 rounded-xl bg-[var(--fp-amber)]/10 border border-[var(--fp-amber)]/30 text-[var(--fp-amber)] flex items-center justify-center mx-auto mb-3">
-        <Lock size={24} />
+<div class="instrument-grid page-enter min-h-[80vh] flex items-center justify-center px-4">
+  <Card class="w-full max-w-sm">
+    <div class="flex flex-col items-center gap-1 mb-7 text-center">
+      <div class="flex items-center gap-2.5 mb-1">
+        <span
+          class="inline-flex items-center justify-center w-8 h-8 rounded-[var(--fp-radius-sm)] border border-[var(--fp-accent)]/30 bg-[var(--fp-accent-dim)] text-[var(--fp-accent)]"
+        >
+          <Zap size={16} />
+        </span>
+        <span class="text-lg font-semibold text-[var(--fp-text)]">freebuff-proxy</span>
       </div>
-      <h1 class="text-2xl font-bold text-white tracking-tight">freebuff-proxy</h1>
-      <p class="text-xs text-[var(--fp-muted)]">Sign in to manage your proxy</p>
+      <span class="text-[11px] font-mono uppercase tracking-[0.25em] text-[var(--fp-dim)]">Admin</span>
     </div>
 
     {#if errorMsg}
-      <div class="space-y-1.5">
-        <Alert variant="error" message={errorMsg} dismissable={false} />
-        {#if attempts > 0}
-          <p class="text-[10px] text-[var(--fp-dim)] text-center">
-            {attempts} attempt{attempts === 1 ? '' : 's'} — {attempts >= 5 ? 'Account may be temporarily locked' : 'Invalid token. Try again.'}
-          </p>
-        {/if}
+      <div class="mb-5">
+        <Alert tone="error">{errorMsg}</Alert>
       </div>
     {/if}
 
-    <form onsubmit={handleLogin} class="space-y-4">
-      <div>
-        <label for="admin-token" class="block text-xs font-semibold text-[var(--fp-muted)] uppercase tracking-wider mb-2">Password</label>
+    <form onsubmit={handleLogin} class="space-y-5">
+      <Field label="Admin token" id="token">
         <input
-          id="admin-token"
-          type="password"
+          id="token"
+          bind:this={tokenInput}
           bind:value={token}
+          type="password"
+          autocomplete="off"
           required
-          autocomplete="current-password"
-          placeholder="Enter password..."
-          class="fp-input fp-input-mono"
+          placeholder="Enter admin token"
+          class="fp-input fp-mono w-full"
         />
-      </div>
+      </Field>
 
-      <button
+      <Button
+        variant="primary"
         type="submit"
+        class="w-full"
         disabled={loading || !token.trim()}
-        class="w-full fp-btn-primary py-2.5"
+        loading={loading}
       >
-        <span>{loading ? 'Authenticating...' : 'Sign In'}</span>
-      </button>
+        Sign in
+      </Button>
     </form>
 
-    <!-- Help Text -->
-    <div class="text-center pt-2 border-t border-[var(--fp-border)]">
+    <div class="pt-5 mt-6 border-t border-[var(--fp-border)] text-center space-y-1">
       <p class="text-[11px] text-[var(--fp-dim)] leading-relaxed">
         Enter your admin token to access the dashboard.
       </p>
-      <p class="text-[10px] text-[var(--fp-dim)]/60 mt-1">
-        Set <code class="font-mono text-[var(--fp-muted)]">ADMIN_TOKEN</code> in your <code class="font-mono text-[var(--fp-muted)]">.env</code> file to configure access.
+      <p class="text-[10px] text-[var(--fp-dim)]">
+        Set <code class="fp-mono text-[var(--fp-muted)]">ADMIN_TOKEN</code> in your
+        <code class="fp-mono text-[var(--fp-muted)]">.env</code> file to configure access.
       </p>
     </div>
-  </div>
+  </Card>
 </div>

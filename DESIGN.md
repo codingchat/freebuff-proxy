@@ -1,0 +1,175 @@
+# DESIGN.md — freebuff-proxy admin dashboard
+
+Single source of truth for the admin dashboard design system. CSS, components, and pages are
+projections of this file. If they drift, this file wins.
+
+Changelog:
+- 2026-08-21: Full remake. Menu curated 9 → 6 sections (dropped Traces, Playground, Metrics).
+  New system: "instrument panel" — IBM Plex type, amber-on-navy, mono instrumentation,
+  hairline grid, no soft shadows. Replaces Geist-based v1.
+- 2026-08-21 (audit): slop audit + a11y gate PASS after visual QA (browser screenshots reviewed
+  with a vision model). Verified: IBM Plex renders (no fallback), mono tabular KPIs, single
+  amber accent, no glass/soft-shadow/radius>8, LED+label status, mobile drawer + 2-up KPIs,
+  zero console/page errors. Fixes during QA: duplicate Save removed, config values
+  left-aligned, SECRET chip contrast raised, log panel horizontal scroll, backdrop-blur removed.
+
+## Discovery
+
+- **Artifact type**: Dashboard / data tool (operational) hybrid with admin/settings surfaces.
+- **Positioning**: utilitarian internal tool for a solo operator running a self-hosted gateway.
+  Not a product demo. Not a portfolio piece. Density and legibility beat decoration.
+- **Audience**: one technical operator (the repo owner), desktop-first, dark environment.
+- **Primary decision the dashboard supports**: "is my pool healthy, and what needs attention?"
+- **Adjectives (locked)**: quiet, technical, exact.
+- **3-word essence**: "instrument panel."
+- **Single-minded proposition**: the dashboard must read like a flight deck — status at a glance,
+  data as precision instruments, no marketing flourishes.
+
+## Aesthetic commitment
+
+Dark-only instrument panel. Deep navy-black surfaces with hairline borders (defined edges,
+NEVER soft shadows). Warm amber/signal-gold as the single accent (brand continuity: amber
+favicon). Every datum rendered in monospace with tabular figures — numbers are instrumentation.
+Restrained, flat, precise. Generic-AI-adjacent aesthetics (purple/indigo gradients, glass,
+rounded blobs, Geist/Inter, gradient text) are banned.
+
+## Signature move
+
+**Mono instrumentation**: all values, IDs, timestamps, and counts in IBM Plex Mono with
+tabular-nums, plus a 3px amber "live dot" system for status. Active nav carries an amber tick
+and dot; live/healthy states get a gently pulsing amber dot; the page background carries a
+faint 4% dot-grid texture like instrument graph paper.
+
+## Typography
+
+- **UI/body**: IBM Plex Sans (weights 400/500/600/700). Humanist-technical, distinctive,
+  not the AI default.
+- **Data**: IBM Plex Mono (weights 400/500/600). All numerals, IDs, timestamps, log lines,
+  table values, nav counts. `font-variant-numeric: tabular-nums` everywhere mono is used for data.
+- Scale: modular 1.25, base 14px (dense ops):
+  - `--text-xs` 11px — mono captions, table meta
+  - `--text-sm` 12px — mono labels, secondary text
+  - `--text-base` 14px — body/UI
+  - `--text-lg` 16px — card titles (Plex Sans 600)
+  - `--text-xl` 20px — page titles (Plex Sans 600)
+  - `--text-2xl` 26px — section values (Plex Mono 600)
+  - `--text-3xl` 34px — KPI numerals (Plex Mono 600)
+- Headings use Plex Sans 600; numbers use Plex Mono 600. Never both in one string without
+  separation (e.g. labels in sans, values in mono).
+
+## Layout grammar
+
+- Desktop: fixed left sidebar 224px. Brand mark top (amber bolt on navy, matches favicon),
+  nav list (mono labels, active = amber tick + dot), version/update badge pinned bottom.
+  Content: right of sidebar, `max-width 1200px`, 12-col grid, generous section gaps.
+- Status line lives on the Overview hero (mode badge, uptime, request count) — not a global
+  strip; the shell stays minimal (sidebar + footer).
+- Mobile (<768px): top bar with brand + hamburger; overlay drawer with flat nav list
+  (no grouped nav). Content stacks; KPI row wraps 2-up.
+- Tables: left-aligned text, right-aligned numeric columns with tabular-nums, hairline
+  row separators, no vertical borders, hover row = surface-2.
+
+## Color (OKLCH, dark only)
+
+Role | Value | Hex fallback
+--- | --- | ---
+bg (deepest) | `oklch(0.17 0.015 255)` | `#0B0F17`
+surface | `oklch(0.21 0.018 255)` | `#141A25`
+surface-2 (raised) | `oklch(0.24 0.02 255)` | `#1A2230`
+inset (recessed) | `oklch(0.155 0.014 255)` | `#080B11`
+border | `oklch(0.28 0.02 255)` | `#232D3D`
+border-bright | `oklch(0.35 0.025 255)` | `#303C50`
+text | `oklch(0.95 0.005 255)` | `#E9EDF3`
+muted | `oklch(0.68 0.02 255)` | `#96A2B4`
+dim | `oklch(0.55 0.02 255)` | `#72809A`
+accent (signal gold) | `oklch(0.78 0.10 75)` | `#E3A857`
+accent-hover | `oklch(0.83 0.11 75)` | `#F0BE7A`
+accent-dim (fill) | `oklch(0.78 0.10 75 / 0.14)` | rgba(227,168,87,0.14)
+success | `oklch(0.85 0.19 150)` | `#4ADE80`
+warning | `oklch(0.83 0.15 85)` | `#FBBF24`
+error | `oklch(0.72 0.18 25)` | `#F87171`
+info | `oklch(0.80 0.10 240)` | `#7DD3FC`
+
+Distribution: ~60% neutrals / 30% surfaces / 10% accent. Accent appears on: active nav,
+primary action, focus rings, live dots, key KPI accent only when meaningful. Never gradient
+text, never glassmorphism.
+
+## Tokens
+
+- Spacing base: 4px. Tight within groups (8–12px), generous between sections (24–32px).
+- Radius: exactly two — `--radius-sm` 4px (controls, tables, chips), `--radius` 8px (cards,
+  panels). No radius > 8px anywhere.
+- Shadow: **none** — defined edges only. Elevation via border-bright + surface-2, never
+  box-shadow on cards. (One exception: focus ring, which is a 2px accent outline.)
+- Motion: 150ms default / 250ms page enter, `cubic-bezier(0.23,1,0.32,1)` (ease-out),
+  transform+opacity only, no bounce, never animate layout properties.
+  `prefers-reduced-motion: reduce` kills all non-essential animation.
+- Focus: 2px solid accent outline offset 2px, always visible (`:focus-visible`).
+- Borders: 1px hairline everywhere (`--fp-border`); hover raises to `--fp-border-bright`.
+
+## Menu (curated, this remake)
+
+6 sections + login:
+
+1. **Overview** — mode/version/uptime status; 6 KPIs (pool total, busy, cooldown, banned,
+   requests today, models); token risk cards (at-risk tokens from snapshot).
+   No smoke/diag, no sparklines (moved to CLI `-test-token`/`-doctor`).
+2. **Tokens** — add-token form, device-login flow, client API-key management, token table
+   (short id, status badge, instance, cooldown countdown, actions: clear cooldown, remove),
+   per-model quota expand rows.
+3. **Models** — served model catalog table (mono id, served badge, aliases) + count summary.
+4. **Config** — `.env` editor (mono textarea) + Validate/Save/Reload + redacted effective
+   config table.
+5. **Logs** — level filter, message filter, auto-poll, mono log stream with level dots,
+   pagination.
+6. **Setup** — mode-dependent quick-start: base URL, model list, harness/env/curl snippets
+   with copy buttons.
+7. **Login** — centered card, brand mark, token input, error alert.
+
+## Components (exact API — cross-slice contract)
+
+Shared library in `src/lib/components/`. Pages import these; do not restyle inline.
+
+- `Button.svelte` — `{ variant: 'primary'|'secondary'|'ghost'|'danger' = 'secondary',
+  size: 'sm'|'md' = 'md', disabled=false, loading=false, type='button', class }`,
+  spreads `$$restProps`, children = label. Classes `.fp-btn .fp-btn-{variant}`.
+- `Card.svelte` — `{ title?, description?, pad: 'md'|'none' = 'md', class }`,
+  slots `{ actions, default, footer }`. Hairline border, radius 8px.
+- `Stat.svelte` — `{ label, value, hint?, tone: 'default'|'good'|'warn'|'bad' = 'default',
+  big=false }`. Value in mono 600, label in sans muted sm. Tone colors the value + LED.
+- `StatusBadge.svelte` — `{ status, tone: 'good'|'warn'|'bad'|'info'|'idle' = 'info',
+  pulse=false }`. 3px LED dot + mono label, uppercase.
+- `Alert.svelte` — `{ tone: 'info'|'success'|'warning'|'error' = 'info', title? }`,
+  children = body. Icon + tinted left hairline (accent/state color at 14% fill).
+- `EmptyState.svelte` — `{ title, description? }`, slot `{ action }`.
+- `CopyButton.svelte` — `{ text, label='Copy' }`. Copies `text`; shows check 1.5s.
+- `PageHeader.svelte` — `{ title, description? }`, slot `{ actions }`.
+- `Field.svelte` — `{ label, hint?, error?, id }`, children = control. Label sans sm,
+  control mono base, error text red sm.
+- `Spinner.svelte` — `{ size: 'sm'|'md' = 'md' }`. 2px arc in accent.
+
+## Craft rules
+
+- Buttons ranked by importance (primary = accent fill + dark text), never colored by meaning.
+- Forms: real labels, correct input types, inline validation that keeps input.
+- Status conveyed by LED + label (never color alone); error states visible + readable.
+- Empty/loading/error states required on every page (skeleton classes in app.css,
+  `EmptyState`, `Alert`).
+- Icons: `@lucide/svelte` only, 16–18px, one stroke weight. No icon-only buttons without
+  aria-label.
+- Copy: terse operator voice. No marketing phrasing.
+- a11y gate (WCAG 2.2 AA): visible managed focus, keyboard operability, labels everywhere,
+  ≥24px targets (44px preferred for touch), color independence, reduced-motion.
+
+## Slop audit (run before finishing)
+
+Checklist — all must be clean in the final UI:
+- [x] No Inter/Geist/system font as primary (IBM Plex Sans/Mono used)
+- [x] No purple/indigo/violet gradients; no gradient text on metrics
+- [x] No glassmorphism, no blobs, no radius > 8px on cards
+- [x] No hairline-border + soft-shadow combo (defined edges only)
+- [x] Numeric columns right-aligned, tabular-nums, mono
+- [x] Components have hover/active/focus/disabled/loading/error states
+- [x] No color-only status signals
+- [x] prefers-reduced-motion respected
+- [x] Menu shows 6 sections + login (no Traces/Playground/Metrics)

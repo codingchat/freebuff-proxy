@@ -1,28 +1,35 @@
 <script>
-  import { ExternalLink } from '@lucide/svelte';
+  /**
+   * @prop {{ current_version: string, has_update: boolean, latest_version: string, update_url: string }} [versionInfo]
+   */
+  let { versionInfo } = $props();
 </script>
 
-<footer class="border-t border-[var(--fp-border)] mt-12">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between text-xs text-[var(--fp-muted)]">
-    <span class="font-mono">freebuff-proxy</span>
+<footer class="border-t border-[var(--fp-border)]">
+  <div class="max-w-[1200px] mx-auto px-6 py-3 flex items-center justify-between gap-4">
+    <span class="font-mono text-[11px] text-[var(--fp-dim)]">
+      freebuff-proxy <span class="fp-num text-[var(--fp-muted)]">{versionInfo?.current_version ?? 'dev'}</span>
+    </span>
     <div class="flex items-center gap-4">
+      {#if versionInfo?.has_update}
+        <a
+          href={versionInfo.update_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="inline-flex items-center gap-1.5 font-mono text-[11px] text-[var(--fp-accent)] hover:text-[var(--fp-accent-hover)] transition-colors"
+          aria-label="Update available"
+        >
+          <span class="led led-accent led-pulse" aria-hidden="true"></span>
+          <span>update to v{versionInfo.latest_version}</span>
+        </a>
+      {/if}
       <a
-        href="/healthz"
+        href={versionInfo?.update_url ?? 'https://github.com/trefeon/freebuff-proxy/releases'}
         target="_blank"
         rel="noopener noreferrer"
-        class="inline-flex items-center gap-1 hover:text-[var(--fp-muted)] transition-colors"
+        class="font-mono text-[11px] text-[var(--fp-dim)] hover:text-[var(--fp-muted)] transition-colors"
       >
-        /healthz
-        <ExternalLink size={10} />
-      </a>
-      <a
-        href="/metrics"
-        target="_blank"
-        rel="noopener noreferrer"
-        class="inline-flex items-center gap-1 hover:text-[var(--fp-muted)] transition-colors"
-      >
-        /metrics
-        <ExternalLink size={10} />
+        github releases
       </a>
     </div>
   </div>

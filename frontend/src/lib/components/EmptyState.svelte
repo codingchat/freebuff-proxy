@@ -1,25 +1,25 @@
 <script>
+  import { Inbox } from '@lucide/svelte';
+
   /**
-   * EmptyState — icon + heading + description + optional action.
+   * EmptyState — centered empty/fallback block with optional action.
    *
-   * @prop {any} icon - Lucide icon component
    * @prop {string} title
    * @prop {string} [description]
+   * @slot action
    */
-  let { icon: Icon, title, description, children } = $props();
+  let { title, description, action } = $props();
 </script>
 
-<div class="fp-card p-8 text-center">
-  {#if Icon}
-    <div class="w-12 h-12 rounded-full bg-[var(--fp-amber)]/10 text-[var(--fp-amber)] flex items-center justify-center mx-auto mb-3">
-      <Icon size={24} />
-    </div>
-  {/if}
-  <h3 class="text-lg font-semibold text-white mb-1">{title}</h3>
+<div class="fp-card flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
+  <Inbox size={32} strokeWidth={1.5} class="text-[var(--fp-dim)]" aria-hidden="true" />
+  <h3 class="font-semibold text-[var(--fp-text)]">{title}</h3>
   {#if description}
-    <p class="text-sm text-[var(--fp-muted)] max-w-md mx-auto mb-4">{description}</p>
+    <p class="max-w-md text-sm text-[var(--fp-muted)]">{description}</p>
   {/if}
-  {#if children}
-    {@render children()}
+  {#if action}
+    <div class="mt-2">
+      {@render action()}
+    </div>
   {/if}
 </div>

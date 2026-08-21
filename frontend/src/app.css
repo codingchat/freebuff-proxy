@@ -1,61 +1,65 @@
 @import "tailwindcss";
-@import "@fontsource/geist-sans/400.css";
-@import "@fontsource/geist-sans/500.css";
-@import "@fontsource/geist-sans/600.css";
-@import "@fontsource/geist-sans/700.css";
-@import "@fontsource/geist-mono/400.css";
-@import "@fontsource/geist-mono/500.css";
-@import "@fontsource/geist-mono/600.css";
-@import "@fontsource/geist-mono/700.css";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-sans/700.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
 
-/* ── Design Tokens ────────────────────────────────────────────── */
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ── Design Tokens (see DESIGN.md) ─────────────────────────────── */
 :root {
-  /* Backgrounds — layered from deep to surface */
-  --fp-bg:           #0A0F18;
-  --fp-surface:      #111827;
-  --fp-surface-2:    #151C28;
-  --fp-surface-3:    #1C2536;
-  --fp-input-bg:     #0C1220;
+  /* Surfaces — layered, defined edges only (no soft shadows) */
+  --fp-bg:           #0B0F17;
+  --fp-surface:      #141A25;
+  --fp-surface-2:    #1A2230;
+  --fp-inset:        #080B11;
+  --fp-input-bg:     #0C121C;
 
   /* Borders */
-  --fp-border:       #1E293B;
-  --fp-border-bright:#2A374B;
-  --fp-border-hover: #374B66;
+  --fp-border:        #232D3D;
+  --fp-border-bright: #303C50;
 
   /* Text */
-  --fp-text:         #F1F5F9;
-  --fp-muted:        #8B9EB7;
-  --fp-dim:          #93A3BB;
+  --fp-text:         #E9EDF3;
+  --fp-muted:        #96A2B4;
+  --fp-dim:          #72809A;
 
-  /* Accents */
-  --fp-amber:        #DCA86A;
-  --fp-amber-hover:  #E8BC82;
-  --fp-amber-subtle: rgba(220, 168, 106, 0.35);
-  --fp-teal:         #34D399;
-  --fp-red:          #EF4444;
-  --fp-red-deep:     #B91C1C;
-  --fp-blue:         #60A5FA;
+  /* Accent — signal gold */
+  --fp-accent:        #E3A857;
+  --fp-accent-hover:  #F0BE7A;
+  --fp-accent-dim:    rgba(227, 168, 87, 0.14);
 
-  /* Radii */
-  --fp-radius-sm:    6px;
-  --fp-radius:       10px;
-  --fp-radius-lg:    14px;
+  /* Semantic states */
+  --fp-success:      #4ADE80;
+  --fp-warning:      #FBBF24;
+  --fp-error:        #F87171;
+  --fp-info:         #7DD3FC;
+  --fp-error-deep:   #7F1D1D;
+
+  /* Radii — exactly two */
+  --fp-radius-sm:    4px;
+  --fp-radius:       8px;
 
   /* Transitions */
   --fp-ease:         cubic-bezier(0.23, 1, 0.32, 1);
-  --fp-duration:     200ms;
-  --fp-duration-lg:  350ms;
+  --fp-duration:     150ms;
+  --fp-duration-lg:  250ms;
 
-  /* Shadows */
-  --fp-shadow-card:  0 1px 3px rgba(0,0,0,0.3), 0 0 0 1px var(--fp-border);
-  --fp-shadow-lg:    0 4px 20px rgba(0,0,0,0.4), 0 0 0 1px var(--fp-border);
+  /* Focus ring — the only shadow allowed */
+  --fp-ring:         0 0 0 2px var(--fp-bg), 0 0 0 4px var(--fp-accent);
 }
 
 /* ── Base ─────────────────────────────────────────────────────── */
 body {
   background-color: var(--fp-bg);
   color: var(--fp-text);
-  font-family: "Geist Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
   margin: 0;
   padding: 0;
   min-height: 100vh;
@@ -63,13 +67,26 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-code, pre, .font-mono {
-  font-family: "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+/* Faint instrument dot-grid, like graph paper (DESIGN.md signature) */
+.instrument-grid {
+  background-image: radial-gradient(var(--fp-border) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: -1px -1px;
+}
+
+code, pre, .font-mono, .fp-mono {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Numeric data is always mono + tabular (DESIGN.md signature move) */
+.fp-num {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Focus ────────────────────────────────────────────────────── */
 *:focus-visible {
-  outline: 2px solid var(--fp-amber);
+  outline: 2px solid var(--fp-accent);
   outline-offset: 2px;
   border-radius: var(--fp-radius-sm);
 }
@@ -85,31 +102,24 @@ code, pre, .font-mono {
 }
 
 .skeleton {
-  background: linear-gradient(90deg, var(--fp-surface) 25%, var(--fp-surface-3) 50%, var(--fp-surface) 75%);
+  background: linear-gradient(90deg, var(--fp-surface) 25%, var(--fp-surface-2) 50%, var(--fp-surface) 75%);
   background-size: 200% 100%;
-  animation: shimmer 1.5s ease-in-out infinite;
-  border-radius: var(--fp-radius);
+  animation: shimmer 1.4s ease-in-out infinite;
 }
 
 .skeleton-text { height: 1em; margin-bottom: 0.5em; border-radius: var(--fp-radius-sm); }
-.skeleton-card { height: 120px; border-radius: var(--fp-radius-lg); }
+.skeleton-card { height: 120px; border-radius: var(--fp-radius); }
 .skeleton-line { height: 0.75em; border-radius: 3px; }
 
 /* ── Custom scrollbars ────────────────────────────────────────── */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: var(--fp-border-bright);
-  border-radius: 3px;
+  border-radius: 5px;
+  border: 2px solid var(--fp-bg);
 }
-::-webkit-scrollbar-thumb:hover {
-  background: var(--fp-muted);
-}
+::-webkit-scrollbar-thumb:hover { background: var(--fp-dim); }
 
 /* ── Page transition ──────────────────────────────────────────── */
 .page-enter {
@@ -117,184 +127,223 @@ code, pre, .font-mono {
 }
 
 @keyframes pageIn {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* ── Reusable card surface ────────────────────────────────────── */
+/* ── Live dot pulse (status LEDs) ─────────────────────────────── */
+@keyframes ledPulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+.led-pulse {
+  animation: ledPulse 2s var(--fp-ease) infinite;
+}
+
+/* ── Card surface — defined edge, no soft shadow ──────────────── */
 .fp-card {
   background: var(--fp-surface);
   border: 1px solid var(--fp-border);
-  border-radius: var(--fp-radius-lg);
-  box-shadow: var(--fp-shadow-card);
-  transition: border-color var(--fp-duration) var(--fp-ease),
-              box-shadow var(--fp-duration) var(--fp-ease);
+  border-radius: var(--fp-radius);
 }
 
-.fp-card:hover {
+.fp-card-hover:hover {
   border-color: var(--fp-border-bright);
 }
 
-.fp-card-interactive:hover {
-  border-color: var(--fp-border-hover);
-  box-shadow: var(--fp-shadow-lg);
-}
-
-/* ── Reusable inner surface (recessed) ────────────────────────── */
+/* ── Recessed inner surface ───────────────────────────────────── */
 .fp-inset {
-  background: var(--fp-input-bg);
+  background: var(--fp-inset);
   border: 1px solid var(--fp-border);
-  border-radius: var(--fp-radius);
+  border-radius: var(--fp-radius-sm);
 }
 
-/* ── Button base ──────────────────────────────────────────────── */
-.fp-btn-primary {
-  background: var(--fp-amber);
-  color: #1A1A1A;
-  font-weight: 600;
-  font-size: 0.875rem;
-  border-radius: var(--fp-radius);
-  padding: 0.5rem 1.25rem;
-  min-height: 44px;
-  transition: all var(--fp-duration) var(--fp-ease);
+/* ── Buttons (ranked by importance, not color) ────────────────── */
+.fp-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
+  gap: 6px;
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  border-radius: var(--fp-radius-sm);
+  border: 1px solid transparent;
+  padding: 0.5rem 0.875rem;
+  min-height: 32px;
+  cursor: pointer;
+  transition: background-color var(--fp-duration) var(--fp-ease),
+              border-color var(--fp-duration) var(--fp-ease),
+              transform var(--fp-duration) var(--fp-ease);
+  white-space: nowrap;
 }
 
-.fp-btn-primary:hover:not(:disabled) {
-  background: var(--fp-amber-hover);
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(220,168,106,0.2);
-}
-
-.fp-btn-primary:active:not(:disabled) {
-  transform: translateY(0) scale(0.98);
-}
-
-.fp-btn-primary:disabled {
-  opacity: 0.5;
+.fp-btn:disabled {
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
-.fp-btn-secondary {
-  background: var(--fp-surface-3);
-  color: white;
+.fp-btn-primary {
+  background: var(--fp-accent);
+  color: #171006;
+  border-color: var(--fp-accent);
   font-weight: 600;
-  font-size: 0.75rem;
-  border: 1px solid var(--fp-border-bright);
-  border-radius: var(--fp-radius);
-  padding: 0.375rem 0.75rem;
-  transition: all var(--fp-duration) var(--fp-ease);
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
+}
+
+.fp-btn-primary:hover:not(:disabled) {
+  background: var(--fp-accent-hover);
+  border-color: var(--fp-accent-hover);
+}
+
+.fp-btn-primary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.fp-btn-secondary {
+  background: var(--fp-surface);
+  color: var(--fp-text);
+  border-color: var(--fp-border-bright);
 }
 
 .fp-btn-secondary:hover:not(:disabled) {
-  background: var(--fp-border-bright);
+  background: var(--fp-surface-2);
+  border-color: var(--fp-dim);
 }
 
 .fp-btn-secondary:active:not(:disabled) {
-  transform: scale(0.98);
+  transform: translateY(1px);
 }
 
-.fp-btn-danger {
-  background: rgba(239, 68, 68, 0.12);
-  color: #F87171;
-  font-weight: 600;
-  font-size: 0.75rem;
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: var(--fp-radius);
-  padding: 0.375rem 0.75rem;
-  transition: all var(--fp-duration) var(--fp-ease);
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
+.fp-btn-ghost {
+  background: transparent;
+  color: var(--fp-muted);
+  border-color: transparent;
 }
 
-.fp-btn-danger:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.22);
-}
-
-/* ── Input base ───────────────────────────────────────────────── */
-@layer components {
-  .fp-input {
-    width: 100%;
-    background: var(--fp-input-bg);
-    border: 1px solid var(--fp-border);
-    border-radius: var(--fp-radius);
-    padding: 0.5rem 0.75rem;
-    font-size: 0.875rem;
-    color: var(--fp-text);
-    font-family: inherit;
-    transition: border-color var(--fp-duration) var(--fp-ease);
-  }
-
-  .fp-input:focus {
-    outline: none;
-    border-color: var(--fp-amber);
-    box-shadow: 0 0 0 3px var(--fp-amber-subtle);
-  }
-
-  .fp-input-mono {
-    font-family: "Geist Mono", ui-monospace, monospace;
-  }
-}
-
-input[type="search"]::-webkit-search-decoration,
-input[type="search"]::-webkit-search-cancel-button,
-input[type="search"]::-webkit-search-results-button,
-input[type="search"]::-webkit-search-results-decoration {
-  -webkit-appearance: none;
-  display: none;
-}
-
-/* ── Table base ───────────────────────────────────────────────── */
-.fp-table {
-  width: 100%;
-  text-align: left;
-  font-size: 0.75rem;
-  font-family: "Geist Mono", ui-monospace, monospace;
-}
-
-.fp-table thead {
-  background: var(--fp-input-bg);
-  color: var(--fp-dim);
-  border-bottom: 1px solid var(--fp-border);
-}
-
-.fp-table th {
-  padding: 0.625rem 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  font-size: 0.625rem;
-}
-
-.fp-table tbody {
+.fp-btn-ghost:hover:not(:disabled) {
+  color: var(--fp-text);
   background: var(--fp-surface);
 }
 
-.fp-table tbody tr {
-  border-bottom: 1px solid var(--fp-border);
-  transition: background var(--fp-duration) var(--fp-ease);
+.fp-btn-danger {
+  background: transparent;
+  color: var(--fp-error);
+  border-color: var(--fp-error);
 }
 
-.fp-table tbody tr:last-child {
+.fp-btn-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.12);
+  border-color: var(--fp-error);
+}
+
+.fp-btn-sm {
+  padding: 0.3125rem 0.625rem;
+  min-height: 26px;
+  font-size: 12px;
+}
+
+/* ── Inputs ───────────────────────────────────────────────────── */
+.fp-input {
+  width: 100%;
+  background: var(--fp-input-bg);
+  border: 1px solid var(--fp-border-bright);
+  border-radius: var(--fp-radius-sm);
+  color: var(--fp-text);
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  padding: 0.5rem 0.75rem;
+  transition: border-color var(--fp-duration) var(--fp-ease);
+}
+
+.fp-input::placeholder { color: var(--fp-dim); }
+
+.fp-input:hover:not(:disabled) { border-color: var(--fp-dim); }
+
+.fp-input:focus {
+  outline: 2px solid var(--fp-accent);
+  outline-offset: 1px;
+  border-color: var(--fp-accent);
+}
+
+.fp-input:disabled { opacity: 0.45; cursor: not-allowed; }
+
+textarea.fp-input {
+  resize: vertical;
+  line-height: 1.6;
+}
+
+select.fp-input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2396A2B4' fill='none' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  padding-right: 2rem;
+}
+
+/* ── Table — hairline rows, left text, right numbers ──────────── */
+.fp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.fp-table thead th {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fp-dim);
+  text-align: left;
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--fp-border-bright);
+  white-space: nowrap;
+}
+
+.fp-table tbody td {
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--fp-border);
+  color: var(--fp-text);
+  vertical-align: middle;
+}
+
+.fp-table tbody tr:last-child td {
   border-bottom: none;
 }
 
-.fp-table tbody tr:hover {
+.fp-table tbody tr:hover td {
   background: var(--fp-surface-2);
 }
 
-.fp-table td {
-  padding: 0.625rem 0.75rem;
+.fp-table .num {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
-/* ── Tabular numbers ──────────────────────────────────────────── */
+.fp-table th.num {
+  text-align: right;
+}
+
+/* ── Status LED dot ───────────────────────────────────────────── */
+.led {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.led-good  { background: var(--fp-success); }
+.led-warn  { background: var(--fp-warning); }
+.led-bad   { background: var(--fp-error); }
+.led-info  { background: var(--fp-info); }
+.led-idle  { background: var(--fp-dim); }
+.led-accent{ background: var(--fp-accent); }
+
+/* ── Misc ─────────────────────────────────────────────────────── */
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }

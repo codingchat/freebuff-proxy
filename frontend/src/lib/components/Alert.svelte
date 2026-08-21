@@ -1,44 +1,42 @@
 <script>
-  import { CheckCircle2, AlertCircle, AlertTriangle, Info } from '@lucide/svelte';
+  import { AlertCircle, CheckCircle2, AlertTriangle, Info } from '@lucide/svelte';
 
   /**
-   * Alert — dismissable status banner.
+   * Alert — status banner: icon + 2px tinted left border + 14% tone fill.
    *
-   * @prop {'success'|'error'|'warning'|'info'} [variant='info']
-   * @prop {string} message
-   * @prop {boolean} [dismissable=true]
-   * @prop {() => void} [ondismiss]
+   * @prop {'info'|'success'|'warning'|'error'} [tone='info']
+   * @prop {string} [title]
    */
-  let { variant = 'info', message, dismissable = true, ondismiss } = $props();
+  let { tone = 'info', title, children } = $props();
 
-  const icons = { success: CheckCircle2, error: AlertCircle, warning: AlertTriangle, info: Info };
-  const styles = {
-    success: 'bg-[var(--fp-teal)]/10 border-[var(--fp-teal)]/30 text-[var(--fp-teal)]',
-    error:   'bg-[var(--fp-red)]/10 border-[var(--fp-red)]/30 text-[var(--fp-red)]',
-    warning: 'bg-[var(--fp-amber)]/10 border-[var(--fp-amber)]/30 text-[var(--fp-amber)]',
-    info:    'bg-[#60A5FA]/10 border-[#60A5FA]/30 text-[#60A5FA]',
+  const icons = { info: Info, success: CheckCircle2, warning: AlertTriangle, error: AlertCircle };
+  const fills = {
+    info: 'border-[var(--fp-info)]/60 bg-[var(--fp-info)]/14',
+    success: 'border-[var(--fp-success)]/60 bg-[var(--fp-success)]/14',
+    warning: 'border-[var(--fp-warning)]/60 bg-[var(--fp-warning)]/14',
+    error: 'border-[var(--fp-error)]/60 bg-[var(--fp-error)]/14',
+  };
+  const iconTones = {
+    info: 'text-[var(--fp-info)]',
+    success: 'text-[var(--fp-success)]',
+    warning: 'text-[var(--fp-warning)]',
+    error: 'text-[var(--fp-error)]',
   };
 
-  let Icon = $derived(icons[variant] || Info);
+  let Icon = $derived(icons[tone] || Info);
 </script>
 
-{#if message}
-  <div
-    class="p-4 rounded-xl flex items-center justify-between gap-3 text-sm border {styles[variant] || styles.info}"
-    role="alert"
-  >
-    <div class="flex items-center gap-2">
-      <Icon size={16} />
-      <span>{message}</span>
-    </div>
-    {#if dismissable && ondismiss}
-      <button
-        onclick={ondismiss}
-        class="text-xs opacity-90 hover:opacity-100 underline shrink-0"
-        aria-label="Dismiss alert"
-      >
-        Dismiss
-      </button>
+<div
+  role="alert"
+  class="flex items-start gap-3 rounded-r border-l-2 px-4 py-3 {fills[tone] || fills.info}"
+>
+  <Icon size={18} class="mt-0.5 shrink-0 {iconTones[tone] || iconTones.info}" />
+  <div class="min-w-0 flex-1">
+    {#if title}
+      <p class="text-sm font-semibold text-[var(--fp-text)]">{title}</p>
+    {/if}
+    {#if children}
+      <div class="text-sm text-[var(--fp-muted)]">{@render children()}</div>
     {/if}
   </div>
-{/if}
+</div>
