@@ -99,6 +99,14 @@ type Lease struct {
 	Run               *runs.Run
 	SessionInstanceID string       // "" when the session is disabled
 	Bridge            *bridgeEntry // nil for pooled (fixed-token) leases
+	// FallbackReason names WHY this lease serves a different model than the
+	// requested one (issue #164): "quota_exhausted" when the QUOTA_FALLBACK_MODELS
+	// path re-routed the request after every quota-positive token was
+	// exhausted; "queue_timeout" when the server's FALLBACK_AFTER_MS
+	// waiting-room path re-routed. Empty when the lease serves the requested
+	// model directly. Surfaced to clients as the X-FreeBuff-Fallback
+	// response header.
+	FallbackReason string
 	// entry is the fixed-token entry backing this lease. Set by Acquire so
 	// LeaseRelease always releases through the right run manager: after a
 	// concurrent RemoveLastToken, the Token index may be out of range (or

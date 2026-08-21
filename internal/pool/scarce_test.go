@@ -156,6 +156,11 @@ func TestAcquireQuotaExhaustionFallback(t *testing.T) {
 	if lease.Model != "mimo/mimo-v2.5" {
 		t.Errorf("lease.Model = %q, want mimo/mimo-v2.5 (fallback)", lease.Model)
 	}
+	// Issue #164: the fallback lease must report why it serves a different
+	// model so the server surfaces X-FreeBuff-Fallback: quota_exhausted.
+	if lease.FallbackReason != "quota_exhausted" {
+		t.Errorf("lease.FallbackReason = %q, want quota_exhausted", lease.FallbackReason)
+	}
 }
 
 func TestAcquireBridgeScarceAndFallback(t *testing.T) {

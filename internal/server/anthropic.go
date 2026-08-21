@@ -765,9 +765,17 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 	_, _ = io.WriteString(w, ": connecting\n\n")
 	flusher.Flush()
 
+	// Issue #164: the message_start event names the proxy's served model
+	// (lease.Model, fallbacks included), not the raw requested id — clients
+	// must see what actually served the request. Falls back to the requested
+	// model when the relay is driven without a lease (direct unit tests).
+	servedModel := stats.servedModel
+	if servedModel == "" {
+		servedModel = requestedModel
+	}
 	st := &anthropicStreamState{
 		messageID:          "msg_" + randHexString(10),
-		model:              requestedModel,
+		model:              servedModel,
 		inputTokens:        inputTokens,
 		toolCalls:          make(map[int]*anthropicToolState),
 		endTurnCallIndexes: make(map[int]bool),
@@ -1277,7 +1285,14 @@ func (s *Server) relayAnthropicJSON(ctx context.Context, w http.ResponseWriter, 
 			"failed to decode upstream stream: "+err.Error(), "upstream_error", 0)
 		return
 	}
-	msgObj := anthropicMessageFromCompletion(completion, requestedModel)
+	// Issue #164: the message object names the proxy's served model (lease.Model,
+	// fallbacks included), not the raw requested id — fall back to the
+	// requested model only when the relay ran without a lease.
+	servedModel := stats.servedModel
+	if servedModel == "" {
+		servedModel = requestedModel
+	}
+	msgObj := anthropicMessageFromCompletion(completion, servedModel)
 	out, err := json.Marshal(msgObj)
 	if err != nil {
 		s.writeAnthropicError(w, r, http.StatusBadGateway,
@@ -1354,15 +1369,18 @@ func (s *Server) relayAnthropicJSON(ctx context.Context, w http.ResponseWriter, 
 }
 
 // anthropicMessageFromCompletion builds the Anthropic message object from
-// an accumulated chat.completion.
-func anthropicMessageFromCompletion(completion map[string]any, requestedModel string) map[string]any {
+// an accumulated chat.completion. servedModel is the authoritative model the
+// proxy's lease was bound to (issue #164) and wins over the upstream echo;
+// the echo only fills the field when no served model is known (direct unit
+// calls) — the response must name what actually served the request.
+func anthropicMessageFromCompletion(completion map[string]any, servedModel string) map[string]any {
 	id, _ := completion["id"].(string)
 	if id == "" {
 		id = "msg_" + randHexString(10)
 	}
-	model, _ := completion["model"].(string)
+	model := servedModel
 	if model == "" {
-		model = requestedModel
+		model, _ = completion["model"].(string)
 	}
 	message := map[string]any{
 		"id":            id,

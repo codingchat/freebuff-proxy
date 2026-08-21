@@ -278,17 +278,38 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 	if reasoningEffort != "" {
 		routingAttrs = append(routingAttrs, "reasoning_effort", reasoningEffort)
 	}
+	// Issue #164: fallback transparency. x-freebuff-served-model names the
+	// model this lease's session/run is actually bound to — requested model
+	// when served directly, the re-routed model after any fallback — and is
+	// set on every successful response so clients can always tell what
+	// served them. x-freebuff-fallback is set ONLY when a fallback fired,
+	// with the reason: "quota_exhausted" (pool QUOTA_FALLBACK_MODELS path,
+	// after every quota-positive token for the requested model was
+	// exhausted) or "queue_timeout" (FALLBACK_AFTER_MS waiting-room
+	// re-route, issue #100). The legacy X-FreeBuff-Fallback-Model header
+	// (issue #100) is kept for the queue-time path.
+	servedModel := lease.Model
+	if servedModel == "" {
+		servedModel = model
+	}
+	w.Header().Set("X-FreeBuff-Served-Model", servedModel)
+	fallbackReason := lease.FallbackReason
 	if fallbackUsed {
+		fallbackReason = "queue_timeout"
 		// Surface the transparent model switch to the client (issue #100):
 		// the streamed response itself is indistinguishable, so the header
 		// is the notice.
 		w.Header().Set("X-FreeBuff-Fallback-Model", cfg.FallbackModels[model])
 		routingAttrs = append(routingAttrs, "fallback", cfg.FallbackModels[model])
 	}
+	if fallbackReason != "" {
+		w.Header().Set("X-FreeBuff-Fallback", fallbackReason)
+		routingAttrs = append(routingAttrs, "served_model", servedModel)
+	}
 	s.logger.Info(kind+" routing", routingAttrs...)
 
 	chatStart := time.Now()
-	stats := &relayStats{}
+	stats := &relayStats{servedModel: servedModel}
 	relay(ctx, w, up, stats, chatStart)
 	// Issue #114: record the completed chat as a run step — steps are
 	// batched in memory and sent WITH FINISH (the CLI has no /steps
@@ -774,6 +795,12 @@ type relayStats struct {
 	// final usage block), fed to the pool spend ledger once per successful
 	// completion (#122). 0 when the stream carried no usage.
 	usageTokens int64
+	// servedModel is the model this lease's session/run is actually bound to
+	// (lease.Model, resolved fallbacks included). Set by chatCore before the
+	// relay runs so wire relays can stamp it onto the response body's model
+	// field and message_start events (issue #164). Empty when a relay is
+	// driven directly by a test with no lease.
+	servedModel string
 }
 
 // usageTotalTokens extracts the token total from a chat usage object

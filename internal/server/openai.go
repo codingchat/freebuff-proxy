@@ -127,7 +127,11 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 	first := true
 	var reasoningParts []string
 	var contentParts []string
-	var streamModel string
+	// Issue #164: the stream's model identity is the proxy's served model
+	// (lease.Model, fallbacks included) — synthetic XML-flush chunks and the
+	// reasoning cache key on it. The upstream chunk echo only fills the
+	// field when no lease drove the relay (direct unit-test calls).
+	streamModel := stats.servedModel
 	toolIDsMap := make(map[string]bool)
 	var toolIDs []string
 	endTurnCallIndexes := make(map[int]bool)
@@ -384,7 +388,7 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 					} `json:"choices"`
 				}
 				if json.Unmarshal(clean, &chunk) == nil {
-					if chunk.Model != "" {
+					if chunk.Model != "" && streamModel == "" {
 						streamModel = chunk.Model
 					}
 					if chunk.ID != "" {
@@ -411,6 +415,11 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 					}
 				}
 			}
+			// Issue #164: stamp the served model onto every relayed chunk so
+			// the streamed response identifies the model that actually
+			// served it (fallbacks included). No-op when the chunk already
+			// carries the served model or no lease drove the relay.
+			clean = rewriteChatChunkModel(clean, stats.servedModel)
 			if first {
 				first = false
 				phasetiming.FromContext(ctx).Since(phasetiming.UpstreamTTFBMS, chatStart)
@@ -426,6 +435,30 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 			flusher.Flush()
 		}
 	}
+}
+
+// rewriteChatChunkModel returns clean unchanged unless the chunk's model
+// field differs from the served model, in which case it re-marshals the
+// chunk with the served model. A chunk carrying no model field is left
+// untouched (the upstream OpenAI-compatible surface always includes it;
+// injecting into arbitrary frames would re-marshal every chunk). served ""
+// (relay driven directly without a lease) disables the rewrite entirely.
+func rewriteChatChunkModel(clean []byte, served string) []byte {
+	if served == "" || !bytes.Contains(clean, []byte(`"model":`)) {
+		return clean
+	}
+	var chunk map[string]any
+	if json.Unmarshal(clean, &chunk) != nil {
+		return clean
+	}
+	if cur, _ := chunk["model"].(string); cur == served {
+		return clean
+	}
+	chunk["model"] = served
+	if b, err := json.Marshal(chunk); err == nil {
+		return b
+	}
+	return clean
 }
 
 // trackToolCallIndexes records per-stream tool-call state on every chunk
@@ -582,6 +615,21 @@ func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Read
 				}
 			}
 			if changed {
+				if b, err := json.Marshal(comp); err == nil {
+					out = b
+				}
+			}
+		}
+	}
+	// Issue #164: stamp the served model onto the non-streaming response
+	// body so clients see the model that actually served the request
+	// (fallbacks included). Runs before the reasoning-cache block below so
+	// the cache also keys on the served model, matching the streaming path.
+	if stats.servedModel != "" {
+		var comp map[string]any
+		if json.Unmarshal(out, &comp) == nil {
+			if cur, _ := comp["model"].(string); cur != stats.servedModel {
+				comp["model"] = stats.servedModel
 				if b, err := json.Marshal(comp); err == nil {
 					out = b
 				}
