@@ -400,10 +400,7 @@ func sessionUsable(s *cachedState) bool {
 	if s.status == "active" && time.Now().Before(s.expiresAt.Add(-expiryMargin)) {
 		return true
 	}
-	graceEnd := s.gracePeriodEndsAt
-	if graceEnd.IsZero() && !s.expiresAt.IsZero() {
-		graceEnd = s.expiresAt.Add(graceWindow)
-	}
+	graceEnd := graceEndsAt(s)
 	return !graceEnd.IsZero() && time.Now().Before(graceEnd)
 }
 
@@ -468,23 +465,26 @@ func (m *Manager) EnsureSessionForModel(ctx context.Context, model string) (stri
 				// stays alive and chat passes).
 				if (model == "" || s.model == "" || s.model == model) && sessionUsable(s) {
 					instance := s.instanceID
-					// Issue #99: pre-emptive re-admit. Only while the
-					// session is still pre-expiry (within reAdmitLead of
-					// expiresAt-5s): inside the grace drain the CLI rides
-					// the old row until grace ends, and a fresh admission
-					// would supersede it. The refresh runs on a background
-					// context so the caller's cancellation never strands a
-					// half-started admission.
-					if s.status == "active" && m.reAdmitLead > 0 &&
-						time.Now().Before(s.expiresAt.Add(-expiryMargin)) &&
-						time.Until(s.expiresAt.Add(-expiryMargin)) <= m.reAdmitLead &&
-						!m.reAdmitExpiry.Equal(s.expiresAt) {
+					// Issue #99/#163: pre-emptive re-admit — pre-expiry
+					// (within reAdmitLead of expiresAt-5s) or while the
+					// session is ridden through its grace drain (#163: a
+					// long stream crossing expiry must hand over to a
+					// fresh session without paying a synchronous
+					// admission at grace end). The refresh runs
+					// preemptively on a background context so a refusal
+					// or queue keeps the cache and rides on.
+					if m.reAdmitLead > 0 && !m.reAdmitExpiry.Equal(s.expiresAt) &&
+						reAdmitDue(s, m.reAdmitLead, time.Now()) {
 						// Issue #132: one attempt per expiry window. The
 						// upstream refuses a fresh create while the old
 						// instance is still authoritative, so a failed
 						// re-admit must ride the old session to expiry
 						// instead of re-triggering on every request (each
 						// trigger burns a session slot).
+						window := "lead"
+						if !time.Now().Before(s.expiresAt.Add(-expiryMargin)) {
+							window = "grace"
+						}
 						m.reAdmitExpiry = s.expiresAt
 						m.refreshing = true
 						m.refreshErr = nil
@@ -493,7 +493,7 @@ func (m *Manager) EnsureSessionForModel(ctx context.Context, model string) (stri
 						m.mu.Unlock()
 						go m.asyncReAdmit(model)
 						m.recordReAdmitTrigger()
-						slog.Debug("session: pre-emptive re-admit triggered", "instance_id", instance, "model", s.model)
+						slog.Debug("session: pre-emptive re-admit triggered", "instance_id", instance, "model", s.model, "window", window)
 						return instance, nil
 					}
 					m.mu.Unlock()
@@ -879,6 +879,17 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 			slog.Debug("session created", "status", "disabled", "instance_id", "")
 			return nil
 		case "queued":
+			if preemptive {
+				// Issue #163: a pre-emptive re-admit that lands in the
+				// waiting room must not displace the ridden session —
+				// inside the grace drain the old row stays authoritative
+				// until grace closes, and committing the queue would
+				// surface waiting-room latency on the next request. Keep
+				// the cached session; the once-per-expiry guard stops a
+				// retry storm.
+				slog.Debug("session: pre-emptive re-admit queued, riding old session")
+				return nil
+			}
 			pollAt := st.PollAt
 			if pollAt.IsZero() {
 				wait := time.Duration(st.EstimatedWaitMs) * time.Millisecond
