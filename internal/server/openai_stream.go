@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -597,7 +598,9 @@ func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Read
 	if stats.servedModel != "" {
 		var comp map[string]any
 		if json.Unmarshal(out, &comp) == nil {
-			if cur, _ := comp["model"].(string); cur != stats.servedModel {
+			cur, _ := comp["model"].(string)
+			if cur != stats.servedModel {
+				slog.Warn("relayJSON: model mismatch", "upstream", cur, "served", stats.servedModel)
 				comp["model"] = stats.servedModel
 				if b, err := json.Marshal(comp); err == nil {
 					out = b

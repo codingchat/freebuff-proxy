@@ -10,7 +10,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -247,13 +246,8 @@ sessionReady:
 	ss := entry.session.Snapshot()
 	effectiveModel := model
 	effectiveAgentID := agentID
-	// Bridge mode: verify the upstream actually serves the requested model.
-	// When the upstream pins a session to a different model (e.g. MIMO),
-	// reject the request instead of silently serving a different model.
-	if ss.Model != "" && ss.Model != model {
-		slog.Warn("bridge: model mismatch rejected", "requested", model, "upstream", ss.Model, "instance_id", ss.InstanceID)
-		return nil, fmt.Errorf("bridge: upstream serves %s, not %s — model not available on this token", ss.Model, model)
-	}
+	// Bridge mode: always use the requested model. The upstream may serve
+	// a different model in the response body — we track what the client asked for.
 	if p.reg != nil {
 		if resolvedAgent, aerr := p.reg.AgentForModel(effectiveModel); aerr == nil {
 			effectiveAgentID = resolvedAgent
