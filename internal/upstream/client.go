@@ -228,6 +228,17 @@ func NewWithIndex(token string, tokenIndex int, cfg *config.Config) (*Client, er
 				MaxHeaderListSize:         262_144, // Chrome SETTINGS_MAX_HEADER_LIST_SIZE
 			}
 			transport.RegisterProtocol("https", h2t)
+			// The stdlib runs onceSetNextProtoDefaults on the
+			// transport's first use; its bundled h2 configure would
+			// call RegisterProtocol("https") again and panic — the
+			// recovered error is logged as "protocol https already
+			// registered" on every stealth client's first request.
+			// The documented empty-TLSNextProto kill switch makes
+			// protocols().HTTP2() false so that configure is skipped;
+			// https dispatch to our custom h2t goes through
+			// altProto (alternateRoundTripper) and is independent of
+			// the bundled configure.
+			transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
 		} else {
 			// Plain Go transport: the stdlib already negotiates HTTP/2 by
 			// default (the DefaultTransport clone carries

@@ -8,8 +8,10 @@ package upstream
 // concurrent work on client_test.go does not collide.
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"testing"
@@ -114,6 +116,41 @@ func TestHTTP2UpstreamWiring(t *testing.T) {
 			t.Errorf("h1 stealth dial error = %q, want the tcp dial wrapper", msg)
 		}
 	})
+}
+
+// TestStealthH2NoBundledConfigureLog guards the "protocol https already
+// registered" log: the stdlib's onceSetNextProtoDefaults runs the bundled
+// http2 configure on the transport's first use, which panics (recovered
+// into a logged error) because our stealth h2 transport already owns
+// "https" via RegisterProtocol. The empty TLSNextProto kill switch skips
+// that configure; the warning must never hit the log.
+func TestStealthH2NoBundledConfigureLog(t *testing.T) {
+	c, err := New("tok", testConfig("", func(cfg *config.Config) {
+		cfg.HTTP2Upstream = true
+		cfg.TLSFingerprint = "chrome126"
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture the default logger, which is where net/http emits the
+	// bundled-h2 configure error.
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+
+	// First use of the transport is what triggers onceSetNextProtoDefaults.
+	req, err := http.NewRequest(http.MethodGet, "https://127.0.0.1:1/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.http.Transport.RoundTrip(req); err == nil {
+		t.Fatal("RoundTrip to a refused port succeeded")
+	}
+	if got := buf.String(); strings.Contains(got, "protocol https already registered") {
+		t.Errorf("bundled h2 configure warning leaked to the log:\n%s", got)
+	}
 }
 
 // TestSessionResponseFeedsRiskEngine guards the passive risk feed (issue
