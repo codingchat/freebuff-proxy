@@ -112,6 +112,13 @@ type Config struct {
 	// reused before a fresh upstream poll (issue #60, SESSION_PROBE_CACHE_TTL
 	// default 15s): session poll GETs within the TTL are skipped.
 	SessionProbeCacheTTL time.Duration
+	// ModelUnavailableCacheTTL is how long a model_unavailable admission
+	// refusal is remembered per model (issue #158,
+	// MODEL_UNAVAILABLE_CACHE_TTL default 1h): off-window models
+	// short-circuit to the fallback within the TTL (or until the parsed
+	// availability window re-opens, whichever is sooner) instead of burning
+	// a 409 roundtrip per request.
+	ModelUnavailableCacheTTL time.Duration
 	// WebhookURL fires best-effort alert POSTs when the token pool is
 	// exhausted or a token is classified banned (issue #48, WEBHOOK_URL;
 	// empty = disabled). Payload: {"event":"pool_exhausted"|"token_banned",
@@ -246,6 +253,7 @@ type rawConfig struct {
 	RunsDrainTTL                     string                  `json:"RUNS_DRAIN_TTL"`
 	SessionReAdmitLead               string                  `json:"SESSION_RE_ADMIT_LEAD"`
 	SessionProbeCacheTTL             string                  `json:"SESSION_PROBE_CACHE_TTL"`
+	ModelUnavailableCacheTTL         string                  `json:"MODEL_UNAVAILABLE_CACHE_TTL"`
 	ScarceSessionModels              scarceSessionModelsList `json:"SCARCE_SESSION_MODELS"`
 	QuotaFallbackModels              quotaFallbackModelsList `json:"QUOTA_FALLBACK_MODELS"`
 	WebhookURL                       string                  `json:"WEBHOOK_URL"`
@@ -530,6 +538,7 @@ func Load(configPath string) (Config, error) {
 	overrideString(&raw.RunsDrainTTL, "RUNS_DRAIN_TTL")
 	overrideString(&raw.SessionReAdmitLead, "SESSION_RE_ADMIT_LEAD")
 	overrideString(&raw.SessionProbeCacheTTL, "SESSION_PROBE_CACHE_TTL")
+	overrideString(&raw.ModelUnavailableCacheTTL, "MODEL_UNAVAILABLE_CACHE_TTL")
 	overrideString((*string)(&raw.ScarceSessionModels), "SCARCE_SESSION_MODELS")
 	overrideString((*string)(&raw.QuotaFallbackModels), "QUOTA_FALLBACK_MODELS")
 	overrideString(&raw.WebhookURL, "WEBHOOK_URL")
@@ -566,10 +575,10 @@ func Load(configPath string) (Config, error) {
 		return Config{}, err
 	}
 	// RUN_FINISH_INLINE_TIMEOUT / RUNS_DRAIN_TTL / SESSION_RE_ADMIT_LEAD /
-	// SESSION_PROBE_CACHE_TTL are zero-tolerant durations: "" or "0" fall
-	// back to the documented default (a zero inline timeout would make the
-	// inline fallback useless; a zero re-admit lead would spin a re-admit
-	// on every request).
+	// SESSION_PROBE_CACHE_TTL / MODEL_UNAVAILABLE_CACHE_TTL are zero-tolerant
+	// durations: "" or "0" fall back to the documented default (a zero inline
+	// timeout would make the inline fallback useless; a zero re-admit lead
+	// would spin a re-admit on every request).
 	runFinishInlineTimeout := 250 * time.Millisecond
 	if v := strings.TrimSpace(raw.RunFinishInlineTimeout); v != "" {
 		runFinishInlineTimeout, err = parseDuration(v, "RUN_FINISH_INLINE_TIMEOUT")
@@ -608,6 +617,18 @@ func Load(configPath string) (Config, error) {
 		}
 		if sessionProbeCacheTTL <= 0 {
 			sessionProbeCacheTTL = 15 * time.Second
+		}
+	}
+	// MODEL_UNAVAILABLE_CACHE_TTL is zero-tolerant like the other session
+	// knobs: "" or "0" fall back to the documented 1h default.
+	modelUnavailableCacheTTL := time.Hour
+	if v := strings.TrimSpace(raw.ModelUnavailableCacheTTL); v != "" {
+		modelUnavailableCacheTTL, err = parseDuration(v, "MODEL_UNAVAILABLE_CACHE_TTL")
+		if err != nil {
+			return Config{}, err
+		}
+		if modelUnavailableCacheTTL <= 0 {
+			modelUnavailableCacheTTL = time.Hour
 		}
 	}
 	sessionCreateMaxGlobal := 128
@@ -807,6 +828,7 @@ func Load(configPath string) (Config, error) {
 		RunsDrainTTL:                     runsDrainTTL,
 		SessionReAdmitLead:               sessionReAdmitLead,
 		SessionProbeCacheTTL:             sessionProbeCacheTTL,
+		ModelUnavailableCacheTTL:         modelUnavailableCacheTTL,
 		WebhookURL:                       strings.TrimSpace(raw.WebhookURL),
 		FallbackAfter:                    fallbackAfter,
 		FallbackModels:                   fallbackModels,
@@ -1157,6 +1179,7 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideStringFrom(&raw.RunsDrainTTL, get, "RUNS_DRAIN_TTL")
 	overrideStringFrom(&raw.SessionReAdmitLead, get, "SESSION_RE_ADMIT_LEAD")
 	overrideStringFrom(&raw.SessionProbeCacheTTL, get, "SESSION_PROBE_CACHE_TTL")
+	overrideStringFrom(&raw.ModelUnavailableCacheTTL, get, "MODEL_UNAVAILABLE_CACHE_TTL")
 	overrideStringFrom(&raw.WebhookURL, get, "WEBHOOK_URL")
 	overrideStringFrom((*string)(&raw.ScarceSessionModels), get, "SCARCE_SESSION_MODELS")
 	overrideStringFrom((*string)(&raw.QuotaFallbackModels), get, "QUOTA_FALLBACK_MODELS")

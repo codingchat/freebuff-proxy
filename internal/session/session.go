@@ -125,6 +125,10 @@ type Manager struct {
 	// redundant poll GET within the TTL.
 	probeTTL     time.Duration
 	lastAdmitted time.Time
+	// unavailableTTL + modelUnavailable cache model_unavailable refusals per
+	// model (issue #158); entry.until = min(next window opening, now+TTL).
+	unavailableTTL   time.Duration
+	modelUnavailable map[string]modelUnavailableEntry
 	// savedQuota preserves the most recent non-nil quota map across
 	// invalidation/re-admission cycles (issue #146).  When commit(nil)
 	// drops the cached state, the quota map is stashed here; a later
@@ -802,6 +806,11 @@ func statusError(status string, st *upstream.SessionState) error {
 // (the caller is riding it) — return instead of committing nil and looping.
 func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive bool) error {
 	targetModel := requestedModel
+	// Issue #158: a model cached unavailable skips the 409 admission
+	// roundtrip entirely (see modelUnavailableShortCircuit).
+	if m.modelUnavailableShortCircuit(&targetModel) {
+		return nil
+	}
 	for i := 0; i < maxRefreshIterations; i++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -959,7 +968,13 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 			slog.Debug("session released on model lock, retrying", "reason", reasonModelLock, "current", st.CurrentModel, "target", targetModel)
 		case "model_unavailable":
 			// Requested model is not available; fall back to default model.
-			slog.Warn("session: model unavailable upstream, falling back to default", "requested", targetModel, "fallback", DefaultFallbackModel)
+			// Issue #158: cache the refusal (with its availability window,
+			// when the body carries one) so subsequent admissions for this
+			// model short-circuit to the fallback without the 409
+			// roundtrip. A live refusal is now rare (once per TTL per
+			// model); the frequent skip path logs at DEBUG in refresh.
+			m.recordModelUnavailable(targetModel, st.UnavailableWindow, st.AvailableHours)
+			slog.Warn("session: model unavailable upstream, falling back to default", "requested", targetModel, "fallback", DefaultFallbackModel, "available_hours", st.AvailableHours)
 			targetModel = DefaultFallbackModel
 			m.mu.Lock()
 			m.commit(nil)

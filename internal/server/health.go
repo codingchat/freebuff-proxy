@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"freebuff-proxy/internal/telemetry"
 )
 
 // handleHealthz reports uptime, model count, the per-token snapshot, the
@@ -124,6 +126,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	sb.WriteString("# HELP freebuff_proxy_rate_limit_rejected_total Total client requests rejected by local rate limiter\n")
 	sb.WriteString("# TYPE freebuff_proxy_rate_limit_rejected_total counter\n")
 	fmt.Fprintf(&sb, "freebuff_proxy_rate_limit_rejected_total %d\n\n", s.rateLimitRejections.Load())
+	sb.WriteString("# HELP freebuff_proxy_model_unavailable_skips_total Session admissions skipped via the model_unavailable window cache (issue #158)\n")
+	sb.WriteString("# TYPE freebuff_proxy_model_unavailable_skips_total counter\n")
+	fmt.Fprintf(&sb, "freebuff_proxy_model_unavailable_skips_total %d\n\n", telemetry.ModelUnavailableSkips.Load())
 	sb.WriteString("# HELP freebuff_proxy_token_messages_24h Rolling 24h message count per token\n")
 	sb.WriteString("# TYPE freebuff_proxy_token_messages_24h gauge\n")
 	for _, snap := range snaps {

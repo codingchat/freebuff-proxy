@@ -24,7 +24,7 @@ var envKeys = []string{
 	"AUTO_DISCOVER_TOKEN", "TRANSIENT_RETRIES", "ADMIN_TOKEN",
 	"SESSION_PERSIST", "SESSION_STATE_FILE",
 	"HTTP2_UPSTREAM",
-	"MAX_SPEND_PER_DAY", "SESSION_RE_ADMIT_LEAD", "SESSION_PROBE_CACHE_TTL",
+	"MAX_SPEND_PER_DAY", "SESSION_RE_ADMIT_LEAD", "SESSION_PROBE_CACHE_TTL", "MODEL_UNAVAILABLE_CACHE_TTL",
 	"SESSION_CREATE_MAX_PARALLEL_GLOBAL", "SESSION_CREATE_MAX_PARALLEL_PER_MODEL",
 	"RUN_FINISH_QUEUE_SIZE", "RUN_FINISH_INLINE_TIMEOUT", "RUNS_DRAIN_QUEUE_CAP", "RUNS_DRAIN_TTL",
 	"WEBHOOK_URL", "FALLBACK_AFTER_MS", "FALLBACK_MODEL", "ADOPT_CLI_SESSION", "WAITING_ROOM_CHAIN",
@@ -927,10 +927,44 @@ func TestModelsHideUnavailableEnv(t *testing.T) {
 	t.Setenv("MODELS_HIDE_UNAVAILABLE", "true")
 	cfg, err := Load("")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Load: %v", err)
 	}
 	if !cfg.ModelsHideUnavailable {
 		t.Error("ModelsHideUnavailable = false, want true (from env)")
+	}
+}
+
+// TestModelUnavailableCacheTTLEnv verifies MODEL_UNAVAILABLE_CACHE_TTL loads
+// from env and lands in Config, and that an explicit "0" falls back to the
+// documented 1h default (zero-tolerant, matching the other session knobs).
+func TestModelUnavailableCacheTTLEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AUTH_TOKENS", "tok-1")
+	t.Setenv("MODEL_UNAVAILABLE_CACHE_TTL", "45m")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ModelUnavailableCacheTTL != 45*time.Minute {
+		t.Errorf("ModelUnavailableCacheTTL = %v, want 45m (from env)", cfg.ModelUnavailableCacheTTL)
+	}
+
+	clearEnv(t)
+	t.Setenv("AUTH_TOKENS", "tok-1")
+	t.Setenv("MODEL_UNAVAILABLE_CACHE_TTL", "0")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ModelUnavailableCacheTTL != time.Hour {
+		t.Errorf("ModelUnavailableCacheTTL = %v, want 1h (zero-tolerant default)", cfg.ModelUnavailableCacheTTL)
+	}
+
+	clearEnv(t)
+	t.Setenv("AUTH_TOKENS", "tok-1")
+	t.Setenv("MODEL_UNAVAILABLE_CACHE_TTL", "bogus")
+	if _, err := Load(""); err == nil {
+		t.Error("bogus MODEL_UNAVAILABLE_CACHE_TTL accepted")
 	}
 }
 

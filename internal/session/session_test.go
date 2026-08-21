@@ -1914,8 +1914,16 @@ func TestReAdmitStormTracksPreemptiveTriggers(t *testing.T) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "active", "instanceId": id, "expiresAt": time.Now().Add(10 * time.Second).Format(time.RFC3339)})
 	}
 	m := newTestSession(t, mock)
+	var nowMu sync.Mutex
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
-	m.now = func() time.Time { return now }
+	// m.now is called from background goroutines (pre-emptive re-admit);
+	// the fake clock must be safe for concurrent reads while the test
+	// advances it.
+	m.now = func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		return now
+	}
 	m.SetReAdmitLead(time.Minute)
 
 	if _, err := m.EnsureSession(context.Background()); err != nil {
@@ -1931,7 +1939,9 @@ func TestReAdmitStormTracksPreemptiveTriggers(t *testing.T) {
 	restore := captureLogs(&buf)
 	defer restore()
 	for i := 0; i < 4; i++ {
+		nowMu.Lock()
 		now = now.Add(time.Second)
+		nowMu.Unlock()
 		m.InvalidateWithReason("expired", 400)
 	}
 	got := buf.String()
