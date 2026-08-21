@@ -92,9 +92,16 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 			"retry_after_sec", retrySec,
 		)
 		s.rateLimitRejections.Add(1)
-		s.writeJSONError(w, http.StatusTooManyRequests,
-			fmt.Sprintf("client rate limit exceeded (Retry-After: %ds)", retrySec),
-			"rate_limit_exceeded", "rate_limit_exceeded", 0)
+		if isAnthropicRequest(r) {
+			// /v1/messages requests must never see an OpenAI-shaped error body.
+			s.writeAnthropicError(w, r, http.StatusTooManyRequests,
+				fmt.Sprintf("client rate limit exceeded (Retry-After: %ds)", retrySec),
+				"rate_limit_exceeded", 0)
+		} else {
+			s.writeJSONError(w, http.StatusTooManyRequests,
+				fmt.Sprintf("client rate limit exceeded (Retry-After: %ds)", retrySec),
+				"rate_limit_exceeded", "rate_limit_exceeded", 0)
+		}
 		return
 	}
 	// Bridge routing: bridge mode relays the client's Authorization header

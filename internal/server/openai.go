@@ -225,6 +225,13 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 				relayed = time.Now()
 				continue
 			}
+			// Track tool-call indexes BEFORE any strip: StripEndTurnToolCalls
+			// deletes end_turn entries, so tracking after the strip would
+			// never see the name (the recorded indexes feed the
+			// continuation-fragment drop below, and any real named call
+			// flips seenRealToolCalls so the terminal finish_reason rewrite
+			// never downgrades a genuine tool-call turn).
+			trackToolCallIndexes(clean, endTurnCallIndexes, &seenRealToolCalls)
 			// Strip Codebuff end_turn pseudo-tool-calls (issue #140).
 			// The proxy injects end_turn into every upstream request to pass
 			// foreign_toolset validation; the model calls it when done. We
@@ -269,35 +276,6 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 									delete(delta, "tool_calls")
 								} else {
 									delta["tool_calls"] = filtered
-								}
-							}
-						}
-					}
-					// Track newly discovered end_turn AND real tool call indexes.
-					if choices, ok := chunk["choices"].([]any); ok {
-						for _, raw := range choices {
-							choice, _ := raw.(map[string]any)
-							if choice == nil {
-								continue
-							}
-							delta, _ := choice["delta"].(map[string]any)
-							if delta == nil {
-								continue
-							}
-							tcs, _ := delta["tool_calls"].([]any)
-							for _, tc := range tcs {
-								tcMap, _ := tc.(map[string]any)
-								if tcMap == nil {
-									continue
-								}
-								fn, _ := tcMap["function"].(map[string]any)
-								name, _ := fn["name"].(string)
-								if name == "end_turn" {
-									if i, ok := tcMap["index"].(float64); ok {
-										endTurnCallIndexes[int(i)] = true
-									}
-								} else if name != "" {
-									seenRealToolCalls = true
 								}
 							}
 						}
@@ -441,6 +419,68 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 	}
 }
 
+// trackToolCallIndexes records per-stream tool-call state on every chunk
+// BEFORE StripEndTurnToolCalls deletes the end_turn entries (tracking after
+// the strip would never see them). end_turn indexes feed the downstream
+// continuation-fragment drop — later argument fragments carry the same index
+// but an empty name, so they are only recognizable by index — and any real
+// named call flips seenRealToolCalls so the terminal finish_reason rewrite
+// never downgrades a genuine tool-call turn to "stop". The cheap substring
+// probe keeps non-tool chunks unmarshaled.
+func trackToolCallIndexes(clean []byte, endTurnCallIndexes map[int]bool, seenRealToolCalls *bool) {
+	if !bytes.Contains(clean, []byte(`"tool_calls"`)) {
+		return
+	}
+	var chunk map[string]any
+	if json.Unmarshal(clean, &chunk) != nil {
+		return
+	}
+	if choices, ok := chunk["choices"].([]any); ok {
+		for _, raw := range choices {
+			choice, _ := raw.(map[string]any)
+			if choice == nil {
+				continue
+			}
+			delta, _ := choice["delta"].(map[string]any)
+			if delta == nil {
+				continue
+			}
+			tcs, _ := delta["tool_calls"].([]any)
+			for _, tc := range tcs {
+				tcMap, _ := tc.(map[string]any)
+				if tcMap == nil {
+					continue
+				}
+				fn, _ := tcMap["function"].(map[string]any)
+				if name, _ := fn["name"].(string); name == "end_turn" {
+					if i, ok := tcMap["index"].(float64); ok {
+						endTurnCallIndexes[int(i)] = true
+					}
+				} else if name != "" {
+					*seenRealToolCalls = true
+				}
+			}
+		}
+	}
+}
+
+// bumpXMLCallIndex raises the per-stream synthetic tool-call index floor
+// past the largest native tool-call index in tcs (the chunk's existing
+// delta.tool_calls entries) so extracted XML fragments can never collide
+// with upstream indexes. The floor persists across chunks via the pointer,
+// so a floor established in one chunk applies to all later synthetics.
+func bumpXMLCallIndex(tcs []any, xmlCallIndex *int) {
+	for _, raw := range tcs {
+		tc, _ := raw.(map[string]any)
+		if tc == nil {
+			continue
+		}
+		if i, ok := tc["index"].(float64); ok && int(i) >= *xmlCallIndex {
+			*xmlCallIndex = int(i) + 1
+		}
+	}
+}
+
 func (s *Server) ingestStreamReasoning(model string, reasoningParts, contentParts, toolIDs []string) {
 	if s.reasoningCache == nil || len(reasoningParts) == 0 {
 		return
@@ -462,7 +502,18 @@ func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Read
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
 	first := true
+	// Track whether the upstream stream carried any native delta.tool_calls
+	// fragment: when it did, the accumulator skips XML extraction, so the
+	// delivered tool_calls are native and an upstream "stop" is deliberate.
+	// The XML-extraction finish flip below must then stay off — a native
+	// tool-call response keeps its upstream finish_reason (pinned by
+	// TestChatNonStream). When NO native fragment was seen, delivered calls
+	// can only be extracted ones, which pair with an upstream "stop".
+	sawNativeToolCalls := false
 	for scanner.Scan() {
+		if bytes.Contains(scanner.Bytes(), []byte(`"tool_calls":[{`)) {
+			sawNativeToolCalls = true
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -485,13 +536,46 @@ func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Read
 		return
 	}
 	out := acc.Finish()
-	// Strip Codebuff end_turn pseudo-tool-calls from non-streaming response.
-	if bytes.Contains(out, []byte(`"end_turn"`)) {
-		var comp map[string]any
+	// Strip Codebuff end_turn pseudo-tool-calls from the non-streaming
+	// response, then align finish_reason with the tool_calls actually
+	// delivered: a response whose calls were all end_turn (zero calls after
+	// stripping) must read "stop", while XML-extracted calls carried in
+	// message.tool_calls with an upstream "stop" (accumulator Finish) must
+	// read "tool_calls" — parity with the streaming path's two flips.
+	var comp map[string]any
+	if bytes.Contains(out, []byte(`"tool_calls"`)) || bytes.Contains(out, []byte(`"finish_reason":"tool_calls"`)) {
 		if json.Unmarshal(out, &comp) == nil {
-			convert.StripEndTurnToolCalls(comp)
-			if b, err := json.Marshal(comp); err == nil {
-				out = b
+			changed := false
+			if bytes.Contains(out, []byte(`"end_turn"`)) {
+				convert.StripEndTurnToolCalls(comp)
+				changed = true
+			}
+			if rawChoices, ok := comp["choices"].([]any); ok {
+				for _, raw := range rawChoices {
+					choice, _ := raw.(map[string]any)
+					if choice == nil {
+						continue
+					}
+					fr, _ := choice["finish_reason"].(string)
+					msg, _ := choice["message"].(map[string]any)
+					if msg == nil {
+						continue
+					}
+					tcs, _ := msg["tool_calls"].([]any)
+					switch {
+					case len(tcs) == 0 && fr == "tool_calls":
+						choice["finish_reason"] = "stop"
+						changed = true
+					case len(tcs) > 0 && fr == "stop" && !sawNativeToolCalls:
+						choice["finish_reason"] = "tool_calls"
+						changed = true
+					}
+				}
+			}
+			if changed {
+				if b, err := json.Marshal(comp); err == nil {
+					out = b
+				}
 			}
 		}
 	}
@@ -504,7 +588,6 @@ func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Read
 	if json.Unmarshal(out, &usageObj) == nil && usageObj.Usage != nil {
 		stats.usageTokens = usageTotalTokens(usageObj.Usage)
 	}
-
 	if s.reasoningCache != nil {
 		var comp map[string]any
 		if json.Unmarshal(out, &comp) == nil {
