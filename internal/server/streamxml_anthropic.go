@@ -50,6 +50,10 @@ func feedAnthropicXMLToolCalls(xmlExtractor *convert.XMLToolCallExtractor, chunk
 		return
 	}
 	tcs, _ := delta["tool_calls"].([]any)
+	// Synthetic fragment indexes must never collide with the chunk's native
+	// tool_calls indexes (parity with the OpenAI half): raise the per-stream
+	// counter past the max native index present before appending.
+	bumpXMLCallIndex(tcs, xmlCallIndex)
 	for _, call := range calls {
 		if call.Function.Name == "end_turn" {
 			continue // strip-parity: never relay the proxy-injected pseudo-tool

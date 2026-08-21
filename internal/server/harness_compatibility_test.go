@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"freebuff-proxy/internal/config"
 	"freebuff-proxy/internal/testutil"
 )
 
@@ -447,5 +448,358 @@ func TestBridgeModeAnthropicAndOpenAI(t *testing.T) {
 	}
 	if seenTokens[0] != "token-anthropic-key" || seenTokens[1] != "token-x-key" || seenTokens[2] != "token-bearer-key" {
 		t.Errorf("seen tokens = %v, want [token-anthropic-key, token-x-key, token-bearer-key]", seenTokens)
+	}
+}
+
+// collectAnthropicEvents parses a /v1/messages SSE body into the ordered
+// event data maps (event: headers and comment lines are ignored; each data:
+// line is one event).
+func collectAnthropicEvents(t *testing.T, body string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, rawLine := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if jsonStr == "" {
+			continue
+		}
+		var dm map[string]any
+		if err := json.Unmarshal([]byte(jsonStr), &dm); err != nil {
+			t.Fatalf("invalid SSE data line %q: %v", jsonStr, err)
+		}
+		out = append(out, dm)
+	}
+	return out
+}
+
+// TestAnthropicStreamEndTurnOnlyStopReason pins the end_turn-only invariant:
+// when the upstream terminates with finish_reason "tool_calls" but every tool
+// fragment was the stripped proxy-injected end_turn pseudo-tool, the relay
+// must emit message_delta stop_reason "end_turn" and ZERO tool_use content
+// blocks — never a tool_use stop_reason with no blocks.
+func TestAnthropicStreamEndTurnOnlyStopReason(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// end_turn-only turn: the proxy-injected pseudo-tool is called, then
+		// the upstream claims a tool call with finish_reason "tool_calls".
+		_, _ = io.WriteString(w, "data: "+`{"id":"cmpl-e1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_end_1","type":"function","function":{"name":"end_turn","arguments":"{}"}}]},"index":0}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+`{"id":"cmpl-e1","choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}
+	ts, _ := newTestServer(t, nil, mock)
+
+	reqBody := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, string(body))
+	}
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collectAnthropicEvents(t, string(bodyBytes))
+
+	var stopReason string
+	toolUseBlocks := 0
+	for _, ev := range events {
+		switch ev["type"] {
+		case "content_block_start":
+			if cb, ok := ev["content_block"].(map[string]any); ok && cb["type"] == "tool_use" {
+				toolUseBlocks++
+			}
+		case "message_delta":
+			if delta, ok := ev["delta"].(map[string]any); ok {
+				stopReason, _ = delta["stop_reason"].(string)
+			}
+		}
+	}
+	if stopReason != "end_turn" {
+		t.Errorf("message_delta stop_reason = %q, want end_turn (end_turn-only turn)", stopReason)
+	}
+	if toolUseBlocks != 0 {
+		t.Errorf("tool_use content blocks = %d, want 0 (end_turn-only turn)", toolUseBlocks)
+	}
+}
+
+// TestAnthropicStreamThinkingClosedBeforeToolUse pins the sequential block
+// lifecycle: a thinking content_block_stop (with its signature_delta) must be
+// emitted BEFORE the tool_use content_block_start — the thinking block must
+// not stay open and straddle the tool_use block.
+func TestAnthropicStreamThinkingClosedBeforeToolUse(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: "+`{"id":"cmpl-t1","choices":[{"delta":{"reasoning_content":"Let me think"},"index":0}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+`{"id":"cmpl-t1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_bash_1","type":"function","function":{"name":"Bash","arguments":"{\"cmd\":\"ls\"}"}}]},"index":0}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+`{"id":"cmpl-t1","choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}
+	ts, _ := newTestServer(t, nil, mock)
+
+	reqBody := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true,"thinking":{"type":"enabled","budget_tokens":1024}}`
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, string(body))
+	}
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collectAnthropicEvents(t, string(bodyBytes))
+
+	// Walk the event stream: record when the thinking block starts/stops and
+	// when the tool_use block starts; the thinking stop must come first.
+	var seq []string
+	thinkingOpen := false
+	stopReason := ""
+	for _, ev := range events {
+		switch ev["type"] {
+		case "content_block_start":
+			cb, _ := ev["content_block"].(map[string]any)
+			switch cb["type"] {
+			case "thinking":
+				thinkingOpen = true
+				seq = append(seq, "thinking-start")
+			case "tool_use":
+				seq = append(seq, "tool-start")
+			}
+		case "content_block_stop":
+			if thinkingOpen {
+				thinkingOpen = false
+				seq = append(seq, "thinking-stop")
+			}
+		case "message_delta":
+			if delta, ok := ev["delta"].(map[string]any); ok {
+				stopReason, _ = delta["stop_reason"].(string)
+			}
+		}
+	}
+	tsPos, toolPos := -1, -1
+	for i, s := range seq {
+		if s == "thinking-stop" && tsPos < 0 {
+			tsPos = i
+		}
+		if s == "tool-start" && toolPos < 0 {
+			toolPos = i
+		}
+	}
+	if tsPos < 0 || toolPos < 0 {
+		t.Fatalf("missing lifecycle markers in %v", seq)
+	}
+	if tsPos > toolPos {
+		t.Errorf("thinking block stopped at %d after tool_use started at %d: %v", tsPos, toolPos, seq)
+	}
+	if stopReason != "tool_use" {
+		t.Errorf("message_delta stop_reason = %q, want tool_use (real tool call)", stopReason)
+	}
+}
+
+// TestAnthropicStreamReasoningAfterTextReopensThinking pins the
+// reasoning-after-text fix: when reasoning deltas resume after a text block
+// opened (which closed the thinking block), the relay must open a FRESH
+// thinking content block at a NEW index and emit the deltas against it —
+// never against the already-closed index.
+func TestAnthropicStreamReasoningAfterTextReopensThinking(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: "+`{"id":"cmpl-r1","choices":[{"delta":{"reasoning_content":"first thought"},"index":0}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+`{"id":"cmpl-r1","choices":[{"delta":{"content":"answer text"},"index":0}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+`{"id":"cmpl-r1","choices":[{"delta":{"reasoning_content":"second thought"},"index":0}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+`{"id":"cmpl-r1","choices":[{"delta":{},"finish_reason":"stop","index":0}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}
+	ts, _ := newTestServer(t, nil, mock)
+
+	reqBody := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, string(body))
+	}
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collectAnthropicEvents(t, string(bodyBytes))
+
+	idxOf := func(ev map[string]any) int {
+		if f, ok := ev["index"].(float64); ok {
+			return int(f)
+		}
+		return -1
+	}
+	var thinkingStarts []int
+	textStart := -1
+	thinkingDeltas := map[int]bool{}
+	stopReason := ""
+	for _, ev := range events {
+		switch ev["type"] {
+		case "content_block_start":
+			idx := idxOf(ev)
+			if cb, ok := ev["content_block"].(map[string]any); ok {
+				switch cb["type"] {
+				case "thinking":
+					thinkingStarts = append(thinkingStarts, idx)
+				case "text":
+					textStart = idx
+				}
+			}
+		case "content_block_delta":
+			if d, ok := ev["delta"].(map[string]any); ok && d["type"] == "thinking_delta" {
+				thinkingDeltas[idxOf(ev)] = true
+			}
+		case "message_delta":
+			if delta, ok := ev["delta"].(map[string]any); ok {
+				stopReason, _ = delta["stop_reason"].(string)
+			}
+		}
+	}
+	if len(thinkingStarts) != 2 {
+		t.Fatalf("thinking content_block_start count = %d, want 2; starts %v", len(thinkingStarts), thinkingStarts)
+	}
+	if textStart < 0 {
+		t.Fatal("no text block emitted")
+	}
+	second := thinkingStarts[1]
+	if second <= textStart {
+		t.Errorf("reopened thinking index %d must be a fresh index above the text block index %d", second, textStart)
+	}
+	if !thinkingDeltas[second] {
+		t.Errorf("no thinking_delta against the reopened thinking index %d", second)
+	}
+	if thinkingDeltas[thinkingStarts[0]] == false {
+		t.Errorf("first thinking index %d missing its thinking_delta", thinkingStarts[0])
+	}
+	if stopReason != "end_turn" {
+		t.Errorf("message_delta stop_reason = %q, want end_turn", stopReason)
+	}
+}
+
+// TestAnthropicMessagesRateLimitErrorEnvelope verifies that a /v1/messages
+// request tripping the local per-IP rate limiter gets an Anthropic error
+// envelope ({"type":"error","error":{...}}), not the OpenAI-shaped body
+// writeJSONError produces.
+func TestAnthropicMessagesRateLimitErrorEnvelope(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.ChatBody = testutil.SSEEvent(chunk("chatcmpl-rl", 1, `"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]`)) +
+		testutil.SSEEvent(chunk("chatcmpl-rl", 1, `"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]`))
+	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) {
+		c.RateLimitPerIP = 1.0
+		c.RateLimitBurst = 2
+	}, mock)
+
+	body := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	for i := range 2 {
+		resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/messages", []byte(body), nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d should succeed, got %d: %s", i+1, resp.StatusCode, truncate(string(data), 200))
+		}
+	}
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/messages", []byte(body), nil)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("3rd request should return 429, got %d: %s", resp.StatusCode, truncate(string(data), 300))
+	}
+	var errResp struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &errResp); err != nil {
+		t.Fatalf("error response is not valid JSON: %v: %s", err, data)
+	}
+	if errResp.Type != "error" {
+		t.Errorf("top-level type = %q, want error (Anthropic envelope)", errResp.Type)
+	}
+	if errResp.Error.Type != "rate_limit_error" {
+		t.Errorf("error.type = %q, want rate_limit_error", errResp.Error.Type)
+	}
+	if errResp.Error.Code != "rate_limit_exceeded" {
+		t.Errorf("error.code = %q, want rate_limit_exceeded", errResp.Error.Code)
+	}
+	if !strings.Contains(errResp.Error.Message, "rate limit exceeded") {
+		t.Errorf("error.message = %q, want rate limit exceeded note", errResp.Error.Message)
+	}
+}
+
+// TestAnthropicMessagesDecodeErrorEnvelope verifies that a non-streaming
+// /v1/messages request whose upstream 200 body fails to decode gets a 502 with
+// an Anthropic error envelope (api_error), not an OpenAI-shaped body.
+func TestAnthropicMessagesDecodeErrorEnvelope(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.ChatBody = "data: {not-json}\n\ndata: [DONE]\n\n"
+	ts, _ := newTestServer(t, nil, mock)
+
+	body := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/messages", []byte(body), nil)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502: %s", resp.StatusCode, truncate(string(data), 300))
+	}
+	var errResp struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &errResp); err != nil {
+		t.Fatalf("error response is not valid JSON: %v: %s", err, data)
+	}
+	if errResp.Type != "error" {
+		t.Errorf("top-level type = %q, want error (Anthropic envelope)", errResp.Type)
+	}
+	if errResp.Error.Type != "api_error" {
+		t.Errorf("error.type = %q, want api_error", errResp.Error.Type)
+	}
+	if !strings.Contains(errResp.Error.Message, "decode") {
+		t.Errorf("error.message = %q, want decode failure note", errResp.Error.Message)
 	}
 }

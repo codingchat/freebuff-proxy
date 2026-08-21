@@ -351,7 +351,7 @@ var xmlStreamClosers = map[xmlStreamShape]string{
 type XMLToolCallExtractor struct {
 	buffered   string
 	shape      xmlStreamShape
-	fenceBrace int // xmlShapeFence: index in buffered just past the opening '{'
+	fenceBrace int // xmlShapeFence: index in buffered just past the opening '{'; -1 while the opener still awaits a '{' from a later fragment
 }
 
 // Feed processes one content fragment. It returns the fragment's safe text
@@ -423,8 +423,10 @@ func (x *XMLToolCallExtractor) Flush() (string, []*toolCall) {
 }
 
 // findOpener returns the index of the earliest candidate block opener in s,
-// or -1. For fenced blocks the opener only counts once a '{' (after optional
-// json/tool_call tag and whitespace) is visible in the same fragment.
+// or -1. For fenced blocks the opener counts once a '{' (after optional
+// json/tool_call tag and whitespace) is visible — in this fragment, or, for
+// a qualifying tag fence that ends the fragment, when a later fragment
+// supplies the '{' (see xmlStreamFencePending).
 func (x *XMLToolCallExtractor) findOpener(s string) int {
 	best := -1
 	// Literal openers.
@@ -443,7 +445,9 @@ func (x *XMLToolCallExtractor) findOpener(s string) int {
 		best = loc[0]
 		x.shape = xmlShapePipe
 	}
-	// Fenced JSON: ```json {"name"... (opener only counts with a visible '{').
+	// Fenced JSON: ```json {"name"... (opener counts once a '{' follows the
+	// optional tag+whitespace — in this fragment, or via a split fence whose
+	// qualifying tag ends the fragment and whose '{' arrives in a later one).
 	// Only the earliest qualifying fence can win; a fence that loses to an
 	// earlier literal must not clobber the chosen shape.
 	for from := 0; from < len(s); {
@@ -456,9 +460,25 @@ func (x *XMLToolCallExtractor) findOpener(s string) int {
 			if best < 0 || i < best {
 				best = i
 				x.shape = xmlShapeFence
-				x.fenceBrace = brace + 1
+				// fenceBrace indexes buffered, which Feed slices from best —
+				// never the fragment s itself (brace and best are both
+				// indexes into s; buffered starts at best).
+				x.fenceBrace = brace - best + 1
 			}
 			break // later fences are later still; the earliest one decided
+		}
+		// No '{' visible yet. A fence that ends the fragment with only a
+		// qualifying tool-call tag after it (```json\n) may be a split
+		// opener: hold it and let a later fragment supply the '{'. Plain
+		// code fences (```go, ```py) and fences followed by real content
+		// never qualify and are scanned past.
+		if xmlStreamFencePending(s, i+3) {
+			if best < 0 || i < best {
+				best = i
+				x.shape = xmlShapeFence
+				x.fenceBrace = -1 // awaiting the '{' in a later fragment
+			}
+			break
 		}
 		from = i + 3
 	}
@@ -486,6 +506,66 @@ func xmlStreamFenceBrace(s string, from int) int {
 	return -1
 }
 
+// xmlStreamFencePending reports whether the text after a fence is only a
+// qualifying tool-call language tag (json/tool_call family) plus whitespace
+// and then the end of the fragment — the '{' that completes the opener may
+// still arrive in a later fragment. A plain code fence (```go, ```py) or a
+// fence followed by real content is never a pending opener.
+func xmlStreamFencePending(s string, from int) bool {
+	pos := from
+	for pos < len(s) && (s[pos] == '-' || s[pos] == '_' || s[pos] >= 'a' && s[pos] <= 'z' || s[pos] >= 'A' && s[pos] <= 'Z') {
+		pos++
+	}
+	if !isStreamFenceTag(s[from:pos]) {
+		return false
+	}
+	for pos < len(s) && (s[pos] == ' ' || s[pos] == '\t' || s[pos] == '\r' || s[pos] == '\n') {
+		pos++
+	}
+	return pos == len(s)
+}
+
+// isStreamFenceTag reports whether a fence language tag is a tool-call
+// family tag (json / tool_call variants), as opposed to a plain code
+// language (go, py, bash, …) that must never open a block.
+func isStreamFenceTag(tag string) bool {
+	switch strings.ToLower(tag) {
+	case "json", "tool_call", "toolcall", "tool-call", "codebuff_tool_call", "codebuff-tool-call":
+		return true
+	}
+	return false
+}
+
+// xmlFenceCloseEnd returns the index just past the first closing fence in s
+// at or after from that appears OUTSIDE a JSON string value (quotes toggle
+// string state, backslash escapes are honored), or -1. A "```" inside a
+// string value (e.g. {"a": "x ``` y"}) must not close the block.
+func xmlFenceCloseEnd(s string, from int) int {
+	inStr := false
+	for i := from; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			if c == '\\' {
+				i++ // skip the escaped character
+				continue
+			}
+			if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '`':
+			if i+2 < len(s) && s[i+1] == '`' && s[i+2] == '`' {
+				return i + 3
+			}
+		}
+	}
+	return -1
+}
+
 // closerEnd returns the index just past the open candidate's closing tag in
 // buffered, or -1 while the block is still open.
 func (x *XMLToolCallExtractor) closerEnd() int {
@@ -499,8 +579,19 @@ func (x *XMLToolCallExtractor) closerEnd() int {
 			return loc[1]
 		}
 	case xmlShapeFence:
-		if i := strings.Index(x.buffered[x.fenceBrace:], "```"); i >= 0 {
-			return x.fenceBrace + i + 3
+		if x.fenceBrace < 0 {
+			// Split opener: the '{' has not arrived yet. Confirm it against
+			// the accumulated buffer (the fence always sits at index 0 of
+			// buffered); until the '{' shows, the block is still a candidate
+			// and stays open (the 64 KiB bound / Flush recover false hits).
+			if brace := xmlStreamFenceBrace(x.buffered, 3); brace >= 0 {
+				x.fenceBrace = brace + 1
+			} else {
+				return -1
+			}
+		}
+		if i := xmlFenceCloseEnd(x.buffered, x.fenceBrace); i >= 0 {
+			return i
 		}
 	}
 	return -1

@@ -120,7 +120,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		relay = func(ctx context.Context, w http.ResponseWriter, up io.Reader, stats *relayStats, chatStart time.Time) {
-			s.relayAnthropicJSON(ctx, w, up, stats, chatStart, rawModel)
+			s.relayAnthropicJSON(ctx, w, r, up, stats, chatStart, rawModel)
 		}
 	}
 	s.chatCore(w, r, model, stream, normalized, convert.ExtractReasoningEffort(raw), "messages", relay)
@@ -926,6 +926,10 @@ func (s *Server) accumulateAnthropicChunk(send func(map[string]any), st *anthrop
 	}
 	// Tool-call fragments → tool_use blocks.
 	if tcs, ok := delta["tool_calls"].([]any); ok && len(tcs) > 0 {
+		// Sequential block lifecycle: an open thinking block must be closed
+		// before a tool_use content_block_start fires — leaving it open until
+		// finalize would straddle the tool_use block (both calls idempotent).
+		st.closeThinking(send)
 		st.closeText(send)
 		for _, raw := range tcs {
 			tc, ok := raw.(map[string]any)
@@ -1003,6 +1007,11 @@ func (s *Server) finalizeAnthropicStream(send func(map[string]any), st *anthropi
 	stopReason := st.finishReason
 	if st.sawToolCall {
 		stopReason = "tool_use"
+	} else if stopReason == "tool_use" {
+		// finish_reason "tool_calls" whose fragments were ALL stripped
+		// (end_turn-only turn) must not emit a tool_use stop_reason with zero
+		// tool_use blocks (mirror of anthropicMessageFromCompletion).
+		stopReason = "end_turn"
 	}
 	usagePayload := map[string]any{"output_tokens": 0}
 	if st.usage != nil {
@@ -1035,13 +1044,21 @@ func (s *Server) finalizeAnthropicStream(send func(map[string]any), st *anthropi
 }
 
 // ensureThinking opens the thinking content block on first reasoning delta.
+// Reasoning arriving AFTER a text block opened (which closed the thinking
+// block via ensureText) reopens a FRESH thinking block at a new index —
+// mirror of ensureText's reopen pattern. Emitting a delta against the closed
+// index would violate the sequential block lifecycle.
 func (st *anthropicStreamState) ensureThinking(send func(map[string]any)) {
-	if st.thinkingStarted {
+	if st.thinkingStarted && !st.thinkingClosed {
 		return
+	}
+	if st.thinkingStarted {
+		st.closeText(send)
 	}
 	st.thinkingIndex = st.nextBlockIdx
 	st.nextBlockIdx++
 	st.thinkingStarted = true
+	st.thinkingClosed = false
 	send(map[string]any{
 		"type":  "content_block_start",
 		"index": st.thinkingIndex,
@@ -1138,8 +1155,11 @@ func (ts *anthropicToolState) ensureStarted(send func(map[string]any)) {
 func (st *anthropicStreamState) setStopReason(reason string) {
 	switch reason {
 	case "tool_calls", "function_call":
+		// sawToolCall is deliberately NOT set here: it must reflect actual
+		// relayed tool fragments (accumulateAnthropicChunk), not the terminal
+		// chunk's claim — an end_turn-only stream whose finish_reason is
+		// "tool_calls" must still finalize as "end_turn".
 		st.finishReason = "tool_use"
-		st.sawToolCall = true
 	case "stop", "":
 		st.finishReason = "end_turn"
 	case "length":
@@ -1215,10 +1235,12 @@ func stringValue(v any) string {
 // --- non-streaming translation ---
 
 // relayAnthropicJSON drains the upstream stream and writes one Anthropic
-// message object. On any decode/stream error a 502 is returned.
-func (s *Server) relayAnthropicJSON(ctx context.Context, w http.ResponseWriter, r io.Reader, stats *relayStats, chatStart time.Time, requestedModel string) {
+// message object. On any decode/stream error a 502 is returned with an
+// Anthropic error envelope — this path serves only /v1/messages, so the
+// OpenAI-shaped body writeJSONError produces is never correct here.
+func (s *Server) relayAnthropicJSON(ctx context.Context, w http.ResponseWriter, r *http.Request, up io.Reader, stats *relayStats, chatStart time.Time, requestedModel string) {
 	acc := convert.NewAccumulator()
-	scanner := bufio.NewScanner(r)
+	scanner := bufio.NewScanner(up)
 	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
 	first := true
 	for scanner.Scan() {
@@ -1230,30 +1252,30 @@ func (s *Server) relayAnthropicJSON(ctx context.Context, w http.ResponseWriter, 
 			phasetiming.FromContext(ctx).Since(phasetiming.UpstreamTTFBMS, chatStart)
 		}
 		if err := acc.Add(scanner.Bytes()); err != nil {
-			s.writeJSONError(w, http.StatusBadGateway,
-				"failed to decode upstream stream: "+err.Error(), "upstream_error", "upstream_unavailable", 0)
+			s.writeAnthropicError(w, r, http.StatusBadGateway,
+				"failed to decode upstream stream: "+err.Error(), "upstream_error", 0)
 			return
 		}
 		stats.chunks++
 	}
 	if err := scanner.Err(); err != nil {
 		if ctx.Err() == nil {
-			s.writeJSONError(w, http.StatusBadGateway,
-				"upstream stream error: "+err.Error(), "upstream_error", "upstream_unavailable", 0)
+			s.writeAnthropicError(w, r, http.StatusBadGateway,
+				"upstream stream error: "+err.Error(), "upstream_error", 0)
 		}
 		return
 	}
 	var completion map[string]any
 	if err := json.Unmarshal(acc.Finish(), &completion); err != nil {
-		s.writeJSONError(w, http.StatusBadGateway,
-			"failed to decode upstream stream: "+err.Error(), "upstream_error", "upstream_unavailable", 0)
+		s.writeAnthropicError(w, r, http.StatusBadGateway,
+			"failed to decode upstream stream: "+err.Error(), "upstream_error", 0)
 		return
 	}
 	msgObj := anthropicMessageFromCompletion(completion, requestedModel)
 	out, err := json.Marshal(msgObj)
 	if err != nil {
-		s.writeJSONError(w, http.StatusBadGateway,
-			"failed to build response: "+err.Error(), "upstream_error", "upstream_unavailable", 0)
+		s.writeAnthropicError(w, r, http.StatusBadGateway,
+			"failed to build response: "+err.Error(), "upstream_error", 0)
 		return
 	}
 	if s.reasoningCache != nil {
