@@ -485,10 +485,13 @@ func TestBridgeAcquireSyncsAdmittedModel(t *testing.T) {
 	}
 	defer p.LeaseRelease(lease)
 
-	if lease.Model != modelB {
-		t.Errorf("lease.Model = %q, want coerced model %q", lease.Model, modelB)
+	// Bridge mode uses the REQUESTED model, not the upstream's coerced model.
+	// The upstream may pin sessions to one model regardless of request —
+	// the proxy tracks what the client asked for.
+	if lease.Model != modelA {
+		t.Errorf("lease.Model = %q, want requested model %q", lease.Model, modelA)
 	}
-	wantAgent := agentB
+	wantAgent := agentA
 	if lease.AgentID != wantAgent {
 		t.Errorf("lease.AgentID = %q, want %q", lease.AgentID, wantAgent)
 	}

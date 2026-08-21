@@ -505,6 +505,11 @@ func (s *Server) ingestStreamReasoning(model string, reasoningParts, contentPart
 // response; a partial one would be worse than none).
 func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Reader, stats *relayStats, chatStart time.Time) {
 	acc := convert.NewAccumulator()
+	// Override the upstream model in the response with the served model
+	// (which is the requested model, not necessarily what upstream returned).
+	if stats.servedModel != "" {
+		acc.SetRequestedModel(stats.servedModel)
+	}
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
 	first := true

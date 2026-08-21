@@ -246,7 +246,11 @@ sessionReady:
 	ss := entry.session.Snapshot()
 	effectiveModel := model
 	effectiveAgentID := agentID
-	if ss.Model != "" && ss.Model != model {
+	// Only adopt the upstream's model when it matches the cached model
+	// (which may differ from the requested model after a model switch).
+	// Never adopt an upstream model that differs from what was requested —
+	// the upstream may pin sessions to one model regardless of request.
+	if ss.Model != "" && ss.Model == entry.lastModel && ss.Model != model {
 		effectiveModel = ss.Model
 		if p.reg != nil {
 			if resolvedAgent, aerr := p.reg.AgentForModel(effectiveModel); aerr == nil {

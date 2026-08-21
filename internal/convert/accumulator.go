@@ -34,6 +34,7 @@ type Accumulator struct {
 	id                string
 	created           int64
 	model             string
+	requestedModel    string // when set, overrides upstream model in Finish()
 	contentParts      []string
 	reasoningParts    []string
 	finishReason      string
@@ -50,6 +51,13 @@ func NewAccumulator() *Accumulator {
 		created:   time.Now().Unix(),
 		toolCalls: make(map[int]*toolCall),
 	}
+}
+
+// SetRequestedModel overrides the model field in the final response.
+// Use when the upstream returns a different model than what was requested
+// (e.g. upstream pins to MIMO but client asked for DeepSeek).
+func (a *Accumulator) SetRequestedModel(model string) {
+	a.requestedModel = model
 }
 
 // Add parses one SSE data line (with or without "data: " prefix; [DONE] and
@@ -227,6 +235,10 @@ func (a *Accumulator) Finish() []byte {
 			"finish_reason": finish,
 		}},
 		"usage": usage,
+	}
+	// Override model when client requested a different one than upstream served.
+	if a.requestedModel != "" {
+		resp["model"] = a.requestedModel
 	}
 	if a.systemFingerprint != "" {
 		resp["system_fingerprint"] = a.systemFingerprint
