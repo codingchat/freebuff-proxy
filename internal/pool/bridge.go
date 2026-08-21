@@ -40,6 +40,12 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		return nil, err
 	}
 
+	// Administrative lock: skip entries locked by the dashboard (#187).
+	// In-flight leases are unaffected (they were acquired before the lock).
+	if entry.locked.Load() {
+		return nil, fmt.Errorf("bridge token %s is locked by administrator", tokenKey(clientToken))
+	}
+
 	// B5: Global bridge daily limit check — before per-entry check, reject
 	// if the total across ALL bridge entries exceeds BRIDGE_DAILY_LIMIT.
 	if cfg.BridgeDailyLimit > 0 {

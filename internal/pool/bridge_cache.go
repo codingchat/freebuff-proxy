@@ -24,7 +24,7 @@ const maxBridgeEntries = 32
 
 // bridgeIdleEvict is how long a bridge entry may sit unused before the
 // maintain loop FINISHes its runs and drops it from the cache.
-const bridgeIdleEvict = 2 * time.Hour
+const bridgeIdleEvict = 24 * time.Hour // 24h sliding TTL (#187)
 
 // tokenKey returns a 32-char hex string derived from the SHA-256 hash of the
 // raw client token. Bridge map keys use this non-reversible form so raw tokens
@@ -252,6 +252,74 @@ func bridgeTokenLabel(entry *bridgeEntry) string {
 		return "bridge"
 	}
 	return "token-" + entry.client.TokenKey()[:8]
+}
+
+// BridgeSnapshot returns a snapshot of all active bridge entries for the
+// dashboard. The snapshot is taken under bridgeMu but returned for external
+// reads (#187).
+func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
+	p.bridgeMu.Lock()
+	type keyEntry struct {
+		key   string
+		entry *bridgeEntry
+	}
+	entries := make([]keyEntry, 0, len(p.bridge))
+	for k, e := range p.bridge {
+		entries = append(entries, keyEntry{key: k, entry: e})
+	}
+	p.bridgeMu.Unlock()
+
+	snaps := make([]BridgeTokenSnapshot, 0, len(entries))
+	for _, ke := range entries {
+		e := ke.entry
+		eRuns := e.runs.Snapshot()
+		var cooldownUntil time.Time
+		if eRuns.CooldownUntil.After(time.Now()) {
+			cooldownUntil = eRuns.CooldownUntil
+		}
+		// Build quota map from session snapshot.
+		var quotaByModel map[string]session.QuotaSnapshot
+		if sess := e.session.Snapshot(); sess.QuotaByModel != nil {
+			quotaByModel = make(map[string]session.QuotaSnapshot)
+			for model, rl := range sess.QuotaByModel {
+				quotaByModel[model] = session.QuotaSnapshot{
+					Model:       rl.Model,
+					Limit:       rl.Limit,
+					RecentCount: rl.RecentCount,
+					Period:      rl.Period,
+					ResetAt:     rl.ResetAt,
+				}
+			}
+		}
+		sess := e.session.Snapshot()
+		var model string
+		if sess.Model != "" {
+			model = sess.Model
+		}
+		spend := ledgerView(e.spend)
+		spendLimit := p.cfg.Load().MaxSpendPerDay
+		spendPct := 0
+		if spendLimit > 0 {
+			spendPct = int((spend.Day * 100) / spendLimit)
+			if spendPct > 100 {
+				spendPct = 100
+			}
+		}
+		snaps = append(snaps, BridgeTokenSnapshot{
+			Key:           ke.key,
+			LastUsed:      e.lastUsed,
+			ActiveRuns:    eRuns.ActiveRuns,
+			Requests:      eRuns.Requests,
+			Locked:        e.locked.Load(),
+			CooldownUntil: cooldownUntil,
+			SessionActive: sess.Status == "active",
+			Model:         model,
+			QuotaByModel:  quotaByModel,
+			SpendDay:      float64(spend.Day),
+			SpendPct:      spendPct,
+		})
+	}
+	return snaps
 }
 
 // bridgeSessionPollTick polls the bridge cache's active sessions on the same

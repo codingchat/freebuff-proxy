@@ -421,3 +421,41 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 		s.dash.RenderConfigResult(w, r, false, "Mode must be 'bridge' or 'pooled'.")
 	}
 }
+
+// handleBridgeTokenLock locks a bridge token by its key hash (#187).
+func (s *Server) handleBridgeTokenLock(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if key == "" {
+		http.Error(w, "missing key", http.StatusBadRequest)
+		return
+	}
+	if err := s.pool.LockBridgeEntry(key); err != nil {
+		s.dash.RenderConfigResult(w, r, false, "Lock failed: "+err.Error())
+		return
+	}
+	s.logger.Info("bridge token locked", "key", key)
+	s.dash.RenderConfigResult(w, r, true, "Bridge token "+shortKey(key)+" locked.")
+}
+
+// handleBridgeTokenUnlock clears the admin lock on a bridge token (#187).
+func (s *Server) handleBridgeTokenUnlock(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if key == "" {
+		http.Error(w, "missing key", http.StatusBadRequest)
+		return
+	}
+	if err := s.pool.UnlockBridgeEntry(key); err != nil {
+		s.dash.RenderConfigResult(w, r, false, "Unlock failed: "+err.Error())
+		return
+	}
+	s.logger.Info("bridge token unlocked", "key", key)
+	s.dash.RenderConfigResult(w, r, true, "Bridge token "+shortKey(key)+" unlocked.")
+}
+
+// shortKey returns the first 8 chars of a bridge key hash for display.
+func shortKey(key string) string {
+	if len(key) > 8 {
+		return key[:8] + "…"
+	}
+	return key
+}

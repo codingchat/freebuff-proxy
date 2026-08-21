@@ -218,12 +218,13 @@ func sparklineSVG(values []float64, color, label string) string {
 // --- tokens ---
 
 type tokensData struct {
-	Mode         string        `json:"mode"`
-	InBridge     bool          `json:"in_bridge"`
-	BridgeTokens int           `json:"bridge_tokens"`
-	TokenCount   int           `json:"token_count"`
-	Tokens       []tokenDetail `json:"tokens"`
-	HasTokens    bool          `json:"has_tokens"`
+	Mode             string            `json:"mode"`
+	InBridge         bool              `json:"in_bridge"`
+	BridgeTokens     int               `json:"bridge_tokens"`
+	BridgeTokenCards []bridgeTokenCard `json:"bridge_token_cards,omitempty"`
+	TokenCount       int               `json:"token_count"`
+	Tokens           []tokenDetail     `json:"tokens"`
+	HasTokens        bool              `json:"has_tokens"`
 }
 
 type tokenDetail struct {
@@ -342,6 +343,12 @@ func (d *Dashboard) tokensData() tokensData {
 		td.Tokens = append(td.Tokens, detail)
 	}
 	td.HasTokens = len(td.Tokens) > 0
+	// Bridge token cards (#187): live snapshots of bridge-mode entries.
+	if td.InBridge {
+		for _, snap := range d.pool.BridgeSnapshot() {
+			td.BridgeTokenCards = append(td.BridgeTokenCards, bridgeCardFromSnapshot(snap))
+		}
+	}
 	return td
 }
 
@@ -536,6 +543,14 @@ func shortID(id string) string {
 	return id
 }
 
+// shortKey returns the first 8 chars of a bridge key hash for display (#187).
+func shortKey(key string) string {
+	if len(key) > 8 {
+		return key[:8] + "…"
+	}
+	return key
+}
+
 func formatQuota(v float64) string {
 	if v == float64(int64(v)) {
 		return strconv.FormatInt(int64(v), 10)
@@ -583,19 +598,20 @@ func humanDuration(d time.Duration) string {
 // --- overview ---
 
 type overviewData struct {
-	Mode                 string      `json:"mode"`
-	InBridge             bool        `json:"in_bridge"`
-	BridgeTokens         int         `json:"bridge_tokens"`
-	Models               []string    `json:"models"`
-	ModelCount           int         `json:"model_count"`
-	Uptime               string      `json:"uptime"`
-	SafeMode             bool        `json:"safe_mode"`
-	MaxMessagesPerDay    int         `json:"max_messages_per_day"`
-	TransientRetries     int64       `json:"transient_retries"`
-	FingerprintRotations int64       `json:"fingerprint_rotations"`
-	Tokens               []tokenCard `json:"tokens"`
-	HasTokens            bool        `json:"has_tokens"`
-	IsDefaultAdminToken  bool        `json:"is_default_admin_token"`
+	Mode                 string            `json:"mode"`
+	InBridge             bool              `json:"in_bridge"`
+	BridgeTokens         int               `json:"bridge_tokens"`
+	BridgeTokenCards     []bridgeTokenCard `json:"bridge_token_cards,omitempty"`
+	Models               []string          `json:"models"`
+	ModelCount           int               `json:"model_count"`
+	Uptime               string            `json:"uptime"`
+	SafeMode             bool              `json:"safe_mode"`
+	MaxMessagesPerDay    int               `json:"max_messages_per_day"`
+	TransientRetries     int64             `json:"transient_retries"`
+	FingerprintRotations int64             `json:"fingerprint_rotations"`
+	Tokens               []tokenCard       `json:"tokens"`
+	HasTokens            bool              `json:"has_tokens"`
+	IsDefaultAdminToken  bool              `json:"is_default_admin_token"`
 }
 
 type tokenCard struct {
@@ -618,6 +634,41 @@ type tokenCard struct {
 	StandingScore       float64 `json:"standing_score"`
 	StandingNextLevel   string  `json:"standing_next_level"`
 	StandingNextLevelAt string  `json:"standing_next_level_at"`
+}
+
+// bridgeTokenCard is a dashboard-ready view of one bridge entry (#187).
+type bridgeTokenCard struct {
+	Key           string  `json:"key"`    // masked hash prefix
+	Status        string  `json:"status"` // active|cooldown|locked
+	Model         string  `json:"model"`
+	ActiveRuns    int     `json:"active_runs"`
+	Requests      int     `json:"requests"`
+	Locked        bool    `json:"locked"`
+	CooldownUntil string  `json:"cooldown_until"`
+	SessionActive bool    `json:"session_active"`
+	SpendDay      float64 `json:"spend_day"`
+	SpendPct      int     `json:"spend_pct"`
+}
+
+func bridgeCardFromSnapshot(snap pool.BridgeTokenSnapshot) bridgeTokenCard {
+	status := "active"
+	if snap.Locked {
+		status = "locked"
+	} else if snap.CooldownUntil.After(time.Now()) {
+		status = "cooldown"
+	}
+	return bridgeTokenCard{
+		Key:           shortKey(snap.Key),
+		Status:        status,
+		Model:         snap.Model,
+		ActiveRuns:    snap.ActiveRuns,
+		Requests:      snap.Requests,
+		Locked:        snap.Locked,
+		CooldownUntil: shortTime(snap.CooldownUntil),
+		SessionActive: snap.SessionActive,
+		SpendDay:      snap.SpendDay,
+		SpendPct:      snap.SpendPct,
+	}
 }
 
 type configData struct {
@@ -722,6 +773,12 @@ func (d *Dashboard) overviewData() overviewData {
 	}
 	for _, t := range ps.Tokens {
 		od.Tokens = append(od.Tokens, cardFromSnapshot(t))
+	}
+	// Bridge token cards (#187): live snapshots of bridge-mode entries.
+	if od.InBridge {
+		for _, snap := range d.pool.BridgeSnapshot() {
+			od.BridgeTokenCards = append(od.BridgeTokenCards, bridgeCardFromSnapshot(snap))
+		}
 	}
 	return od
 }

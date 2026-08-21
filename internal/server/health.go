@@ -70,6 +70,25 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		}
 		tokens = append(tokens, tok)
 	}
+	// Bridge token snapshots (#187): per-entry data when in bridge mode.
+	bridgeSnaps := s.pool.BridgeSnapshot()
+	bridgeEntries := make([]map[string]any, 0, len(bridgeSnaps))
+	for _, bs := range bridgeSnaps {
+		entry := map[string]any{
+			"key":            bs.Key[:min(8, len(bs.Key))] + "…",
+			"locked":         bs.Locked,
+			"session_active": bs.SessionActive,
+			"active_runs":    bs.ActiveRuns,
+			"requests":       bs.Requests,
+			"model":          bs.Model,
+			"spend_day":      bs.SpendDay,
+			"spend_pct":      bs.SpendPct,
+		}
+		if bs.CooldownUntil.After(time.Now()) {
+			entry["cooldown_until"] = bs.CooldownUntil
+		}
+		bridgeEntries = append(bridgeEntries, entry)
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":         "ok",
 		"mode":           cfg.EffectiveMode(),
@@ -77,6 +96,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		"models":         s.servedModelCount(),
 		"tokens":         tokens,
 		"bridge_tokens":  s.pool.BridgeCount(),
+		"bridge_entries": bridgeEntries,
 	})
 }
 

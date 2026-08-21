@@ -176,3 +176,29 @@ func (p *Pool) UnlockLockToken(token int) error {
 	(*toks)[token].locked.Store(false)
 	return nil
 }
+
+// LockBridgeEntry administratively excludes a bridge entry from
+// AcquireBridge. key is the SHA-256 hash prefix (tokenKey) (#187).
+func (p *Pool) LockBridgeEntry(key string) error {
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+	e, ok := p.bridge[key]
+	if !ok {
+		return fmt.Errorf("pool: bridge entry %s not found", key)
+	}
+	e.locked.Store(true)
+	return nil
+}
+
+// UnlockBridgeEntry clears the administrative lock on a bridge entry so
+// AcquireBridge can use it again (#187).
+func (p *Pool) UnlockBridgeEntry(key string) error {
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+	e, ok := p.bridge[key]
+	if !ok {
+		return fmt.Errorf("pool: bridge entry %s not found", key)
+	}
+	e.locked.Store(false)
+	return nil
+}

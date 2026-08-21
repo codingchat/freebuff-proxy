@@ -493,3 +493,139 @@ func TestBridgeAcquireSyncsAdmittedModel(t *testing.T) {
 		t.Errorf("lease.AgentID = %q, want %q", lease.AgentID, wantAgent)
 	}
 }
+
+// TestBridgeTokenLocking verifies that LockBridgeEntry prevents AcquireBridge
+// and UnlockBridgeEntry restores access (#187).
+func TestBridgeTokenLocking(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	token := "bridge-lock-test-token"
+	key := tokenKey(token)
+
+	// Acquire once to populate the cache.
+	lease, err := p.AcquireBridge(context.Background(), token, modelA)
+	if err != nil {
+		t.Fatalf("initial AcquireBridge failed: %v", err)
+	}
+	p.LeaseRelease(lease)
+
+	// Lock the entry.
+	if err := p.LockBridgeEntry(key); err != nil {
+		t.Fatalf("LockBridgeEntry failed: %v", err)
+	}
+
+	// AcquireBridge must now fail.
+	_, err = p.AcquireBridge(context.Background(), token, modelA)
+	if err == nil {
+		t.Fatal("AcquireBridge succeeded on locked entry, want error")
+	}
+
+	// Unlock the entry.
+	if err := p.UnlockBridgeEntry(key); err != nil {
+		t.Fatalf("UnlockBridgeEntry failed: %v", err)
+	}
+
+	// AcquireBridge must succeed again.
+	lease, err = p.AcquireBridge(context.Background(), token, modelA)
+	if err != nil {
+		t.Fatalf("AcquireBridge after unlock failed: %v", err)
+	}
+	p.LeaseRelease(lease)
+}
+
+// TestBridgeLockNotFound verifies LockBridgeEntry/UnlockBridgeEntry return
+// errors for nonexistent keys (#187).
+func TestBridgeLockNotFound(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	fakeKey := "00000000000000000000000000000000" // 32 hex chars
+	if err := p.LockBridgeEntry(fakeKey); err == nil {
+		t.Fatal("LockBridgeEntry succeeded on nonexistent key, want error")
+	}
+	if err := p.UnlockBridgeEntry(fakeKey); err == nil {
+		t.Fatal("UnlockBridgeEntry succeeded on nonexistent key, want error")
+	}
+}
+
+// TestBridgeSlidingTTL verifies the 24h idle eviction window: entries idle
+// less than bridgeIdleEvict are kept; entries idle longer are evicted (#187).
+func TestBridgeSlidingTTL(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	// Acquire to create an entry.
+	lease, err := p.AcquireBridge(context.Background(), "ttl-token", modelA)
+	if err != nil {
+		t.Fatalf("AcquireBridge failed: %v", err)
+	}
+	p.LeaseRelease(lease)
+
+	if p.bridgeLen() != 1 {
+		t.Fatalf("bridgeLen = %d, want 1", p.bridgeLen())
+	}
+
+	// Manipulate lastUsed to simulate an old entry (just past 24h).
+	key := tokenKey("ttl-token")
+	entry := p.bridgeToken("ttl-token")
+	entry.lastUsed = time.Now().Add(-bridgeIdleEvict - time.Minute)
+
+	// Run the idle-eviction maintain pass (idle=true only runs sweep).
+	p.bridgeMaintain(context.Background(), true)
+
+	if p.bridgeLen() != 0 {
+		t.Errorf("bridgeLen = %d after idle eviction, want 0", p.bridgeLen())
+	}
+	_ = key // used above for clarity
+}
+
+// TestBridgeSnapshot verifies BridgeSnapshot returns correct per-entry data
+// for the dashboard (#187).
+func TestBridgeSnapshot(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	token := "snapshot-token"
+	lease, err := p.AcquireBridge(context.Background(), token, modelA)
+	if err != nil {
+		t.Fatalf("AcquireBridge failed: %v", err)
+	}
+	p.LeaseRelease(lease)
+
+	snaps := p.BridgeSnapshot()
+	if len(snaps) != 1 {
+		t.Fatalf("BridgeSnapshot len = %d, want 1", len(snaps))
+	}
+	snap := snaps[0]
+	if snap.Key == "" {
+		t.Error("BridgeSnapshot Key is empty")
+	}
+	if snap.LastUsed.IsZero() {
+		t.Error("BridgeSnapshot LastUsed is zero")
+	}
+	if snap.ActiveRuns != 1 {
+		// ActiveRuns counts the just-released run until FINISH drains it.
+		t.Logf("BridgeSnapshot ActiveRuns = %d (run pending FINISH, acceptable)", snap.ActiveRuns)
+	}
+	if snap.Locked {
+		t.Error("BridgeSnapshot Locked = true, want false (new entry)")
+	}
+
+	// Lock and verify snapshot reflects it.
+	key := tokenKey(token)
+	if err := p.LockBridgeEntry(key); err != nil {
+		t.Fatalf("LockBridgeEntry failed: %v", err)
+	}
+	snaps = p.BridgeSnapshot()
+	if len(snaps) != 1 {
+		t.Fatalf("BridgeSnapshot len after lock = %d, want 1", len(snaps))
+	}
+	if !snaps[0].Locked {
+		t.Error("BridgeSnapshot Locked = false after LockBridgeEntry, want true")
+	}
+}
