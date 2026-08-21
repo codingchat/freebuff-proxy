@@ -24,12 +24,17 @@ jobs:
 
       - name: Build
         run: go build ./...
-
       - name: Vet
         run: go vet ./...
 
+      - name: Build (all-in-one)
+        run: go build -tags dashboard ./...
+
 
       - name: Test (race detector)
+        env:
+          AUTH_TOKENS: ""
+          ADMIN_TOKEN: ""
         run: go test -race -timeout 10m ./...
 
       - name: Verify modules
