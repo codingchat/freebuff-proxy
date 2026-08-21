@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -250,6 +251,7 @@ sessionReady:
 	// When the upstream pins a session to a different model (e.g. MIMO),
 	// reject the request instead of silently serving a different model.
 	if ss.Model != "" && ss.Model != model {
+		slog.Warn("bridge: model mismatch rejected", "requested", model, "upstream", ss.Model, "instance_id", ss.InstanceID)
 		return nil, fmt.Errorf("bridge: upstream serves %s, not %s — model not available on this token", ss.Model, model)
 	}
 	if p.reg != nil {
