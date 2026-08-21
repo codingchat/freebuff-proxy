@@ -40,7 +40,7 @@ func TestAnthropicClaudeCodeStreamingSequence(t *testing.T) {
 	ts, _ := newTestServerCfg(t, []string{"anthropic-test-key"}, nil, mock)
 
 	reqBody := `{
-		"model": "z-ai/glm-5.2",
+		"model": "deepseek/deepseek-v4-flash",
 		"messages": [
 			{"role": "user", "content": "List files in directory"}
 		],
@@ -179,7 +179,7 @@ func TestAnthropicNonStreamingMessage(t *testing.T) {
 	ts, _ := newTestServer(t, nil, mock)
 
 	reqBody := `{
-		"model": "z-ai/glm-5.2",
+		"model": "deepseek/deepseek-v4-flash",
 		"messages": [{"role": "user", "content": "Read foo.go"}],
 		"stream": false
 	}`
@@ -255,8 +255,7 @@ func TestOpenAIMultiTurnSchemaCompliance(t *testing.T) {
 	ts, _ := newTestServer(t, nil, mock)
 
 	reqBody := `{
-		"model": "z-ai/glm-5.2",
-		"messages": [{"role": "user", "content": "Hi"}],
+		"model": "deepseek/deepseek-v4-flash",
 		"functions": [{"name": "get_weather", "parameters": {"type": "object", "properties": {"loc": {"type": "string"}}}}],
 		"function_call": "auto"
 	}`
@@ -336,7 +335,7 @@ func TestAnthropicErrorEnvelopeStructure(t *testing.T) {
 	ts, _ := newTestServer(t, nil, mock)
 
 	// Empty messages array -> 400 with Anthropic error envelope
-	reqBody := `{"model": "z-ai/glm-5.2", "messages": []}`
+	reqBody := `{"model": "deepseek/deepseek-v4-flash", "messages": []}`
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -389,7 +388,7 @@ func TestBridgeModeAnthropicAndOpenAI(t *testing.T) {
 	ts, _ := newBridgeTestServer(t, mock)
 
 	// 1. Anthropic endpoint with anthropic-api-key
-	req1, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(`{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
+	req1, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(`{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}`))
 	req1.Header.Set("Content-Type", "application/json")
 	req1.Header.Set("anthropic-api-key", "token-anthropic-key")
 	resp1, err := http.DefaultClient.Do(req1)
@@ -403,7 +402,7 @@ func TestBridgeModeAnthropicAndOpenAI(t *testing.T) {
 	}
 
 	// 2. Anthropic endpoint with x-api-key
-	req2, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(`{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
+	req2, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(`{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}`))
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("x-api-key", "token-x-key")
 	resp2, err := http.DefaultClient.Do(req2)
@@ -417,7 +416,7 @@ func TestBridgeModeAnthropicAndOpenAI(t *testing.T) {
 	}
 
 	// 3. OpenAI endpoint with Authorization: Bearer
-	req3, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(`{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
+	req3, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(`{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}`))
 	req3.Header.Set("Content-Type", "application/json")
 	req3.Header.Set("Authorization", "Bearer token-bearer-key")
 	resp3, err := http.DefaultClient.Do(req3)
@@ -431,7 +430,7 @@ func TestBridgeModeAnthropicAndOpenAI(t *testing.T) {
 	}
 
 	// 4. Missing token -> 401
-	req4, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(`{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
+	req4, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(`{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}`))
 	req4.Header.Set("Content-Type", "application/json")
 	resp4, err := http.DefaultClient.Do(req4)
 	if err != nil {
@@ -494,7 +493,7 @@ func TestAnthropicStreamEndTurnOnlyStopReason(t *testing.T) {
 	}
 	ts, _ := newTestServer(t, nil, mock)
 
-	reqBody := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	reqBody := `{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(reqBody))
 	if err != nil {
 		t.Fatal(err)
@@ -555,7 +554,7 @@ func TestAnthropicStreamThinkingClosedBeforeToolUse(t *testing.T) {
 	}
 	ts, _ := newTestServer(t, nil, mock)
 
-	reqBody := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true,"thinking":{"type":"enabled","budget_tokens":1024}}`
+	reqBody := `{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":true,"thinking":{"type":"enabled","budget_tokens":1024}}`
 	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(reqBody))
 	if err != nil {
 		t.Fatal(err)
@@ -643,7 +642,7 @@ func TestAnthropicStreamReasoningAfterTextReopensThinking(t *testing.T) {
 	}
 	ts, _ := newTestServer(t, nil, mock)
 
-	reqBody := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	reqBody := `{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/messages", strings.NewReader(reqBody))
 	if err != nil {
 		t.Fatal(err)
@@ -732,7 +731,7 @@ func TestAnthropicMessagesRateLimitErrorEnvelope(t *testing.T) {
 		c.RateLimitBurst = 2
 	}, mock)
 
-	body := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	body := `{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	for i := range 2 {
 		resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/messages", []byte(body), nil)
 		if resp.StatusCode != http.StatusOK {
@@ -777,7 +776,7 @@ func TestAnthropicMessagesDecodeErrorEnvelope(t *testing.T) {
 	mock.ChatBody = "data: {not-json}\n\ndata: [DONE]\n\n"
 	ts, _ := newTestServer(t, nil, mock)
 
-	body := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	body := `{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}`
 	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/messages", []byte(body), nil)
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502: %s", resp.StatusCode, truncate(string(data), 300))

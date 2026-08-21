@@ -458,6 +458,9 @@ func TestQuotaFallbackModels(t *testing.T) {
 		if got := cfg.QuotaFallbackModels["deepseek/deepseek-v4-flash"]; got != "mimo/mimo-v2.5" {
 			t.Errorf("QuotaFallbackModels[flash] = %q, want mimo/mimo-v2.5", got)
 		}
+		if got := cfg.QuotaFallbackModels["z-ai/glm-5.2"]; got != "deepseek/deepseek-v4-flash" {
+			t.Errorf("QuotaFallbackModels[glm-5.2] = %q, want deepseek/deepseek-v4-flash", got)
+		}
 	})
 	t.Run("env override", func(t *testing.T) {
 		clearEnv(t)

@@ -15,7 +15,7 @@ import (
 	"freebuff-proxy/internal/testutil"
 )
 
-const testModelA = "z-ai/glm-5.2"
+const testModelA = "deepseek/deepseek-v4-flash"
 
 func testChunk(id string, created int64, payload string) string {
 	return fmt.Sprintf(`{"id":%q,"object":"chat.completion.chunk","created":%d,"model":%q,%s}`, id, created, testModelA, payload)

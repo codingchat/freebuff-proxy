@@ -6,15 +6,43 @@ import (
 	"freebuff-proxy/internal/upstream"
 )
 
+// ReferralGatedModel is the referral-earned model in the FreeBuff catalog
+// (issue #183, reference freebuff-models.ts:1327-1370). It is NOT part of the
+// daily free session pool and requires explicit referral quota or active promo.
+const ReferralGatedModel = "z-ai/glm-5.2"
+
+// isReferralGatedModel reports whether model is referral-only.
+func isReferralGatedModel(model string) bool {
+	return model == ReferralGatedModel
+}
+
 // quotaRemaining reports the token's session-quota state for model from the
-// last admission (issue #85): known reports whether the quota is known with
+// last admission (issue #85, #183): known reports whether the quota is known with
 // a positive remaining allowance; remaining is the positive delta; capped
-// reports RecentCount >= Limit with a future ResetAt (the token must be
-// skipped this pass — it cannot serve the model right now). Quotas with a
-// past/absent ResetAt are treated as fresh (the window rolled) and never
-// capped.
+// reports RecentCount >= Limit with a future ResetAt, or absence of referral
+// entitlement for referral-gated models (the token must be skipped this pass —
+// it cannot serve the model right now). Quotas with a past/absent ResetAt are
+// treated as fresh (the window rolled) and never capped.
 func quotaRemaining(tok *tokenEntry, model string) (known bool, remaining float64, capped bool) {
-	q, ok := tok.session.Snapshot().QuotaByModel[model]
+	snap := tok.session.Snapshot()
+	if isReferralGatedModel(model) {
+		if !snap.HasGlmEntitlement() {
+			// Token has no referral entitlement for GLM 5.2. Treat as capped
+			// so it is excluded from admission attempts (prevents 403 account_banned).
+			return false, 0, true
+		}
+		if q, ok := snap.QuotaByModel[model]; ok && q.Limit > 0 {
+			resetFuture := !q.ResetAt.IsZero() && q.ResetAt.After(time.Now())
+			if resetFuture && q.RecentCount >= q.Limit {
+				return false, 0, true
+			}
+			if q.RecentCount < q.Limit {
+				return true, q.Limit - q.RecentCount, false
+			}
+		}
+		return true, 1, false
+	}
+	q, ok := snap.QuotaByModel[model]
 	if !ok || q.Limit <= 0 {
 		return false, 0, false
 	}
@@ -31,13 +59,18 @@ func quotaRemaining(tok *tokenEntry, model string) (known bool, remaining float6
 }
 
 // quotaLimitError builds the 429 surfaced when token is excluded for the
-// model's exhausted session quota (issue #85): RetryAfter is the time until
+// model's exhausted session quota (issue #85, #183): RetryAfter is the time until
 // the window reset, mirroring the upstream RateLimitError contract.
 func quotaLimitError(tok *tokenEntry, model string) *upstream.RateLimitError {
-	q := tok.session.Snapshot().QuotaByModel[model]
+	snap := tok.session.Snapshot()
+	q := snap.QuotaByModel[model]
 	retryAfter := time.Duration(0)
 	if !q.ResetAt.IsZero() && q.ResetAt.After(time.Now()) {
 		retryAfter = time.Until(q.ResetAt)
+	}
+	body := "session quota exhausted for model"
+	if isReferralGatedModel(model) && !snap.HasGlmEntitlement() {
+		body = "referral entitlement required for " + model
 	}
 	return &upstream.RateLimitError{
 		Status:      "rate_limited",
@@ -46,7 +79,7 @@ func quotaLimitError(tok *tokenEntry, model string) *upstream.RateLimitError {
 		Limit:       q.Limit,
 		RecentCount: q.RecentCount,
 		ResetAt:     q.ResetAt,
-		Body:        "session quota exhausted for model",
+		Body:        body,
 	}
 }
 

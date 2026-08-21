@@ -262,5 +262,10 @@ func (p *Pool) ProbeToken(ctx context.Context, token int) (*upstream.SessionStat
 	if token < 0 || token >= len(*toks) {
 		return nil, fmt.Errorf("pool: token %d out of range", token)
 	}
-	return (*toks)[token].client.ProbeAccount(ctx)
+	tok := (*toks)[token]
+	st, err := tok.client.ProbeAccount(ctx)
+	if err == nil && st != nil {
+		tok.session.UpdateQuotaFromProbe(st)
+	}
+	return st, err
 }

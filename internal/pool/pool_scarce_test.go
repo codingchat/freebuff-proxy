@@ -19,7 +19,7 @@ import (
 
 // TestQuotaCooldownIsolationAcrossModels pins issue #178 at the pool level:
 // a token whose remembered cooldown is a quota exhaustion for one model is
-// still eligible for a DIFFERENT model — the glm-5.2 daily cap must not
+// still eligible for a DIFFERENT model — the luna daily cap must not
 // block flash on the same token — while the capped model itself keeps
 // surfacing the remembered 429.
 func TestQuotaCooldownIsolationAcrossModels(t *testing.T) {
@@ -28,9 +28,9 @@ func TestQuotaCooldownIsolationAcrossModels(t *testing.T) {
 	p := newTestPool(t, mock)
 
 	// Seed token 1's cooldown exactly as an upstream quota-exhaustion 429
-	// for glm-5.2 lands: quota fields at/over the limit with a future reset.
+	// for gpt-5.6-luna lands: quota fields at/over the limit with a future reset.
 	rle := &upstream.RateLimitError{
-		Model:       "z-ai/glm-5.2",
+		Model:       "openai/gpt-5.6-luna",
 		Status:      "rate_limited",
 		RetryAfter:  time.Hour,
 		Limit:       2,
@@ -42,16 +42,16 @@ func TestQuotaCooldownIsolationAcrossModels(t *testing.T) {
 	p.CooldownTokenRateLimit(0, rle)
 
 	// The capped model itself is refused: the token is cooling down for it.
-	_, err := p.Acquire(context.Background(), "z-ai/glm-5.2")
+	_, err := p.Acquire(context.Background(), "openai/gpt-5.6-luna")
 	var got *upstream.RateLimitError
 	if !errors.As(err, &got) {
-		t.Fatalf("Acquire(z-ai/glm-5.2) on quota-capped token = %v, want 429", err)
+		t.Fatalf("Acquire(openai/gpt-5.6-luna) on quota-capped token = %v, want 429", err)
 	}
 
 	// A different model on the SAME token is not blocked by that cooldown.
 	lease, err := p.Acquire(context.Background(), "deepseek/deepseek-v4-flash")
 	if err != nil {
-		t.Fatalf("Acquire(flash) blocked by glm-5.2 quota cooldown: %v", err)
+		t.Fatalf("Acquire(flash) blocked by luna quota cooldown: %v", err)
 	}
 	if lease == nil {
 		t.Fatal("Acquire(flash) = nil lease")
@@ -60,7 +60,7 @@ func TestQuotaCooldownIsolationAcrossModels(t *testing.T) {
 }
 
 // TestAdmissionQuota429TagsModelAndIsolates pins issue #178 end-to-end: a
-// 429 quota-exhaustion on session CREATE for glm-5.2 whose body omits the
+// 429 quota-exhaustion on session CREATE for luna whose body omits the
 // model field is tagged with the requested model by the admission path,
 // cools the token per-model, and the same token still admits flash after.
 func TestAdmissionQuota429TagsModelAndIsolates(t *testing.T) {
@@ -70,11 +70,12 @@ func TestAdmissionQuota429TagsModelAndIsolates(t *testing.T) {
 	var creates atomic.Int32
 	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && creates.Add(1) == 1 {
-			// First create (glm-5.2): quota-exhausted 429 with NO model
+			// First create (gpt-5.6-luna): quota-exhausted 429 with NO model
 			// field — the proxy must tag the requested model itself.
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(429)
-			_, _ = io.WriteString(w, `{"status":"rate_limited","limit":2,"recentCount":2,"period":"pacific_day","resetAt":"2026-08-25T07:00:00.000Z","retryAfterMs":60000}`)
+			_, _ = io.WriteString(w, `{"status":"rate_limited","limit":2,"recentCount":2,"period":"pacific_day","resetAt":"`+
+				time.Now().Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000Z07:00")+`","retryAfterMs":3600000}`)
 			return
 		}
 		// Subsequent creates (flash) and probes/polls: active.
@@ -83,24 +84,25 @@ func TestAdmissionQuota429TagsModelAndIsolates(t *testing.T) {
 		w.WriteHeader(200)
 		_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-abc-123","expiresAt":"`+expiresAt+`"}`)
 	}
+
 	p := newTestPool(t, mock)
 
-	_, err := p.Acquire(context.Background(), "z-ai/glm-5.2")
+	_, err := p.Acquire(context.Background(), "openai/gpt-5.6-luna")
 	var rle *upstream.RateLimitError
 	if !errors.As(err, &rle) {
-		t.Fatalf("Acquire(z-ai/glm-5.2) = %v, want 429", err)
+		t.Fatalf("Acquire(openai/gpt-5.6-luna) = %v, want 429", err)
 	}
-	if rle.Model != "z-ai/glm-5.2" {
-		t.Errorf("RLE.Model = %q, want %q (tagged from the requested model)", rle.Model, "z-ai/glm-5.2")
+	if rle.Model != "openai/gpt-5.6-luna" {
+		t.Errorf("RLE.Model = %q, want %q (tagged from the requested model)", rle.Model, "openai/gpt-5.6-luna")
 	}
 	if !isQuotaExhaustedError(rle) {
 		t.Errorf("RLE not classified as quota exhaustion: %+v", rle)
 	}
 
-	// The same token now serves flash despite the glm-5.2 quota cooldown.
+	// The same token now serves flash despite the luna quota cooldown.
 	lease, err := p.Acquire(context.Background(), "deepseek/deepseek-v4-flash")
 	if err != nil {
-		t.Fatalf("Acquire(flash) blocked by glm-5.2 quota cooldown: %v", err)
+		t.Fatalf("Acquire(flash) blocked by luna quota cooldown: %v", err)
 	}
 	if lease == nil {
 		t.Fatal("Acquire(flash) = nil lease")

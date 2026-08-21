@@ -24,7 +24,8 @@ import (
 
 // modelA must map to an agent with EXCLUSIVE ownership in the registry
 // fallback map (see internal/registry/registry_test.go expectedFallback).
-const modelA = "z-ai/glm-5.2"
+const modelA = "deepseek/deepseek-v4-flash"
+const modelB = "anthropic/claude-fable-5"
 
 // newTestServer wires the real stack - mock upstream per token, real
 // clients/session managers, fallback registry, pool, and the server - behind
@@ -47,6 +48,10 @@ func newTestServerCfg(t *testing.T, apiKeys []string, mut func(*config.Config), 
 		APIKeys:            apiKeys,
 		LogAccess:          true,
 		DashboardEnabled:   true,
+		QuotaFallbackModels: map[string]string{
+			"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5",
+			"z-ai/glm-5.2":               "deepseek/deepseek-v4-flash",
+		},
 	}
 	if mut != nil {
 		mut(cfg)
@@ -161,6 +166,18 @@ func quotaMock(t *testing.T) *testutil.MockUpstream {
 	mock := testutil.NewMock()
 	t.Cleanup(mock.Close)
 	mock.RateLimitsByModel = map[string]any{
+		modelA: map[string]any{
+			"model":       modelA,
+			"limit":       5,
+			"recentCount": 4,
+			"period":      "pacific_day",
+			"resetAt":     "2026-08-16T07:00:00.000Z",
+			"entitlementBreakdown": map[string]any{
+				"base":     1,
+				"referral": 1,
+				"streak":   3,
+			},
+		},
 		"z-ai/glm-5.2": map[string]any{
 			"model":       "z-ai/glm-5.2",
 			"limit":       5,
