@@ -67,7 +67,20 @@ If you are a beginner, you don't need to write code or compile anything:
 | Keep the pool **draining one key at a time** | **Don't hammer many tokens from one public IP** (`ip_capped`) |
 
 
-**Access Tiers.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all models available. Non-Tier-1 country IPs get `accessTier: "limited"` and all model requests are coerced server-side to `mimo/mimo-v2.5`. VPN/datacenter IPs are flagged via MaxMind/Spur ASN detection (`ipPrivacySignals: ["vpn"]`) and placed in a restricted cohort ($0.50/day ceiling). Workarounds for limited-tier users: route through a Tailscale/WireGuard exit node in a Tier-1 country, or pool 4-5 tokens for ~12-15 sessions/day (3/day base each; the 0.0.150 trust-level ladder can raise a token up to 7/day). Egress is **direct-only** — there is no HTTP/SOCKS proxy support (the upstream transport forces `transport.Proxy = nil`); for VPS/LAN boxes needing residential egress, run a WireGuard/Tailscale tunnel to a residential exit node so the box's own routing exits residential (issue #140 P0). See [Getting Started](docs/getting-started.md) for details.
+**Access Tiers & Upstream Models.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all premium models available (**5 premium sessions/day base**). Non-Tier-1 country IPs get `accessTier: "limited"` where `mimo/mimo-v2.5` (`MiMo 2.5`) is the sole active model.
+
+> **📢 Official Freebuff Upstream Notice**:
+> *"DeepSeek costs have spiked, so limits are tighter for now: V4 Pro and GPT-5.6 Luna are 1 session a day, V4 Pro pauses at peak times, and MiniMax M3 is unavailable. MiMo 2.5 stays unlimited. —Freebuff Team"*
+
+| Category | Model Name | Wire Model ID | Specs & Upstream Quota Policy |
+|---|---|---|---|
+| **Premium** | **DeepSeek V4 Flash 07/31** *(Recommended)* | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`, `NEW`. 5 sessions/day premium pool. |
+| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. **1 session/day limit**. |
+| **Premium** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Deep reasoning**, Reasoning: `high`. **1 session/day limit; pauses at peak times**. |
+| **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers**. |
+| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (+1 session/referral). |
+| **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Temporarily Unavailable** upstream due to server-side cost spikes. |
+
 Full detail in [Key Hygiene & Ban Avoidance](#key-hygiene--ban-avoidance).
 
 For a guided walkthrough, read [Getting Started](docs/getting-started.md) (5 minutes).
@@ -88,7 +101,7 @@ For a guided walkthrough, read [Getting Started](docs/getting-started.md) (5 min
 ## Features
 
 - **OpenAI-Compatible API**: `POST /v1/chat/completions` (stream + non-stream), `POST /v1/responses`, `POST /v1/messages` (Anthropic shape) + `/v1/messages/count_tokens`, `POST /v1/embeddings` (unsupported → `400 unsupported_endpoint`), `GET /v1/models`, `GET /healthz`, Prometheus `GET /metrics`, and hot config reload via `POST /admin/reload`.
-- **Admin Dashboard**: embedded single-binary web UI at `http://<host>:3457/admin`: a modern **Svelte 5 + Tailwind CSS v4** single-page application with self-hosted **Geist** typography. Features a live overview with a 1-click smoke test, runtime token management with an always-visible 2-mode pool controller (`Pooled`, `Bridge`), a real-time SSE Playground with collapsible reasoning inspection, a **Configuration Studio** with 1-click presets and interactive quick knobs, universal client setup cards with 5 extension snippets, in-memory log stream with filtering, and SVG metrics sparklines. Zero external CDN or runtime Node.js dependency.
+- **Admin Dashboard**: embedded single-binary web UI at `http://<host>:3457/admin`: a modern **Svelte 5 + Tailwind CSS v4** single-page application built with self-hosted **IBM Plex Sans & IBM Plex Mono** typography and an "instrument panel" operational design. Features a live overview with 6 KPIs and token risk cards, runtime token pool & quota management with in-browser OAuth device login, served models catalog, hot-reloading `.env` Configuration Studio, in-memory structured log viewer with level filtering, and universal 1-click client setup snippets. Zero external CDN or runtime Node.js dependency.
 - **Dynamic Reasoning Effort**: OpenAI `reasoning_effort` (`low`/`medium`/`high`/`max`) and Codex/Anthropic `reasoning.effort` are normalized and mapped to upstream reasoning engines.
 - **Session & Run Lifecycle**: Upstream session handshakes, model-lock recovery (`DELETE` → re-`POST`), grace draining, and idle-run finishing, all automatic.
 - **Token Pooling & Bridge Mode**: Hot-session-first pooling with round-robin start and failover across `AUTH_TOKENS`, or zero-storage relay when clients bring their own token. See [Key Concepts](#key-concepts).

@@ -46,13 +46,26 @@ Using this proxy conflicts with Codebuff's terms of service. Upstream abuse dete
 
 ---
 
-## Access Tiers & Workarounds
+## Access Tiers, Models & Upstream Quotas
 
 FreeBuff assigns an access tier at the Cloudflare edge based on your TCP source IP's GeoIP location:
 
-- **Full tier** (`accessTier: "full"`): Tier-1 countries (US, UK, DE, JP, CA, AU, etc.) with a residential/ISP ASN. Access to all models including `deepseek/deepseek-v4-flash`. **4 premium sessions/day** (level ladder up to **7**). The CLI holds **one session at a time** — concurrent sessions are a Desktop multi-tab feature, not CLI.
-- **Limited tier** (`accessTier: "limited"`): Non-Tier-1 countries (e.g. `countryCode: ID` → `countryBlockReason: "country_not_allowed"`). All model requests coerced to `mimo/mimo-v2.5`. **3 limited sessions/day** (level ladder up to **7**); MiMo V25 is the only limited-tier model in 0.0.150.
+- **Full tier** (`accessTier: "full"`): Tier-1 countries (US, UK, DE, JP, CA, AU, etc.) with a residential/ISP ASN. Access to all premium models including `deepseek/deepseek-v4-flash`. **5 premium sessions/day base** (resets every 24h / Pacific midnight; streaks and trust ladders can raise this further).
+- **Limited tier** (`accessTier: "limited"`): Non-Tier-1 countries (e.g. `countryCode: ID` → `countryBlockReason: "country_not_allowed"`). All model requests coerced to `mimo/mimo-v2.5` (`MiMo 2.5`). **3 limited sessions/day** (level ladder up to **7**).
 
+### Current Upstream Model Status & Quotas
+
+> **📢 Official Freebuff Upstream Notice**:
+> *"DeepSeek costs have spiked, so limits are tighter for now: V4 Pro and GPT-5.6 Luna are 1 session a day, V4 Pro pauses at peak times, and MiniMax M3 is unavailable. MiMo 2.5 stays unlimited. —Freebuff Team"*
+
+| Category | Model Name | Wire Model ID | Specs & Upstream Quota Policy |
+|---|---|---|---|
+| **Premium** | **DeepSeek V4 Flash 07/31** *(Recommended)* | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`, `NEW`. Uses standard 5 sessions/day premium pool. |
+| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. **Strictly capped at 1 session/day**. |
+| **Premium** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Deep reasoning**, Reasoning: `high`. **Strictly capped at 1 session/day; pauses at peak times**. |
+| **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers** (sole active model on limited tier). |
+| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (+1 session per friend referred; streak bonuses). |
+| **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Temporarily Unavailable** upstream due to server-side cost constraints. |
 ### Workarounds for limited-tier IPs
 
 **Option A — Tailscale / WireGuard exit node (free, best option):**

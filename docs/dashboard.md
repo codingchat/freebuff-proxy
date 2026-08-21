@@ -1,45 +1,82 @@
 # Dashboard Guide
 
-The embedded admin web UI gives you live relay state, per-token quotas, a Configuration Studio with presets and quick knobs, request tracing, live logs, and metrics, in the same single binary. Built with **Svelte 5 + Tailwind CSS v4** and self-hosted **Geist** typography, it is compiled into the binary at build time (`//go:embed all:dist`) with zero runtime Node.js or external CDN dependencies.
+The embedded admin web UI gives you live relay state, per-token quotas, an in-browser `.env` Configuration Studio, model catalog inspection, live logs, and quick client setup snippets in a single binary.
+
+Built with **Svelte 5 + Tailwind CSS v4** and self-hosted **IBM Plex Sans & IBM Plex Mono** typography, it follows an **"instrument panel"** design system: a dense, dark-mode-only operational console with hairline borders, tabular-numeric metrics, and live LED status indicators. It is embedded directly into the Go binary at build time (`//go:embed`) with zero runtime Node.js or external CDN dependencies.
+
+---
 
 ## Access
 
-Open `http://127.0.0.1:3457/admin` (your `LISTEN_ADDR`). You land on the login page unless `ADMIN_TOKEN` is unset.
+Open `http://127.0.0.1:3457/admin` (or your configured `LISTEN_ADDR`). You land on the login page unless `ADMIN_TOKEN` is unset.
 
 | Setting | Behavior |
 |---|---|
-| `ADMIN_TOKEN` set | Login required: `ADMIN_TOKEN` is both the bearer token for `/admin/reload` and the login password. Enter it on the login page; a signed `HttpOnly` + `SameSite=Strict` cookie unlocks the dashboard for 24h (`Secure` is added only when the login arrived over TLS or `X-Forwarded-Proto: https`). Failed logins are rate-limited per IP (5 fails → 1 minute lockout). |
-| `ADMIN_TOKEN` unset | Dashboard is open (legacy behavior, matching `/admin/reload`); a startup warning notes the token is unset, and the in-page badge reminds you to set it when the proxy is reachable beyond loopback. The **sensitive routes additionally require authentication when configured**, protecting secrets, token mutations, and runtime reconfiguration. |
+| `ADMIN_TOKEN` set | **Password required**: `ADMIN_TOKEN` is both the bearer token for `/admin/reload` and the login password. Enter it on the login page; a signed `HttpOnly` + `SameSite=Strict` cookie (`fb_admin`) unlocks the dashboard for 24h (`Secure` is set automatically when connecting over HTTPS). Failed logins are rate-limited per IP (5 failed attempts $\to$ 1-minute lockout). |
+| `ADMIN_TOKEN` unset | **Open mode (local-only safe default)**: When running locally without `ADMIN_TOKEN`, the dashboard is open. When accessed from a non-loopback IP without `ADMIN_TOKEN`, sensitive routes (`/admin/config`, `/admin/logs`) return `403 Forbidden` to prevent remote secret disclosure. |
 
-The session cookie is stateless (HMAC-signed expiry, per-process random key): restarting the proxy signs everyone out, which is the safe default.
+The session cookie is stateless (HMAC-signed expiry with a per-process random key): restarting the proxy automatically signs out active sessions.
 
-## Pages & Capabilities
+---
 
-- **Overview**: Live status header with active mode (`Pooled`, `Bridge`), registered model count, process uptime, and safe mode status badge. Features a 1-click **End-to-End Smoke Test** (sends a real request through the proxy and renders timing breakdown and preview) alongside live token cards detailing session status, risk scores, daily messages vs `MAX_MESSAGES_PER_DAY`, queue position, and transient retries.
-- **Tokens & Quotas**: Comprehensive token pool management featuring:
-  - **Always-Visible 3-Mode Controller**: Toggle seamlessly between `Pooled` and `Bridge` modes.
-  - **Per-Model Quotas Table**: Displays live limits, recent usage, period reset times, and entitlements with color-coded usage bars.
-  - **Runtime Token Actions**: Add Token to Pool form (`cb_...`), **Test** (zero-cost upstream validity probe), **Unlock** (clears cooldown/locks), **Finish runs**, **Remove last token**, and **Test all tokens**.
-  - All token additions and mode switches are automatically persisted to `.env` without requiring a server restart.
-- **Models Registry**: Live catalog of all available models, upstream agent mappings, default model badges (for `deepseek/deepseek-v4-flash`), and configured `MODEL_ALIASES`. Model IDs and aliases include 1-click copy actions.
-- **Live Traces**: In-memory ring buffer (last 200 requests) showing timestamp, chosen token, requested model, status (`ok`, `rate_limited`, `banned`, `upstream`), latency, and error breakdown. Refreshes every 3s.
-- **Model Playground**: Interactive prompt console with real-time **Server-Sent Events (SSE) chat streaming**, model picker, shortcut support (`Ctrl+Enter`), and collapsible thinking/reasoning blocks.
-- **Configuration Studio**: Visual hot-reloading `.env` management studio:
-  - **One-Click Presets**: *🛡️ Stealth Anti-Ban*, *⚡ Maximum Speed (0 Jitter)*, *🐞 Deep Debugging*.
-  - **Interactive Quick Knobs**: 1-click boolean switches (`SAFE_MODE`, `DEBUG_DUMP`), enum pills (`COST_MODE`, `TLS_FINGERPRINT`, `LOG_LEVEL`), and duration chips (`REQUEST_JITTER`, `ROTATION_INTERVAL`, `REQUEST_TIMEOUT`) that synchronize with the `.env` editor in real-time.
-  - **Hover & Click Quick Info Cards**: Explains every parameter, category, and default fallback value.
-  - **Atomic Validation**: Saves are validated against strict schema rules with automatic rollback on error.
-- **Client Setup & Tool Integration**:
-  - **Universal Configuration**: Clickable 1-click copy tiles for Base URL, API Key, and Default Model.
-  - **Tool-Specific Snippets**: Ready-to-use configuration blocks for **OpenCode**, **Continue / Cline**, **aider**, **9router**, and **cURL**.
-  - **OAuth Login Wizard**: Headless token generator (`POST /admin/login/start` → poll `GET /admin/login/status`) with browser auth URL.
-  - **Diagnostics Suite**: One-click system diagnostic check covering configuration, port availability, DNS, TLS, and token health.
-- **In-Memory Logs**: Live circular buffer (last 200 records) mirroring the structured process logger with level filtering (`ALL`, `INFO`, `DEBUG`, `WARN`, `ERROR`), real-time search, and key-value field tags.
-- **Telemetry & Metrics**: Stat cards with SVG trend sparklines for Requests Served, Transient Retries, and Fingerprint Rotations, plus direct link to Prometheus `/metrics`.
+## Pages & Navigation (6 Curated Sections)
+
+The dashboard provides 6 focused operational sections:
+
+### 1. Overview
+- **System Status Line**: Live badge displaying active mode (`Pooled` or `Bridge`), proxy version, process uptime, and request count.
+- **Key Performance Indicators (KPIs)**: 6 tabular-mono counters:
+  - Total Pool Tokens
+  - Active / Busy Tokens
+  - Tokens in Cooldown
+  - Banned Tokens
+  - Requests Served Today
+  - Served Models Count
+- **Token Risk Cards**: Surfaces tokens with active cooldowns, elevated ban risk scores, or rate limits.
+
+### 2. Tokens & Quotas
+- **Token Table**: Lists all managed tokens with masked short IDs (`cb_...`), status badges, instance IDs, active runs, cooldown countdown timers, and per-token actions:
+  - **Test Token**: Zero-cost upstream validity probe.
+  - **Unlock**: Clears cooldown locks and re-admits the token.
+  - **Remove**: Deletes token from the pool.
+- **Add Token Form**: Input form to append new FreeBuff auth tokens (`cb_...`) directly to `.env`.
+- **OAuth Login Wizard**: One-click device-code browser login flow for minting fresh tokens without the CLI.
+- **Per-Model Quota Breakdown**: Expandable rows showing real-time upstream quota limits, recent usage counts, period reset countdowns (Pacific midnight), and entitlement tiers.
+
+### 3. Models Registry
+- Live catalog of all models available on FreeBuff.
+- Upstream agent routing targets (`freebuff/deepseek/deepseek-v4-flash`, `mimo/mimo-v2.5`, `openai/gpt-5.6-luna`, `minimax/minimax-m3`, etc.).
+- Access tier annotations (`Full Tier` vs `Limited Tier`).
+- 1-click model ID copy actions for quick client configuration.
+
+### 4. Configuration Studio
+- **Visual `.env` Editor**: In-browser monospace editor for live configuration changes.
+- **Validation & Safe Save**:
+  - **Validate**: Checks syntax, port availability, and token formats before applying.
+  - **Save & Reload**: Writes `.env` atomically via temp-file rename (mode `0600`) and triggers hot reload (`POST /admin/reload`) without dropping active connections.
+  - **Rollback**: Automatically reverts to the previous valid configuration if validation fails.
+- **Effective Configuration Table**: Read-only breakdown of active in-memory settings with automatic secret redaction (`AUTH_TOKENS`, `ADMIN_TOKEN`, `API_KEYS` masked).
+
+### 5. In-Memory Logs
+- Live circular log ring buffer (last 500 entries) capturing structured slog output.
+- Log level filtering (`ALL`, `INFO`, `DEBUG`, `WARN`, `ERROR`).
+- Real-time substring search and automatic live polling.
+- Horizontal scroll with mono formatting and level indicator dots.
+
+### 6. Setup & Client Integration
+- Mode-aware quick-start cards with one-click copy snippets for major AI harnesses:
+  - **OpenCode** (`opencode.json`)
+  - **Claude Code CLI** (`ANTHROPIC_BASE_URL` & `ANTHROPIC_API_KEY`)
+  - **Cursor / VS Code Continue / Cline** (OpenAI endpoint)
+  - **Pi Coding Agent** (`models.json`)
+  - **9router** (Provider setup)
+  - **cURL** (Instant terminal verification)
+
+---
 
 ## Docker Usage
 
-The config editor writes `./.env` **relative to the proxy's working directory**. Inside Docker, ensure your `.env` is bind-mounted if you want mutations from the dashboard to persist across container restarts.
+The configuration editor writes `./.env` relative to the proxy's working directory. In Docker, bind-mount your `.env` so that edits persist across container restarts:
 
 ```yaml
 services:
@@ -47,15 +84,24 @@ services:
     image: ghcr.io/trefeon/freebuff-proxy:latest
     ports:
       - "3457:3457"
+    environment:
+      - LISTEN_ADDR=:3457
     volumes:
       - ./.env:/app/.env
 ```
 
+---
+
 ## Hardening Recommendations
 
-1. **Set `ADMIN_TOKEN`**: Provide a strong secret token to require password authentication for the web dashboard.
-2. Keep `LISTEN_ADDR` on `127.0.0.1:3457` (loopback) unless deliberately exposing the proxy behind a reverse proxy with TLS termination.
-3. Secret masking: The dashboard masks sensitive values (`AUTH_TOKENS`, `API_KEYS`, `ADMIN_TOKEN`) in the Effective Configuration table.
+1. **Set `ADMIN_TOKEN`**: Always configure a strong password in production or multi-user environments.
+2. **Bind to Loopback**: Keep `LISTEN_ADDR=127.0.0.1:3457` unless placed behind a reverse proxy (e.g., Caddy, Nginx) with HTTPS termination.
+3. **Secret Redaction**: The dashboard strictly masks tokens and credentials in API responses and logs.
 
 ---
-Related: [README](../README.md), [Getting Started](getting-started.md), [Client Integration](client-integration.md), [9router Integration](9router-integration.md).
+
+**Related Documentation**:
+- [README](../README.md)
+- [Getting Started](getting-started.md)
+- [Client Integration](client-integration.md)
+- [Design Specification](../DESIGN.md)

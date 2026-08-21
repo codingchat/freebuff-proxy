@@ -169,9 +169,8 @@ For multi-account management or multi-user API routing:
 
 FreeBuff assigns access tiers at the Cloudflare edge based on TCP source IP GeoIP (not HTTP headers):
 
-- **Full tier** (`accessTier: "full"`): Tier-1 countries (US, UK, DE, JP, CA, etc.) with residential ASN. All models available. **4 premium sessions/day** (level ladder up to 7).
-- **Limited tier** (`accessTier: "limited"`): Non-Tier-1 countries. All model requests coerced to `mimo/mimo-v2.5` server-side. **3 limited sessions/day** (level ladder up to 7).
-
+- **Full tier** (`accessTier: "full"`): Tier-1 countries (US, UK, DE, JP, CA, etc.) with residential ASN. Access to premium models (`DeepSeek V4 Flash 07/31`, `GPT-5.6 Luna`, `DeepSeek V4 Pro`). **5 premium sessions/day base** (resets every 24h). Note: Upstream caps V4 Pro and Luna to 1 session/day, and MiniMax M3 is temporarily unavailable.
+- **Limited tier** (`accessTier: "limited"`): Non-Tier-1 countries. All model requests coerced to `mimo/mimo-v2.5` (`MiMo 2.5`). **MiMo 2.5 stays unlimited across all tiers**.
 Check your tier: the `/healthz` response includes access tier info when the last session admission carried it. The dashboard Overview page also shows it.
 
 See [Getting Started — Access Tiers & Workarounds](getting-started.md#access-tiers--workarounds) for how to reach full tier from a limited-tier location.
