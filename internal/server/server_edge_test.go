@@ -669,7 +669,7 @@ func truncate(s string, n int) string {
 func TestMetricsModelLockedTotal(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	const lockModel = "deepseek/deepseek-v4-flash"
+	lockModel := modelB
 	var mu sync.Mutex
 	bAttempts := 0
 	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
@@ -715,7 +715,7 @@ func TestMetricsModelLockedTotal(t *testing.T) {
 		t.Fatalf("metrics status = %d, want 200: %s", resp.StatusCode, truncate(string(data), 200))
 	}
 	body := string(data)
-	want := `freebuff_proxy_model_locked_total{token="1",from="z-ai/glm-5.2",to="deepseek/deepseek-v4-flash"} 1`
+	want := fmt.Sprintf(`freebuff_proxy_model_locked_total{token="1",from="%s",to="%s"} 1`, modelA, modelB)
 	if !strings.Contains(body, want) {
 		t.Errorf("metrics missing %s in:\n%s", want, body)
 	}

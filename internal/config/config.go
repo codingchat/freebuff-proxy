@@ -129,11 +129,11 @@ type Config struct {
 	FallbackAfter time.Duration
 	// FallbackModels maps a requested model to the model served instead
 	// when the queue wait reaches FallbackAfter (issue #100,
-	// FALLBACK_MODEL=model1=fallback1,model2=fallback2). Defaults (applied
-	// only when FALLBACK_MODEL is unset): the premium free-catalog rows
-	// (deepseek-v4-pro, gpt-5.6-luna, minimax-m3, claude-fable-5,
-	// glm-5.2) → deepseek/deepseek-v4-flash. The proxy path fires only
-	// when the pool surfaces a waiting-room/queue delay ≥ FallbackAfter
+	// only when FALLBACK_MODEL is unset): the daily premium free-catalog rows
+	// (deepseek-v4-pro, gpt-5.6-luna, minimax-m3, claude-fable-5)
+	// → deepseek/deepseek-v4-flash. Referral-gated models (z-ai/glm-5.2) are
+	// held out (issue #183) and gated via QUOTA_FALLBACK_MODELS. The proxy
+	// path fires only when the pool surfaces a waiting-room/queue delay ≥ FallbackAfter
 	// for the requested model (issue #100) — 429 quota exhaustion NEVER
 	// falls back (anti-ban invariant §10). The premium→flash targets
 	// mirror the CLI's getRecommendedFreebuffModelId hero pick; the
@@ -145,8 +145,8 @@ type Config struct {
 	// Default: ["deepseek/deepseek-v4-pro", "openai/gpt-5.6-luna"].
 	ScarceSessionModels []string
 	// QuotaFallbackModels maps a model to its fallback model when its session
-	// quota is exhausted (QUOTA_FALLBACK_MODELS; comma-separated k=v pairs).
-	// Default: {"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5"}.
+	// quota is exhausted or unentitled (QUOTA_FALLBACK_MODELS; comma-separated k=v pairs).
+	// Default: {"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5", "z-ai/glm-5.2": "deepseek/deepseek-v4-flash"}.
 	QuotaFallbackModels map[string]string
 	// AdoptCLISession, when enabled (ADOPT_CLI_SESSION=false default),
 	// makes the proxy behave like the official CLI for a single account:
@@ -377,11 +377,12 @@ var defaultModelAliases = map[string]string{
 }
 
 // defaultFallbackModels returns the FALLBACK_MODEL defaults (issue #100):
-// the premium free-catalog rows fall back to the always-available flash
+// the daily premium free-catalog rows fall back to the always-available flash
 // model once their queue wait passes FALLBACK_AFTER_MS — mirrors the CLI
 // hero pick once the premium daily pool runs out (reference
 // getRecommendedFreebuffModelId); muse targets deepseek-v4-pro per
-// MUSE_SPARK_FALLBACK_MODEL_ID. Trigger is queue-wait ≥ FALLBACK_AFTER_MS
+// MUSE_SPARK_FALLBACK_MODEL_ID. Referral-gated z-ai/glm-5.2 is held out (issue #183)
+// and handled via QUOTA_FALLBACK_MODELS. Trigger is queue-wait ≥ FALLBACK_AFTER_MS
 // only — never 429s.
 func defaultFallbackModels() map[string]string {
 	return map[string]string{
@@ -389,17 +390,18 @@ func defaultFallbackModels() map[string]string {
 		"openai/gpt-5.6-luna":             "deepseek/deepseek-v4-flash",
 		"minimax/minimax-m3":              "deepseek/deepseek-v4-flash",
 		"anthropic/claude-fable-5":        "deepseek/deepseek-v4-flash",
-		"z-ai/glm-5.2":                    "deepseek/deepseek-v4-flash",
 		"meta/muse-spark-1.2-contributor": "deepseek/deepseek-v4-pro",
 	}
 }
 
-// defaultQuotaFallbackModels returns the QUOTA_FALLBACK_MODELS defaults (issue #155):
-// when a model's session quota is exhausted (all 5 premium sessions used for flash),
-// the proxy falls back to the unlimited-session mimo-v2.5 model.
+// defaultQuotaFallbackModels returns the QUOTA_FALLBACK_MODELS defaults (issue #155, #183):
+// when a model's session quota is exhausted (all 5 premium sessions used for flash)
+// or unentitled (referral-only GLM 5.2 on accounts with 0 referral credits),
+// the proxy falls back to an available model (flash for GLM, mimo for flash).
 func defaultQuotaFallbackModels() map[string]string {
 	return map[string]string{
 		"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5",
+		"z-ai/glm-5.2":               "deepseek/deepseek-v4-flash",
 	}
 }
 

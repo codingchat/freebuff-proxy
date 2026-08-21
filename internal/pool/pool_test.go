@@ -22,10 +22,10 @@ import (
 // glm-5.2 and claude-fable-5 are owned by their dedicated one-model agents.
 // Tests pin the offline (fallback) state.
 const (
-	modelA = "z-ai/glm-5.2"
-	modelB = "anthropic/claude-fable-5"
-	agentA = "base2-free-glm"
-	agentB = "base2-free-fable"
+	modelA = "anthropic/claude-fable-5"
+	modelB = "deepseek/deepseek-v4-flash"
+	agentA = "base2-free-fable"
+	agentB = "base2-free-deepseek-flash"
 )
 
 // newTestPool wires one mock upstream per token through real clients and
@@ -45,6 +45,10 @@ func newTestPoolCfg(t *testing.T, mut func(*config.Config), mocks ...*testutil.M
 		SessionCallTimeout: 5 * time.Second,
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    "https://www.codebuff.com",
+		QuotaFallbackModels: map[string]string{
+			"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5",
+			"z-ai/glm-5.2":               "deepseek/deepseek-v4-flash",
+		},
 	}
 	if mut != nil {
 		mut(cfg)

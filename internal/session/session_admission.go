@@ -192,6 +192,41 @@ func (m *Manager) adoptOrCreate(ctx context.Context, requestedModel string) (*up
 // the cooldown per model — a quota cap on z-ai/glm-5.2 must not block
 // deepseek/deepseek-v4-flash on the same token.
 func (m *Manager) createSessionForModel(ctx context.Context, model string) (*upstream.SessionState, error) {
+	if model == "z-ai/glm-5.2" {
+		// Pre-admission guard (issue #183): z-ai/glm-5.2 is referral-only.
+		// If the token has never probed/admitted (or has no known GLM entitlement),
+		// probe first with a zero-cost GET /api/v1/freebuff/session to check
+		// whether the account holds referral quota or an active promo.
+		// If unentitled, fail fast before sending POST /api/sessions/create
+		// with x-freebuff-model: z-ai/glm-5.2 (which upstream punishes with 403 account_banned).
+		if !m.HasGlmEntitlement() {
+			if m.client != nil {
+				if probeState, err := m.client.ProbeAccount(ctx); err == nil && probeState != nil {
+					m.mu.Lock()
+					if probeState.GlmPromo != "" {
+						m.savedGlmPromo = probeState.GlmPromo
+						if m.state != nil {
+							m.state.glmPromo = probeState.GlmPromo
+						}
+					}
+					if len(probeState.RateLimitsByModel) > 0 {
+						m.savedQuota = probeState.RateLimitsByModel
+						if m.state != nil {
+							m.state.quotaByModel = probeState.RateLimitsByModel
+						}
+					}
+					m.mu.Unlock()
+				}
+			}
+			if !m.HasGlmEntitlement() {
+				return nil, &upstream.RateLimitError{
+					Status: "rate_limited",
+					Model:  model,
+					Body:   "token has no referral quota for " + model,
+				}
+			}
+		}
+	}
 	st, err := m.client.CreateSessionForModel(ctx, model)
 	if err != nil {
 		var rle *upstream.RateLimitError

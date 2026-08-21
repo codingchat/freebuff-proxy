@@ -12,6 +12,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -512,12 +513,28 @@ type QuotaSnapshot struct {
 
 // Snapshot returns a best-effort view of the cached session state. All
 // fields may be zero when no session has been created yet. Added for
-// internal/pool snapshotting; no upstream calls are made.
 func (m *Manager) Snapshot() SessionSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.state == nil {
-		return SessionSnapshot{}
+		var quota map[string]QuotaSnapshot
+		if len(m.savedQuota) > 0 {
+			quota = make(map[string]QuotaSnapshot, len(m.savedQuota))
+			for modelID, q := range m.savedQuota {
+				quota[modelID] = QuotaSnapshot{
+					Model:       q.Model,
+					Limit:       q.Limit,
+					RecentCount: q.RecentCount,
+					ResetAt:     q.ResetAt,
+					Period:      q.Period,
+					Entitlement: q.Entitlement,
+				}
+			}
+		}
+		return SessionSnapshot{
+			QuotaByModel: quota,
+			GlmPromo:     m.savedGlmPromo,
+		}
 	}
 	quota := make(map[string]QuotaSnapshot, len(m.state.quotaByModel))
 	for modelID, q := range m.state.quotaByModel {
@@ -551,6 +568,113 @@ func (m *Manager) Snapshot() SessionSnapshot {
 		QuotaByModel:       quota,
 		GlmPromo:           m.state.glmPromo,
 		Standing:           m.state.standing,
+	}
+}
+
+// HasGlmEntitlement reports whether the session snapshot holds an active
+// referral quota or valid unexpired promo for z-ai/glm-5.2 (issue #183).
+func (s SessionSnapshot) HasGlmEntitlement() bool {
+	if q, ok := s.QuotaByModel["z-ai/glm-5.2"]; ok && q.Limit > 0 {
+		if q.RecentCount < q.Limit {
+			return true
+		}
+		if !q.ResetAt.IsZero() && q.ResetAt.Before(time.Now()) {
+			return true
+		}
+	}
+	if s.GlmPromo != "" {
+		var gp struct {
+			DailySessions float64 `json:"dailySessions"`
+			EndsAt        string  `json:"endsAt"`
+		}
+		if err := json.Unmarshal([]byte(s.GlmPromo), &gp); err == nil && gp.DailySessions > 0 {
+			if gp.EndsAt == "" {
+				return true
+			}
+			if ends, err := time.Parse(time.RFC3339, gp.EndsAt); err == nil {
+				if ends.After(time.Now()) {
+					return true
+				}
+			} else {
+				return true
+			}
+		}
+	}
+	if s.Entitlement != nil {
+		if s.Entitlement["glm"] > 0 || s.Entitlement["z-ai/glm-5.2"] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// HasGlmEntitlement reports whether the manager currently holds verified
+// referral entitlement for z-ai/glm-5.2 from active or saved quota/promo (issue #183).
+func (m *Manager) HasGlmEntitlement() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hasGlmEntitlementLocked()
+}
+
+func (m *Manager) hasGlmEntitlementLocked() bool {
+	quota := m.savedQuota
+	promo := m.savedGlmPromo
+	if m.state != nil {
+		if m.state.quotaByModel != nil {
+			quota = m.state.quotaByModel
+		}
+		if m.state.glmPromo != "" {
+			promo = m.state.glmPromo
+		}
+	}
+	if q, ok := quota["z-ai/glm-5.2"]; ok && q.Limit > 0 {
+		if q.RecentCount < q.Limit {
+			return true
+		}
+		if !q.ResetAt.IsZero() && q.ResetAt.Before(time.Now()) {
+			return true
+		}
+	}
+	if promo != "" {
+		var gp struct {
+			DailySessions float64 `json:"dailySessions"`
+			EndsAt        string  `json:"endsAt"`
+		}
+		if err := json.Unmarshal([]byte(promo), &gp); err == nil && gp.DailySessions > 0 {
+			if gp.EndsAt == "" {
+				return true
+			}
+			if ends, err := time.Parse(time.RFC3339, gp.EndsAt); err == nil {
+				if ends.After(time.Now()) {
+					return true
+				}
+			} else {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// UpdateQuotaFromProbe records the quota map and glmPromo block from a zero-cost
+// session probe into the manager's saved state (issue #183).
+func (m *Manager) UpdateQuotaFromProbe(st *upstream.SessionState) {
+	if st == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if st.GlmPromo != "" {
+		m.savedGlmPromo = st.GlmPromo
+		if m.state != nil {
+			m.state.glmPromo = st.GlmPromo
+		}
+	}
+	if len(st.RateLimitsByModel) > 0 {
+		m.savedQuota = st.RateLimitsByModel
+		if m.state != nil {
+			m.state.quotaByModel = st.RateLimitsByModel
+		}
 	}
 }
 

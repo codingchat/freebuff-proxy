@@ -3,6 +3,7 @@ package pool
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"freebuff-proxy/internal/session"
@@ -88,7 +89,7 @@ func isQuotaExhaustedError(rle *upstream.RateLimitError) bool {
 	if rle.Limit > 0 && rle.RecentCount >= rle.Limit {
 		return true
 	}
-	if rle.Body == "session quota exhausted for model" {
+	if rle.Body == "session quota exhausted for model" || strings.Contains(rle.Body, "referral entitlement required") || strings.Contains(rle.Body, "no referral quota") {
 		return true
 	}
 	return false
@@ -106,7 +107,23 @@ func isDailyCapReset(rle *upstream.RateLimitError) bool {
 	return rle.Limit > 0 && rle.RecentCount >= rle.Limit
 }
 func bridgeQuotaRemaining(entry *bridgeEntry, model string) (known bool, remaining float64, capped bool) {
-	q, ok := entry.session.Snapshot().QuotaByModel[model]
+	snap := entry.session.Snapshot()
+	if isReferralGatedModel(model) {
+		if !snap.HasGlmEntitlement() {
+			return false, 0, true
+		}
+		if q, ok := snap.QuotaByModel[model]; ok && q.Limit > 0 {
+			resetFuture := !q.ResetAt.IsZero() && q.ResetAt.After(time.Now())
+			if resetFuture && q.RecentCount >= q.Limit {
+				return false, 0, true
+			}
+			if q.RecentCount < q.Limit {
+				return true, q.Limit - q.RecentCount, false
+			}
+		}
+		return true, 1, false
+	}
+	q, ok := snap.QuotaByModel[model]
 	if !ok || q.Limit <= 0 {
 		return false, 0, false
 	}
@@ -128,17 +145,23 @@ func bridgeQuotaCapped(entry *bridgeEntry, model string) bool {
 
 // bridgeQuotaLimitError builds the 429 RateLimitError for a quota-capped bridge entry.
 func bridgeQuotaLimitError(entry *bridgeEntry, model string) *upstream.RateLimitError {
-	q := entry.session.Snapshot().QuotaByModel[model]
+	snap := entry.session.Snapshot()
+	q := snap.QuotaByModel[model]
 	retryAfter := time.Duration(0)
 	if !q.ResetAt.IsZero() && q.ResetAt.After(time.Now()) {
 		retryAfter = time.Until(q.ResetAt)
 	}
+	body := "session quota exhausted for model"
+	if isReferralGatedModel(model) && !snap.HasGlmEntitlement() {
+		body = "referral entitlement required for " + model
+	}
 	return &upstream.RateLimitError{
 		Status:      "rate_limited",
+		Model:       model,
 		RetryAfter:  retryAfter,
 		Limit:       q.Limit,
 		RecentCount: q.RecentCount,
 		ResetAt:     q.ResetAt,
-		Body:        "session quota exhausted for model",
+		Body:        body,
 	}
 }

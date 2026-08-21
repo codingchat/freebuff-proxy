@@ -384,7 +384,7 @@ func TestModelsAllowList(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) {
-		c.ModelsAllow = []string{"deepseek/deepseek-v4-flash", modelA}
+		c.ModelsAllow = []string{"deepseek/deepseek-v4-flash", modelB}
 	}, mock)
 
 	resp, data := doJSON(t, http.MethodGet, ts.URL+"/v1/models", nil, nil)
@@ -401,12 +401,12 @@ func TestModelsAllowList(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, m := range out.Data {
-		if m.ID != "deepseek/deepseek-v4-flash" && m.ID != modelA {
+		if m.ID != "deepseek/deepseek-v4-flash" && m.ID != modelB {
 			t.Errorf("model %q listed outside MODELS_ALLOW", m.ID)
 		}
 		seen[m.ID] = true
 	}
-	if !seen["deepseek/deepseek-v4-flash"] || !seen[modelA] {
+	if !seen["deepseek/deepseek-v4-flash"] || !seen[modelB] {
 		t.Errorf("allowlisted models missing from /v1/models: %v", seen)
 	}
 	if len(out.Data) != 2 {
@@ -423,7 +423,7 @@ func TestModelsAllowRejectsChat(t *testing.T) {
 		c.ModelsAllow = []string{"deepseek/deepseek-v4-flash"}
 	}, mock)
 
-	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelB), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("chat status = %d, want 404: %s", resp.StatusCode, data)
 	}
@@ -454,11 +454,11 @@ func TestModelsAllowResolvedAlias(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) {
-		c.ModelAliases = map[string]string{"glm-alias": modelA}
+		c.ModelAliases = map[string]string{"fable-alias": modelB}
 		c.ModelsAllow = []string{"deepseek/deepseek-v4-flash"}
 	}, mock)
 
-	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("glm-alias"), nil)
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("fable-alias"), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("chat (alias) status = %d, want 404: %s", resp.StatusCode, data)
 	}
@@ -656,7 +656,7 @@ func TestMetricsQuotaLines(t *testing.T) {
 		`freebuff_proxy_quota_recent{token="1",model="z-ai/glm-5.2",period="pacific_day"} 4`,
 		`freebuff_proxy_quota_limit{token="1",model="z-ai/glm-5.2",period="pacific_day"} 5`,
 		`freebuff_proxy_quota_remaining{token="1",model="z-ai/glm-5.2",period="pacific_day"} 1`,
-		`freebuff_proxy_session_remaining_seconds{token="1",model="z-ai/glm-5.2"}`,
+		fmt.Sprintf(`freebuff_proxy_session_remaining_seconds{token="1",model="%s"}`, modelA),
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %s in:\n%s", want, body)

@@ -77,7 +77,7 @@ func TestPlaygroundChatStreams(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	srv := newServer(t, mock, nil)
-	body := `{"model":"z-ai/glm-5.2","prompt":"ping","stream":true}`
+	body := `{"model":"deepseek/deepseek-v4-flash","prompt":"ping","stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/playground/chat", strings.NewReader(body))
 	req.Host = "127.0.0.1:3457"
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -176,9 +176,9 @@ func TestChatFallbackAfterWaitingRoom(t *testing.T) {
 	mock.EstimatedWaitMs = 20000                        // > FALLBACK_AFTER_MS (10s)
 	srv := newServerCfg(t, mock, func(c *config.Config) {
 		c.FallbackAfter = 10 * time.Second
-		c.FallbackModels = map[string]string{"z-ai/glm-5.2": "deepseek/deepseek-v4-flash"}
+		c.FallbackModels = map[string]string{"deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-flash"}
 	})
-	body := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	body := `{"model":"deepseek/deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Host = "127.0.0.1:3457"
 	rec := httptest.NewRecorder()
@@ -200,9 +200,9 @@ func TestChatNoFallbackBelowThreshold(t *testing.T) {
 	mock.EstimatedWaitMs = 1000 // < FALLBACK_AFTER_MS
 	srv := newServerCfg(t, mock, func(c *config.Config) {
 		c.FallbackAfter = 10 * time.Second
-		c.FallbackModels = map[string]string{"z-ai/glm-5.2": "deepseek/deepseek-v4-flash"}
+		c.FallbackModels = map[string]string{"deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-flash"}
 	})
-	body := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	body := `{"model":"deepseek/deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Host = "127.0.0.1:3457"
 	rec := httptest.NewRecorder()

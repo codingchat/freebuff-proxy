@@ -132,12 +132,12 @@ func TestFallbackTransparencyQueueTimeout(t *testing.T) {
 	mock.EstimatedWaitMs = 20000                        // > FALLBACK_AFTER_MS (10s)
 	// The fallback model's upstream chat echoes the REQUESTED model: the
 	// relay must stamp the actually-served fallback model onto the chunks.
-	mock.ChatBody = chatSSE("z-ai/glm-5.2")
+	mock.ChatBody = chatSSE("deepseek/deepseek-v4-pro")
 	srv, _ := newTestServerCfg(t, nil, func(c *config.Config) {
 		c.FallbackAfter = 10 * time.Second
-		c.FallbackModels = map[string]string{"z-ai/glm-5.2": "deepseek/deepseek-v4-flash"}
+		c.FallbackModels = map[string]string{"deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-flash"}
 	}, mock)
-	body := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	body := `{"model":"deepseek/deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	resp, data := doJSON(t, http.MethodPost, srv.URL+"/v1/chat/completions", []byte(body), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (fallback served): %s", resp.StatusCode, data)
@@ -169,10 +169,24 @@ func quotaExhaustionMock(t *testing.T) *testutil.MockUpstream {
 	t.Cleanup(mock.Close)
 	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"status":"none"}`)
+			return
+		}
 		if r.Method == http.MethodPost {
 			switch r.Header.Get("x-freebuff-model") {
-			case modelA:
-				// Session quota exhausted for the requested model.
+			case "deepseek/deepseek-v4-flash":
+				// The fallback model admits fine.
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, fmt.Sprintf(`{
+					"status": "active",
+					"instanceId": "inst-fallback",
+					"model": %q,
+					"expiresAt": %q
+				}`, "deepseek/deepseek-v4-flash", time.Now().Add(time.Hour).Format(time.RFC3339)))
+			default:
+				// Requested model is quota exhausted.
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = io.WriteString(w, fmt.Sprintf(`{
 					"status": "rate_limited",
@@ -182,22 +196,12 @@ func quotaExhaustionMock(t *testing.T) *testutil.MockUpstream {
 					"period": "pacific_day",
 					"resetAt": %q,
 					"retryAfterMs": 3600000
-				}`, modelA, time.Now().Add(time.Hour).Format(time.RFC3339)))
-			default:
-				// The fallback model admits fine.
-				w.WriteHeader(http.StatusOK)
-				_, _ = io.WriteString(w, fmt.Sprintf(`{
-					"status": "active",
-					"instanceId": "inst-fallback",
-					"model": %q,
-					"expiresAt": %q
 				}`, r.Header.Get("x-freebuff-model"), time.Now().Add(time.Hour).Format(time.RFC3339)))
 			}
 			return
 		}
 		http.NotFound(w, r)
 	}
-	// Upstream chat for the fallback model echoes the REQUESTED model: the
 	// relay must stamp the served fallback model.
 	mock.ChatBody = chatSSE("z-ai/glm-5.2")
 	return mock
@@ -291,7 +295,7 @@ func TestFallbackTransparencyAnthropic(t *testing.T) {
 	srvDirect, _ := newTestServer(t, []string{"anthropic-key"}, direct)
 
 	// Direct streaming: message_start names the requested model.
-	reqBody := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	reqBody := `{"model":"` + modelA + `","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	resp, data := doJSON(t, http.MethodPost, srvDirect.URL+"/v1/messages", []byte(reqBody),
 		map[string]string{"anthropic-api-key": "anthropic-key", "anthropic-version": "2023-06-01"})
 	if resp.StatusCode != http.StatusOK {
@@ -317,7 +321,7 @@ func TestFallbackTransparencyAnthropic(t *testing.T) {
 	}
 
 	// Direct non-streaming: message object model names the served model.
-	reqBodyNS := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	reqBodyNS := `{"model":"` + modelA + `","messages":[{"role":"user","content":"hi"}],"stream":false}`
 	respNS, dataNS := doJSON(t, http.MethodPost, srvDirect.URL+"/v1/messages", []byte(reqBodyNS),
 		map[string]string{"anthropic-api-key": "anthropic-key", "anthropic-version": "2023-06-01"})
 	if respNS.StatusCode != http.StatusOK {
@@ -338,8 +342,8 @@ func TestFallbackTransparencyAnthropic(t *testing.T) {
 	srvFB, _ := newTestServerCfg(t, []string{"anthropic-key"}, func(c *config.Config) {
 		c.QuotaFallbackModels = map[string]string{"z-ai/glm-5.2": "deepseek/deepseek-v4-flash"}
 	}, fb)
-
-	respFB, dataFB := doJSON(t, http.MethodPost, srvFB.URL+"/v1/messages", []byte(reqBody),
+	reqBodyGlm := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	respFB, dataFB := doJSON(t, http.MethodPost, srvFB.URL+"/v1/messages", []byte(reqBodyGlm),
 		map[string]string{"anthropic-api-key": "anthropic-key", "anthropic-version": "2023-06-01"})
 	if respFB.StatusCode != http.StatusOK {
 		t.Fatalf("fallback stream status = %d, want 200: %s", respFB.StatusCode, dataFB)
@@ -364,7 +368,8 @@ func TestFallbackTransparencyAnthropic(t *testing.T) {
 	}
 
 	// Non-streaming fallback: message object model names the served model.
-	respFBNS, dataFBNS := doJSON(t, http.MethodPost, srvFB.URL+"/v1/messages", []byte(reqBodyNS),
+	reqBodyGlmNS := `{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	respFBNS, dataFBNS := doJSON(t, http.MethodPost, srvFB.URL+"/v1/messages", []byte(reqBodyGlmNS),
 		map[string]string{"anthropic-api-key": "anthropic-key", "anthropic-version": "2023-06-01"})
 	if respFBNS.StatusCode != http.StatusOK {
 		t.Fatalf("fallback non-stream status = %d, want 200: %s", respFBNS.StatusCode, dataFBNS)

@@ -415,7 +415,7 @@ func pageServer(t *testing.T, tokens int, page string, mut func(*config.Config),
 }
 
 // dashModel is the fallback-registry model the quota seeding chats use.
-const dashModel = "z-ai/glm-5.2"
+const dashModel = "deepseek/deepseek-v4-flash"
 
 // quotaPageServer builds a tokens page whose session admission carries the
 // mock-configured quota state (rateLimitsByModel entries, glmPromo block),
@@ -487,8 +487,8 @@ func TestTokensPageQuotaRows(t *testing.T) {
 					"streak":   3,
 				},
 			},
-			"deepseek/deepseek-v4-flash": map[string]any{
-				"model":       "deepseek/deepseek-v4-flash",
+			"anthropic/claude-fable-5": map[string]any{
+				"model":       "anthropic/claude-fable-5",
 				"limit":       100,
 				"recentCount": 80, // exactly at NearLimit threshold
 				"period":      "pacific_day",
