@@ -42,8 +42,14 @@ The extracted release folder contains `freebuff-proxy` (Linux/macOS) or `freebuf
 1. Mints a fresh CLI-parity fingerprint (`enhanced-<43-char base64url>`, same shape as the official CLI's SHA-256 base64url fingerprint) and requests a login URL from the FreeBuff backend.
 2. Auto-launches an isolated Private/Incognito browser window to prevent account linking.
 3. Jitter-polls the authentication status every 5s (CLI parity).
-4. Runs a zero-cost post-auth probe on `/api/v1/freebuff/session` (no instance header, no session slot consumed) to confirm account status/tier/risk and **refuses to save a banned account**.
-5. Saves or appends the token to `.env`.
+4. Saves or appends the token to `.env`.
+
+> **Privacy default:** the fresh token is **never sent back to the server**
+> after login. The old auto-probe (ban/tier check on
+> `/api/v1/freebuff/session`) is now opt-in: pass `-Verify`
+> (PowerShell) or `--verify` (bash). With `--verify`, the probe sends no
+> instance header (no session slot consumed) and refuses to save a banned
+> account.
 
 ### Windows (PowerShell / CMD)
 
@@ -56,6 +62,7 @@ The extracted release folder contains `freebuff-proxy` (Linux/macOS) or `freebuf
 .\gen-token.cmd -Save
 .\gen-token.cmd -Append
 .\gen-token.cmd -Incognito
+.\gen-token.cmd -Verify   # opt-in post-auth probe
 ```
 
 ### Linux / macOS (Bash)
