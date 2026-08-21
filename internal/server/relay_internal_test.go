@@ -73,6 +73,70 @@ func TestRelayStreamKeepalive(t *testing.T) {
 	}
 }
 
+// TestRelayStreamKeepaliveJunkUpstream pins the #161 root cause: upstream
+// comment/junk lines (gateway keepalives, blank frames) that arrive more
+// often than keepaliveInterval must NOT reset the client keepalive timer.
+// Pre-fix, each dropped line advanced "relayed", so the
+// time.Since(relayed) >= keepaliveInterval check never passed and NO
+// liveness frame was ever written — clients with stall detectors (e.g.
+// Next.js openai-compatible-chat) saw multi-minute silence. The client
+// must still receive keepalive frames within ~2x keepaliveInterval, the
+// junk must never be relayed, and [DONE] must stay intact.
+func TestRelayStreamKeepaliveJunkUpstream(t *testing.T) {
+	old := keepaliveInterval
+	keepaliveInterval = 20 * time.Millisecond
+	t.Cleanup(func() { keepaliveInterval = old })
+
+	s := testRelayServer()
+	rec := httptest.NewRecorder()
+	pr, pw := io.Pipe()
+	defer func() { _ = pr.Close() }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.relayStream(context.Background(), rec, pr, &relayStats{}, time.Now())
+	}()
+
+	// One real chunk, then silence on data.
+	_, _ = pw.Write([]byte(testutilSSE(`{"id":"chatcmpl-j","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`)))
+
+	// Dribble upstream comment frames every 10ms (half keepaliveInterval).
+	// Pre-fix this starved the client of liveness frames indefinitely.
+	stopJunk := make(chan struct{})
+	go func() {
+		junk := time.NewTicker(10 * time.Millisecond)
+		defer junk.Stop()
+		for {
+			select {
+			case <-stopJunk:
+				return
+			case <-junk.C:
+				_, _ = io.WriteString(pw, ": ping\n\n")
+			}
+		}
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	close(stopJunk)
+	_ = pw.Close()
+	<-done
+
+	body := rec.Body.String()
+	if got := strings.Count(body, ": keepalive\n\n"); got < 2 {
+		t.Errorf("keepalive frames = %d, want >= 2 (junk dribble must not starve the client): %q", got, truncateStr(body, 400))
+	}
+	if strings.Contains(body, ": ping\n") {
+		t.Errorf("upstream comment junk leaked to the client: %q", truncateStr(body, 400))
+	}
+	if !strings.Contains(body, "hi") {
+		t.Error("body missing the relayed chunk")
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Error("body missing [DONE] terminator")
+	}
+}
+
 // errAfterLineReader yields one SSE line then a transport-style error.
 type errAfterLineReader struct {
 	once bool
