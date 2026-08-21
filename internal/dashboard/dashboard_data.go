@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -303,6 +304,38 @@ func (d *Dashboard) tokensData() tokensData {
 				row.HasEntitlement = true
 			}
 			detail.Quota = append(detail.Quota, row)
+		}
+		// Scarcity/promo isolation (issue #178): the upstream glmPromo block
+		// ({dailySessions, endsAt}) grants a referral quota on scarce models
+		// like GLM/Luna/Pro. Synthesize a dashboard row for z-ai/glm-5.2 so
+		// the promo is visible even though no per-model quota was admitted;
+		// a real rateLimitsByModel entry for the model wins over the promo.
+		if _, exists := t.QuotaByModel["z-ai/glm-5.2"]; !exists && t.GlmPromo != "" {
+			var gp struct {
+				DailySessions float64 `json:"dailySessions"`
+				EndsAt        string  `json:"endsAt"`
+			}
+			if err := json.Unmarshal([]byte(t.GlmPromo), &gp); err == nil && gp.DailySessions > 0 {
+				var resetAt time.Time
+				if ts, err := time.Parse(time.RFC3339, gp.EndsAt); err == nil {
+					resetAt = ts
+				}
+				glmRow := quotaRow{
+					Model:          "z-ai/glm-5.2",
+					Limit:          formatQuota(gp.DailySessions),
+					Recent:         "0",
+					Remaining:      gp.DailySessions,
+					Period:         "promo",
+					ResetAt:        shortTime(resetAt),
+					ResetAtUTC:     utcAttr(resetAt),
+					ResetsIn:       humanDuration(time.Until(resetAt)),
+					Entitled:       "referral",
+					HasEntitlement: true,
+					UsagePct:       0,
+					HasBar:         true,
+				}
+				detail.Quota = append(detail.Quota, glmRow)
+			}
 		}
 		sort.Slice(detail.Quota, func(i, j int) bool { return detail.Quota[i].Model < detail.Quota[j].Model })
 		detail.HasQuota = len(detail.Quota) > 0

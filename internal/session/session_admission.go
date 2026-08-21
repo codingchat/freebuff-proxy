@@ -130,7 +130,7 @@ func (m *Manager) adoptOrCreate(ctx context.Context, requestedModel string) (*up
 	adopt := m.adopt
 	m.mu.Unlock()
 	if adopt == nil || !adopt.Enabled {
-		return m.client.CreateSessionForModel(ctx, requestedModel)
+		return m.createSessionForModel(ctx, requestedModel)
 	}
 
 	owner, ok := m.adoptOwner()
@@ -145,7 +145,7 @@ func (m *Manager) adoptOrCreate(ctx context.Context, requestedModel string) (*up
 	if owner.PID <= 0 || !adopt.testAlive(owner.PID) {
 		// The CLI process is not running: the proxy may create (and own) a
 		// session for the account, exactly like the reference fallback.
-		return m.client.CreateSessionForModel(ctx, requestedModel)
+		return m.createSessionForModel(ctx, requestedModel)
 	}
 	if owner.InstanceID == "" {
 		return nil, fmt.Errorf("ADOPT_CLI_SESSION: the FreeBuff CLI is running but no session instance was recorded — refusing to create a competing session (stop the CLI or retry)")
@@ -184,6 +184,22 @@ func (m *Manager) adoptOrCreate(ctx context.Context, requestedModel string) (*up
 	default:
 		return nil, fmt.Errorf("ADOPT_CLI_SESSION: CLI session %s is not adoptable (status %q) — refusing to create a competing session (restart the CLI or stop it)", shortInstance(owner.InstanceID), status)
 	}
+}
+
+// createSessionForModel POSTs a fresh session for model and tags any
+// rate-limit refusal with the requested model (issue #178): upstream 429
+// quota bodies can omit the model field, and the pool needs it to isolate
+// the cooldown per model — a quota cap on z-ai/glm-5.2 must not block
+// deepseek/deepseek-v4-flash on the same token.
+func (m *Manager) createSessionForModel(ctx context.Context, model string) (*upstream.SessionState, error) {
+	st, err := m.client.CreateSessionForModel(ctx, model)
+	if err != nil {
+		var rle *upstream.RateLimitError
+		if errors.As(err, &rle) && rle.Model == "" {
+			rle.Model = model
+		}
+	}
+	return st, err
 }
 
 // shortInstance renders a session instance id's first 8 chars for logs.
@@ -379,6 +395,7 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 				ipPrivacySignals:   st.IpPrivacySignals,
 				limit:              st.Limit,
 				quotaByModel:       st.RateLimitsByModel,
+				glmPromo:           st.GlmPromo,
 				standing:           st.Standing,
 			})
 			// Issue #60: the successful admission refreshes the probe cache
@@ -430,6 +447,7 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 				position:   st.Position,
 				queueDepth: st.QueueDepth,
 				pollAt:     pollAt,
+				glmPromo:   st.GlmPromo,
 			})
 			m.mu.Unlock()
 			slog.Debug("session queued", "instance_id", st.InstanceID, "model", model,

@@ -99,6 +99,7 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			SessionActiveUsersForIP: ss.ActiveUsersForIP,
 			QuotaByModel:            ss.QuotaByModel,
 			Entitlement:             ss.Entitlement,
+			GlmPromo:                ss.GlmPromo,
 			Standing:                ss.Standing,
 			TransientRetries:        tok.client.TransientRetries(),
 			FingerprintRotations:    tok.client.FingerprintRotations(),

@@ -212,6 +212,13 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 				waiting = append(waiting, wr)
 			}
 			if rle := asRateLimit(err); rle != nil {
+				// Issue #178: tag the refusal with the requested model when
+				// the upstream body omits it, so the remembered cooldown can
+				// be isolated per model — a quota cap on one model (glm-5.2,
+				// gpt-5.6-luna) must not block the same token's other models.
+				if rle.Model == "" {
+					rle.Model = model
+				}
 				tok.runs.CooldownRateLimit(rle)
 				dup := false
 				for _, existing := range rateLimited {
@@ -331,6 +338,13 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
 			}
 			if rle := asRateLimit(err); rle != nil {
+				// Issue #178: tag the refusal with the requested model when
+				// the upstream body omits it, so the remembered cooldown can
+				// be isolated per model — a quota cap on one model (glm-5.2,
+				// gpt-5.6-luna) must not block the same token's other models.
+				if rle.Model == "" {
+					rle.Model = model
+				}
 				tok.runs.CooldownRateLimit(rle)
 				dup := false
 				for _, existing := range rateLimited {

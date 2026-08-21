@@ -418,13 +418,14 @@ func pageServer(t *testing.T, tokens int, page string, mut func(*config.Config),
 const dashModel = "z-ai/glm-5.2"
 
 // quotaPageServer builds a tokens page whose session admission carries the
-// given rateLimitsByModel entries, driven through a real pool chat so the
-// token snapshot gains QuotaByModel (the only way the quota table renders).
-func quotaPageServer(t *testing.T, limits map[string]any) *httptest.Server {
+// mock-configured quota state (rateLimitsByModel entries, glmPromo block),
+// driven through a real pool chat so the token snapshot gains QuotaByModel/
+// GlmPromo (the only way the quota table renders).
+func quotaPageServer(t *testing.T, mut func(*testutil.MockUpstream)) *httptest.Server {
 	t.Helper()
 	mock := testutil.NewMock()
 	t.Cleanup(mock.Close)
-	mock.RateLimitsByModel = limits
+	mut(mock)
 	mock.ChatBody = testutil.SSEEvent(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"`+dashModel+`","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`) +
 		testutil.SSEEvent(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"`+dashModel+`","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
 	cfg := &config.Config{
@@ -472,26 +473,28 @@ func quotaPageServer(t *testing.T, limits map[string]any) *httptest.Server {
 // TestTokensPageQuotaRows pins the quota table JSON fields.
 func TestTokensPageQuotaRows(t *testing.T) {
 	reset := time.Now().Add(4*time.Hour + 12*time.Minute).UTC().Format(time.RFC3339)
-	ts := quotaPageServer(t, map[string]any{
-		dashModel: map[string]any{
-			"model":       dashModel,
-			"limit":       100,
-			"recentCount": 120, // > limit → UsagePct clamps to 100
-			"period":      "pacific_day",
-			"resetAt":     reset,
-			"entitlementBreakdown": map[string]any{
-				"base":     1,
-				"referral": 1,
-				"streak":   3,
+	ts := quotaPageServer(t, func(m *testutil.MockUpstream) {
+		m.RateLimitsByModel = map[string]any{
+			dashModel: map[string]any{
+				"model":       dashModel,
+				"limit":       100,
+				"recentCount": 120, // > limit → UsagePct clamps to 100
+				"period":      "pacific_day",
+				"resetAt":     reset,
+				"entitlementBreakdown": map[string]any{
+					"base":     1,
+					"referral": 1,
+					"streak":   3,
+				},
 			},
-		},
-		"deepseek/deepseek-v4-flash": map[string]any{
-			"model":       "deepseek/deepseek-v4-flash",
-			"limit":       100,
-			"recentCount": 80, // exactly at NearLimit threshold
-			"period":      "pacific_day",
-			"resetAt":     reset,
-		},
+			"deepseek/deepseek-v4-flash": map[string]any{
+				"model":       "deepseek/deepseek-v4-flash",
+				"limit":       100,
+				"recentCount": 80, // exactly at NearLimit threshold
+				"period":      "pacific_day",
+				"resetAt":     reset,
+			},
+		}
 	})
 	resp, err := http.Get(ts.URL + "/tokens")
 	if err != nil {
@@ -528,7 +531,65 @@ func TestTokensPageQuotaRows(t *testing.T) {
 	}
 }
 
-// TestTokensPagePureBridgeInBridgeCard pins the pure-bridge tokens page JSON.
+// TestTokensDataGlmPromoSynthesis pins the synthesized z-ai/glm-5.2 promo
+// quota row (issue #178): the upstream glmPromo block ({dailySessions,
+// endsAt}) grants a referral quota on scarce models like GLM, so the
+// dashboard renders it even when no rateLimitsByModel entry was admitted.
+func TestTokensDataGlmPromoSynthesis(t *testing.T) {
+	ts := quotaPageServer(t, func(m *testutil.MockUpstream) {
+		m.GlmPromo = map[string]any{
+			"dailySessions": 2,
+			"endsAt":        "2026-08-22T07:00:00Z",
+		}
+	})
+	resp, err := http.Get(ts.URL + "/tokens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var data map[string]any
+	if err := json.Unmarshal(mustReadAll(t, resp), &data); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	tokens, _ := data["tokens"].([]any)
+	if len(tokens) == 0 {
+		t.Fatal("no tokens in response")
+	}
+	token, _ := tokens[0].(map[string]any)
+	quota, _ := token["quota"].([]any)
+	if len(quota) == 0 {
+		t.Fatal("no quota entries")
+	}
+	var glm map[string]any
+	for _, q := range quota {
+		qm := q.(map[string]any)
+		if qm["model"] == "z-ai/glm-5.2" {
+			glm = qm
+			break
+		}
+	}
+	if glm == nil {
+		t.Fatal("no z-ai/glm-5.2 quota row")
+	}
+	if glm["limit"] != "2" {
+		t.Errorf("limit = %v, want 2", glm["limit"])
+	}
+	if glm["period"] != "promo" {
+		t.Errorf("period = %v, want promo", glm["period"])
+	}
+	if glm["entitled"] != "referral" {
+		t.Errorf("entitled = %v, want referral", glm["entitled"])
+	}
+	if glm["has_bar"] != true {
+		t.Error("has_bar should be true for promo row")
+	}
+	if glm["has_entitlement"] != true {
+		t.Error("has_entitlement should be true for promo row")
+	}
+	if glm["recent"] != "0" {
+		t.Errorf("recent = %v, want 0", glm["recent"])
+	}
+}
 func TestTokensPagePureBridgeInBridgeCard(t *testing.T) {
 	ts, _ := pageServer(t, 0, "tokens", nil, nil)
 	resp, err := http.Get(ts.URL + "/tokens")

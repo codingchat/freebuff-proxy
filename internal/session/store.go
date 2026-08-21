@@ -35,6 +35,9 @@ type persistedState struct {
 	CountryCode        string                    `json:"country_code"`
 	CountryBlockReason string                    `json:"country_block_reason"`
 	QuotaByModel       map[string]persistedQuota `json:"quota_by_model,omitempty"`
+	// GlmPromo is the raw upstream glmPromo block ({dailySessions,
+	// endsAt}); "" when absent (issue #178).
+	GlmPromo string `json:"glm_promo,omitempty"`
 }
 
 // persistedQuota is one model's live session quota persisted on disk.
@@ -218,6 +221,7 @@ func (s *Store) Load(key string) *cachedState {
 		pollAt:             ps.PollAt,
 		countryCode:        ps.CountryCode,
 		countryBlockReason: ps.CountryBlockReason,
+		glmPromo:           ps.GlmPromo,
 	}
 	if len(ps.QuotaByModel) > 0 {
 		cs.quotaByModel = make(map[string]upstream.ModelQuota, len(ps.QuotaByModel))
@@ -269,6 +273,7 @@ func (s *Store) Save(key string, cs *cachedState) {
 		PollAt:             cs.pollAt,
 		CountryCode:        cs.countryCode,
 		CountryBlockReason: cs.countryBlockReason,
+		GlmPromo:           cs.glmPromo,
 	}
 	if len(cs.quotaByModel) > 0 {
 		ps := s.data[key]

@@ -71,6 +71,11 @@ type MockUpstream struct {
 	// model id) so tests can exercise quota parsing end-to-end.
 	RateLimitsByModel map[string]any
 
+	// GlmPromo, when non-nil, is embedded in the active session body as the
+	// glmPromo block ({dailySessions, endsAt}; issue #178) so tests can
+	// exercise the promo-quota data chain end-to-end.
+	GlmPromo map[string]any
+
 	// CountryCode / CountryBlockReason, when non-empty, are embedded in the
 	// active session body (wire shape parsed by upstream's sessionCall) so
 	// tests can exercise region reporting end-to-end.
@@ -327,6 +332,7 @@ func (m *MockUpstream) handleSession(w http.ResponseWriter, r *http.Request) {
 	position, depth, waitMs := m.QueuePosition, m.QueueDepth, m.EstimatedWaitMs
 	instanceID, expiresIn := m.InstanceID, m.ExpiresIn
 	limits := m.RateLimitsByModel
+	glmPromo := m.GlmPromo
 	countryCode, countryBlockReason := m.CountryCode, m.CountryBlockReason
 	standing := m.Standing
 	m.mu.Unlock()
@@ -343,6 +349,9 @@ func (m *MockUpstream) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(limits) > 0 {
 			body["rateLimitsByModel"] = limits
+		}
+		if len(glmPromo) > 0 {
+			body["glmPromo"] = glmPromo
 		}
 		if countryCode != "" {
 			body["countryCode"] = countryCode
@@ -415,6 +424,7 @@ func (m *MockUpstream) handleProbe(w http.ResponseWriter) {
 	m.mu.Lock()
 	instanceID := m.InstanceID
 	limits := m.RateLimitsByModel
+	glmPromo := m.GlmPromo
 	countryCode, countryBlockReason := m.CountryCode, m.CountryBlockReason
 	m.mu.Unlock()
 	if len(limits) == 0 {
@@ -424,6 +434,9 @@ func (m *MockUpstream) handleProbe(w http.ResponseWriter) {
 		"status":            "active",
 		"instanceId":        instanceID,
 		"rateLimitsByModel": limits,
+	}
+	if len(glmPromo) > 0 {
+		body["glmPromo"] = glmPromo
 	}
 	// The probe mirrors the full admission shape (region state included —
 	// the vendored CLI's session GET serves the same without any
