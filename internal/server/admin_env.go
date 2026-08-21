@@ -423,20 +423,45 @@ func writeFileAtomic(path string, data []byte) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	// Rename-over-existing fails transiently on Windows when the target
+	// has a briefly-open handle (antivirus scanning the file we just
+	// wrote). Without retries, a transient lock turns into a rejected
+	// dashboard save or a lost token add (rollback after a failed .env
+	// write). The remove-then-rename fallback stays, but as a last
+	// resort after the plain rename has had a chance to clear the lock.
+	const renameAttempts = 5
+	var lastErr error
+	for i := range renameAttempts {
+		// NOTE: capture the rename error inside the if — the statement-scoped
+		// err shadows the function-level err (from CreateTemp), so assigning
+		// it outside the if would store nil.
+		if err := os.Rename(tmpName, path); err != nil {
+			lastErr = err
+		} else {
+			return nil
+		}
 		if _, statErr := os.Stat(path); statErr == nil {
-			// The target exists but rename-over-existing failed: fall back
-			// to removing it first, then renaming.
-			_ = os.Remove(path)
-			if err := os.Rename(tmpName, path); err == nil {
-				return nil
-			} else {
-				_ = os.Remove(tmpName)
-				return err
+			// The target exists but rename-over-existing failed: remove it
+			// first, then rename. The next loop iteration re-tries the
+			// plain rename if the fallback itself was transiently locked.
+			if os.Remove(path) == nil {
+				if err := os.Rename(tmpName, path); err != nil {
+					lastErr = err
+				} else {
+					return nil
+				}
 			}
 		}
-		_ = os.Remove(tmpName)
-		return err
+		time.Sleep(time.Duration(i+1) * 20 * time.Millisecond)
 	}
-	return nil
+	// The temp file may itself be transiently locked (antivirus scan of a
+	// file we just wrote); retry its removal so a failed write cannot leak
+	// a .env.tmp* file into the directory.
+	for range 3 {
+		if os.Remove(tmpName) == nil {
+			return lastErr
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return lastErr
 }
