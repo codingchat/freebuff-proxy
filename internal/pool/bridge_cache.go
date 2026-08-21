@@ -113,7 +113,16 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 		p.bridgeMu.Unlock()
 		return entry, nil
 	}
-	entry := &bridgeEntry{token: clientToken, client: client, spend: newSpendLedger()}
+
+	// Upfront token validation: probe the token with a zero-cost GET
+	// (no session claimed) to catch invalid/revoked tokens early.
+	// Only runs when we are actually creating a new entry (not on cache hit).
+	if _, probeErr := client.ProbeAccount(context.Background()); probeErr != nil {
+		p.bridgeMu.Unlock()
+		return nil, fmt.Errorf("bridge: token validation failed: %w", probeErr)
+	}
+
+	entry := &bridgeEntry{token: clientToken, client: client, spend: newSpendLedger(), admissionGate: make(chan struct{})}
 	cfg := p.cfg.Load()
 	entry.session = session.NewManagerWithStore(client, p.store)
 	entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)

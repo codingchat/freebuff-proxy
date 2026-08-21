@@ -101,6 +101,18 @@ type bridgeEntry struct {
 	// leasing runs to this entry (#187). Set/cleared by LockBridgeEntry/
 	// UnlockBridgeEntry; in-flight leases are unaffected.
 	locked atomic.Bool
+
+	// admissionGate serializes session creation per entry: the first
+	// request creates the session; concurrent requests block on the
+	// channel until it completes or fails. sync.Once ensures the session
+	// is created exactly once per entry lifecycle.
+	admissionGate chan struct{}
+	admissionOnce sync.Once
+	admissionErr  error // result of leader's session creation
+
+	// lastModel tracks the last model successfully served by this entry
+	// for fast-path session reuse (model stickiness).
+	lastModel string
 }
 
 // TokenSnapshot is one token's healthz view.

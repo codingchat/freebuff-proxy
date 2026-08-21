@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"freebuff-proxy/internal/phasetiming"
@@ -113,16 +114,94 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		}
 	}
 
-	// Session-create admission gate (issue #86), mirroring the fixed-token
-	// path: concurrent session creates are bounded globally and per model.
-	permit, err := p.gate.acquire(ctx, model)
-	if err != nil {
+	// Per-entry single-flight: concurrent requests for the same bridge
+	// token share one session creation. The leader creates the session;
+	// followers block on the admissionGate channel until it completes.
+	// On failure, the gate resets so the next request retries.
+	var needsCreation bool
+	select {
+	case <-entry.admissionGate:
+		// Session already created (or failed) by a concurrent request.
+		// Re-read the cached state — if the session is usable AND
+		// matches the requested model, skip creation; otherwise reset
+		// the gate and create a fresh session for the new model.
+		ss := entry.session.Snapshot()
+		if (ss.Usable() || ss.Refreshing) && (ss.Model == "" || ss.Model == model) {
+			goto sessionReady
+		}
+		// Model mismatch or stale — reset gate for fresh creation.
+		entry.admissionGate = make(chan struct{})
+		entry.admissionOnce = sync.Once{}
+		entry.admissionErr = nil
+		needsCreation = true
+	default:
+		needsCreation = true
+	}
+
+	if needsCreation {
+		entry.admissionOnce.Do(func() {
+			defer close(entry.admissionGate)
+
+			// Session-create admission gate (issue #86): global + per-model
+			// concurrency limiter.
+			permit, gerr := p.gate.acquire(ctx, model)
+			if gerr != nil {
+				entry.admissionErr = gerr
+				return
+			}
+			sessionStart := time.Now()
+			_, serr := entry.session.EnsureSessionForModel(ctx, model)
+			permit.Release()
+			phasetiming.FromContext(ctx).Since(phasetiming.SessionRefreshMS, sessionStart)
+			entry.admissionErr = serr
+		})
+	}
+
+	// Check the leader's result.
+	if entry.admissionErr != nil {
+		err := entry.admissionErr
+		// Reset the gate so the next request retries.
+		entry.admissionGate = make(chan struct{})
+		entry.admissionOnce = sync.Once{}
+		entry.admissionErr = nil
+
+		if errors.Is(err, upstream.ErrAuthRejected) {
+			entry.runs.Cooldown(runs.DefaultCooldown)
+			p.logger.Debug("pool: bridge entry cooling down", "duration", runs.DefaultCooldown.String())
+			p.bridgeEvictToken(clientToken)
+		}
+		if rle := asRateLimit(err); rle != nil {
+			entry.runs.CooldownRateLimit(rle)
+			if rle.Status == "spend_limited" {
+				p.bridgeMu.Lock()
+				p.bridgeRecordSpendLimited(entry)
+				p.bridgeMu.Unlock()
+			}
+			if isQuotaExhaustedError(rle) {
+				if fb := cfg.QuotaFallbackModels[model]; fb != "" && fb != model {
+					p.logger.Info("pool: bridge token quota exhausted on admission, falling back", "token", bridgeTokenLabel(entry), "requested", model, "fallback", fb)
+					fbLease, fbErr := p.AcquireBridge(ctx, clientToken, fb)
+					if fbLease != nil {
+						fbLease.FallbackReason = "quota_exhausted"
+					}
+					return fbLease, fbErr
+				}
+			}
+		}
+		if ice := asIpCapped(err); ice != nil {
+			entry.runs.CooldownIpCapped(ice)
+		}
+		if be := asBan(err); be != nil {
+			entry.runs.CooldownBan(be)
+		}
+		if cbe := asCountryBlocked(err); cbe != nil {
+			entry.runs.CooldownCountryBlocked(cbe)
+		}
 		return nil, err
 	}
-	sessionStart := time.Now()
-	instanceID, err := entry.session.EnsureSessionForModel(ctx, model)
-	permit.Release()
-	phasetiming.FromContext(ctx).Since(phasetiming.SessionRefreshMS, sessionStart)
+	entry.runs.ClearCooldowns()
+
+sessionReady:
 	if err != nil {
 		if errors.Is(err, upstream.ErrAuthRejected) {
 			entry.runs.Cooldown(runs.DefaultCooldown)
@@ -209,8 +288,9 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		return nil, err
 	}
 
-	p.logger.Debug("pool: bridge lease acquired", "model", effectiveModel, "agent", effectiveAgentID, "instance_id", instanceID,
+	p.logger.Debug("pool: bridge lease acquired", "model", effectiveModel, "agent", effectiveAgentID, "instance_id", ss.InstanceID,
 		"country", ss.CountryCode)
+	entry.lastModel = effectiveModel
 	// Track the activity and end any idle-maintenance pause, mirroring
 	// Acquire: without this, IDLE_ROTATION_TIMEOUT was dead config in
 	// bridge mode — lastActive stayed zero forever, so the pool never
@@ -224,7 +304,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	if fellBack {
 		fallbackReason = "quota_exhausted"
 	}
-	return &Lease{Token: -1, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: instanceID,
+	return &Lease{Token: -1, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: ss.InstanceID,
 		Bridge: entry, FallbackReason: fallbackReason, AcquiredAt: time.Now()}, nil
 }
 
