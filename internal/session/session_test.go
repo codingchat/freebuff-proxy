@@ -1983,3 +1983,51 @@ func TestInvalidateInstanceGuarded(t *testing.T) {
 		t.Fatal("cached session not invalidated by its own instance id")
 	}
 }
+
+// TestInvalidateInstanceWithReason pins the #159 superseded invalidation
+// path: the reason-aware instance-guarded drop records the T9 "superseded"
+// reason (feeding the re-admit storm detector's superseded count) with the
+// triggering status, and a stale instance id — a chat still riding the OLD,
+// superseded instance after a fresh re-admit — leaves the newer cache alone.
+func TestInvalidateInstanceWithReason(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mgr := newTestManager(t, mock)
+	if _, err := mgr.EnsureSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	restore := captureLogs(&buf)
+	defer restore()
+
+	// A stale instance id must not drop the newer cached session, even with
+	// the superseded reason (#132 guard).
+	mgr.InvalidateInstanceWithReason("inst-stale-999", ReasonSuperseded, http.StatusConflict)
+	mgr.mu.Lock()
+	cur := ""
+	if mgr.state != nil {
+		cur = mgr.state.instanceID
+	}
+	alive := mgr.state != nil
+	mgr.mu.Unlock()
+	if !alive {
+		t.Fatal("cached session invalidated by a stale superseded instance id")
+	}
+
+	// The matching instance id clears it and records reason=superseded
+	// status=409 (T9/T10 vocabulary).
+	mgr.InvalidateInstanceWithReason(cur, ReasonSuperseded, http.StatusConflict)
+	mgr.mu.Lock()
+	alive = mgr.state != nil
+	mgr.mu.Unlock()
+	if alive {
+		t.Fatal("cached session not invalidated by its own superseded instance id")
+	}
+	got := buf.String()
+	if !strings.Contains(got, `msg="session invalidated"`) ||
+		!strings.Contains(got, "reason=superseded") ||
+		!strings.Contains(got, "status=409") {
+		t.Errorf("superseded invalidated log missing reason/status:\n%s", got)
+	}
+}

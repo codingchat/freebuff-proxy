@@ -143,11 +143,20 @@ func (p *Pool) RecordSpend(lease *Lease, tokens int64) {
 // failing must not invalidate the fresh one. Out-of-range tokens are
 // ignored.
 func (p *Pool) InvalidateSession(token int, instanceID string) {
+	p.InvalidateSessionWithReason(token, instanceID, "instance_invalidated", 0)
+}
+
+// InvalidateSessionWithReason drops the cached session of token only when
+// its instance id matches instanceID (issue #132 guard), recording WHY
+// (T9/T10). The superseded chat recovery path passes session.ReasonSuperseded
+// (#159) so the re-admit storm detector can attribute the invalidation; the
+// other session-invalid paths keep the generic instance_invalidated reason.
+func (p *Pool) InvalidateSessionWithReason(token int, instanceID, reason string, status int) {
 	toks := p.toks.Load()
 	if token < 0 || token >= len(*toks) {
 		return
 	}
-	(*toks)[token].session.InvalidateInstance(instanceID)
+	(*toks)[token].session.InvalidateInstanceWithReason(instanceID, reason, status)
 }
 
 // InvalidateRun drops the current run of token for agentID so the next
@@ -181,10 +190,16 @@ func (p *Pool) ClearQueuedCaches() int {
 // entry so the next AcquireBridge re-creates it (session-invalid recovery).
 // Guarded to the lease's instance id (issue #132) — see InvalidateSession.
 func (p *Pool) InvalidateBridgeSession(lease *Lease) {
+	p.InvalidateBridgeSessionWithReason(lease, "instance_invalidated", 0)
+}
+
+// InvalidateBridgeSessionWithReason is the reason-aware form of
+// InvalidateBridgeSession (see InvalidateSessionWithReason, #159).
+func (p *Pool) InvalidateBridgeSessionWithReason(lease *Lease, reason string, status int) {
 	if lease == nil || lease.Bridge == nil {
 		return
 	}
-	lease.Bridge.session.InvalidateInstance(lease.SessionInstanceID)
+	lease.Bridge.session.InvalidateInstanceWithReason(lease.SessionInstanceID, reason, status)
 }
 
 // InvalidateBridgeRun drops the current run of the bridge entry for agentID

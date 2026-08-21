@@ -174,6 +174,9 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 			}),
 			s.pool.Chat,
 			s.pool.InvalidateBridgeSession,
+			func(l *pool.Lease) {
+				s.pool.InvalidateBridgeSessionWithReason(l, session.ReasonSuperseded, http.StatusConflict)
+			},
 			s.pool.InvalidateBridgeRun,
 			func(l *pool.Lease) { s.pool.CooldownBridge(l, runs.DefaultCooldown) },
 			s.pool.CooldownBridgeBan,
@@ -222,6 +225,9 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 			acquire,
 			s.pool.Chat,
 			func(l *pool.Lease) { s.pool.InvalidateSession(l.Token, l.SessionInstanceID) },
+			func(l *pool.Lease) {
+				s.pool.InvalidateSessionWithReason(l.Token, l.SessionInstanceID, session.ReasonSuperseded, http.StatusConflict)
+			},
 			func(l *pool.Lease, agentID string) { s.pool.InvalidateRun(l.Token, agentID) },
 			func(l *pool.Lease) { s.pool.CooldownToken(l.Token, runs.DefaultCooldown) },
 			func(l *pool.Lease, be *upstream.BanError) { s.pool.CooldownTokenBan(l.Token, be) },
@@ -455,13 +461,15 @@ func attemptStatus(err error) int {
 // chatAttempt runs the retry-once recovery loop for one chat request: chat
 // through the leased token; on session-invalid / run-invalid the lease is
 // released, the cached session/run invalidated, and a fresh lease acquired
-// once; on auth-reject / ban / rate-limit / ip-capped the token is cooled
-// down (ip_capped bounded to its retryAfterMs — never the Pacific-midnight
-// lock) and the error returned for writeError. The acquire/chat/invalidate/
-// cooldown hooks are closures so the pooled (fixed-token) and bridge paths
-// share the exact same recovery semantics. On success the returned body
-// reader and final lease belong to the caller: close the body and release
-// the lease via Pool.LeaseRelease when done.
+// once; on session_superseded the lease is released and the cached session
+// invalidated (reason "superseded") but NEVER retried — it is terminal for
+// this request (#159); on auth-reject / ban / rate-limit / ip-capped the
+// token is cooled down (ip_capped bounded to its retryAfterMs — never the
+// Pacific-midnight lock) and the error returned for writeError. The
+// acquire/chat/invalidate/cooldown hooks are closures so the pooled
+// (fixed-token) and bridge paths share the exact same recovery semantics.
+// On success the returned body reader and final lease belong to the caller:
+// close the body and release the lease via Pool.LeaseRelease when done.
 func (s *Server) chatAttempt(
 	ctx context.Context,
 	model string,
@@ -470,6 +478,7 @@ func (s *Server) chatAttempt(
 	acquire func(context.Context, string) (*pool.Lease, error),
 	chat func(context.Context, *pool.Lease, upstream.ChatOptions, []byte) (io.ReadCloser, error),
 	invalidateSession func(*pool.Lease),
+	invalidateSessionSuperseded func(*pool.Lease),
 	invalidateRun func(*pool.Lease, string),
 	cooldownAuth func(*pool.Lease),
 	cooldownBan func(*pool.Lease, *upstream.BanError),
@@ -615,19 +624,20 @@ func (s *Server) chatAttempt(
 				return nil, nil, err
 			}
 		case errors.Is(err, upstream.ErrSessionSuperseded):
-			// #119: 409 session_superseded — another instance took over
-			// the account. Drop the cached session and re-admit ONCE
-			// for this request (mirror the ErrSessionInvalid budget:
-			// attempts > 1 surfaces the error). The session is already
-			// invalidated so the next request re-joins fresh; auto-
-			// retry here avoids the 30s model lock9router would apply
-			// on a503 response. Never loops — a single reacquire, then
-			// surface.
+			// #159: 409 session_superseded — another instance took over
+			// the account; this session's row is GONE (endsTheSession:true
+			// per FREEBUFF_GATE_CODES). TERMINAL for this request: drop the
+			// cached session (reason "superseded" feeds the re-admit storm
+			// detector) so the NEXT request re-admits fresh, and surface
+			// the error immediately. NEVER retry on the dead instance — an
+			// in-request re-admit burns a fresh daily session slot against
+			// the superseding instance and risks ping-pong (the #119 retry
+			// was observed as attempts=2 with the slot still wasted until
+			// the client cancelled ~59s). Auto-takeover is the other
+			// instance's to resolve; the next client request re-joins.
 			release()
-			invalidateSession(lease)
-			if attempts > 1 {
-				return nil, nil, err
-			}
+			invalidateSessionSuperseded(lease)
+			return nil, nil, err
 		case errors.Is(err, upstream.ErrRunInvalid):
 			release()
 			invalidateRun(lease, lease.AgentID)
