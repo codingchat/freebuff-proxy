@@ -332,7 +332,7 @@ func TestChatFeedsSpendLedger(t *testing.T) {
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("non-stream status = %d, want 200", resp2.StatusCode)
 	}
-	snaps = waitSpend(t, pool, 25)
+	waitSpend(t, pool, 25)
 }
 
 // TestHealthzSpend pins the /healthz spend surface (issue #122): the ledger

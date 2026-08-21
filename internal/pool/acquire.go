@@ -588,15 +588,6 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 	return order, quotaLimited
 }
 
-// tokenHasLiveSession reports whether token's cached session is active and
-// unexpired — i.e. a request can reuse it without admitting a new session.
-// Snapshot reads local state only (no upstream calls), safe to call per
-// token per acquire.
-func tokenHasLiveSession(tok *tokenEntry) bool {
-	snap := tok.session.Snapshot()
-	return snap.Status == "active" && !snap.ExpiresAt.IsZero() && snap.ExpiresAt.After(time.Now())
-}
-
 // bestWaitingRoom picks the queue entry with the lowest position; ties break
 // on the lowest queue depth (PRD §3: best-waiting-room-position selection).
 func bestWaitingRoom(entries []*session.WaitingRoomError) *session.WaitingRoomError {
