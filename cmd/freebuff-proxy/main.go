@@ -13,10 +13,12 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -301,6 +303,9 @@ func main() {
 	if cfg.DashboardEnabled && cfg.AdminToken == "" && (len(cfg.APIKeys) == 0 || cfg.BridgeMode()) {
 		logger.Warn("/admin/reload and the /admin dashboard are unauthenticated — any client that can reach the proxy can reload configuration and view its state. Set ADMIN_TOKEN to require a bearer token")
 	}
+	if w := adminTokenCleartextWarning(cfg.AdminToken, cfg.ListenAddr); w != "" {
+		logger.Warn(w)
+	}
 	logger.Info("listening", "addr", cfg.ListenAddr)
 
 	// Human-readable startup banner for interactive terminals. Suppressed
@@ -378,6 +383,37 @@ func main() {
 func stderrIsCharDevice() bool {
 	fi, err := os.Stderr.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// adminTokenCleartextWarning returns the startup warning for an ADMIN_TOKEN
+// deployment served over plain HTTP: the proxy binary has no TLS support
+// (http.Server.ListenAndServe only), so when LISTEN_ADDR binds a
+// non-loopback interface the admin login POST and the fb_admin session
+// cookie travel in cleartext across the network. Empty when there is
+// nothing to warn about (no ADMIN_TOKEN, or loopback-only listen).
+func adminTokenCleartextWarning(adminToken, listenAddr string) string {
+	if adminToken == "" || listenIsLoopback(listenAddr) {
+		return ""
+	}
+	return "ADMIN_TOKEN is set but LISTEN_ADDR binds a non-loopback interface and the proxy does not serve TLS — the admin login POST and session cookie travel in cleartext. Bind LISTEN_ADDR to a loopback address (e.g. 127.0.0.1:3457) or terminate TLS in front of the proxy"
+}
+
+// listenIsLoopback reports whether a LISTEN_ADDR binds only loopback
+// interfaces: a loopback IP (127.0.0.0/8 or ::1, optional port) or the name
+// "localhost". An empty host (":3457") binds every interface — not loopback.
+func listenIsLoopback(addr string) bool {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // shutdownSignals are the OS signals that trigger graceful drain. On Windows

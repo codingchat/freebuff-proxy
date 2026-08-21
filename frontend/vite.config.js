@@ -53,10 +53,15 @@ export default defineConfig({
     assetsDir: 'assets',
   },
   server: {
-    host: '0.0.0.0',
+    host: '127.0.0.1',
     port: 5173,
     strictPort: true,
-    allowedHosts: true,
+    // Dev-only dashboard server. Loopback bind + explicit Host allowlist:
+    // the /admin/* proxy reaches the real gateway at 127.0.0.1:3457, whose
+    // adminSensitive endpoints trust the vite proxy's loopback RemoteAddr.
+    // Binding 0.0.0.0 or accepting any Host (allowedHosts:true) would let LAN
+    // peers / DNS-rebinding hosts read the full .env when ADMIN_TOKEN is unset.
+    allowedHosts: ['127.0.0.1', 'localhost'],
     proxy: {
       '/admin/api': proxyTarget,
       '/admin/login': proxyTarget,

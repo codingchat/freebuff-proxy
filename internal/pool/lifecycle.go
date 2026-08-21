@@ -332,12 +332,21 @@ func (p *Pool) Shutdown(ctx context.Context) {
 
 	// Drain the cached bridge entries best-effort. The maintain loop is
 	// already stopped (wg.Wait above), so the entry list is stable.
+	//
+	// Snapshot the entries under the lock, then drain each one AFTER
+	// releasing bridgeMu: FinishAllRuns + session shutdown are sequential
+	// upstream calls bounded by the session-call timeout, so holding
+	// bridgeMu across them would stall every other bridge operation
+	// (AcquireBridge, bridgeRecordChat/bridgeRecordSpend/BridgeCount) for
+	// the whole drain — the same rule bridgeEvictLocked and bridgeMaintain
+	// already follow (bridge_cache.go:128-134).
 	p.bridgeMu.Lock()
-	defer p.bridgeMu.Unlock()
 	entries := make([]*bridgeEntry, 0, len(p.bridge))
 	for _, entry := range p.bridge {
 		entries = append(entries, entry)
 	}
+	p.bridgeMu.Unlock()
+
 	for _, entry := range entries {
 		entryCtx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 		entry.runs.FinishAllRuns(entryCtx)

@@ -4,15 +4,30 @@ import { onMount, onDestroy } from 'svelte';
  * Set up visibility-aware polling. Pauses when the tab is hidden,
  * resumes when visible. Calls fetchFn immediately on mount.
  *
+ * Overlap guard: while a previous fetchFn call is still in flight, a tick is
+ * skipped rather than stacking concurrent requests (slow fetches could
+ * otherwise overlap and out-of-order completions clobber newer state).
+ *
  * @param {() => Promise<void>} fetchFn - Async function to call on each tick
  * @param {number} intervalMs - Polling interval in milliseconds
  */
 export function usePolling(fetchFn, intervalMs) {
   let timer;
+  let running = false;
+
+  async function tick() {
+    if (running) return; // previous fetch still pending — skip this tick
+    running = true;
+    try {
+      await fetchFn();
+    } finally {
+      running = false;
+    }
+  }
 
   function start() {
     clearInterval(timer);
-    timer = setInterval(fetchFn, intervalMs);
+    timer = setInterval(tick, intervalMs);
   }
 
   function stop() {
@@ -28,7 +43,7 @@ export function usePolling(fetchFn, intervalMs) {
   }
 
   onMount(() => {
-    fetchFn();
+    tick();
     start();
     document.addEventListener('visibilitychange', handleVisibility);
   });

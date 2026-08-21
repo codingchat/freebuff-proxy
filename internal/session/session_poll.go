@@ -52,7 +52,7 @@ func statusError(status string, st *upstream.SessionState) error {
 			IpPrivacySignals:   st.IpPrivacySignals,
 		}
 	case "rate_limited", "spend_limited":
-		retryAfter := time.Duration(st.RetryAfterMs) * time.Millisecond
+		retryAfter := upstream.CooldownFromMillis(float64(st.RetryAfterMs))
 		if retryAfter <= 0 {
 			retryAfter = time.Minute
 		}
@@ -70,7 +70,7 @@ func statusError(status string, st *upstream.SessionState) error {
 		// users on the egress IP) and NOT tied to a quota reset, so the
 		// cooldown is bounded to retryAfterMs only — never the
 		// Pacific-midnight lock (reference/freebuff freebuff-session.ts).
-		retryAfter := time.Duration(st.RetryAfterMs) * time.Millisecond
+		retryAfter := upstream.CooldownFromMillis(float64(st.RetryAfterMs))
 		if retryAfter <= 0 {
 			retryAfter = time.Minute
 		}
@@ -87,7 +87,7 @@ func statusError(status string, st *upstream.SessionState) error {
 		// session slot). Non-limited messages keep today's exact error text.
 		if strings.Contains(strings.ToLower(st.Message), "limited") {
 			return &upstream.LimitedIpError{
-				RetryAfter: time.Duration(st.RetryAfterMs) * time.Millisecond,
+				RetryAfter: upstream.CooldownFromMillis(float64(st.RetryAfterMs)),
 				Body:       st.Message,
 			}
 		}

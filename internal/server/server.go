@@ -162,7 +162,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	if s.cfg.Load().DashboardEnabled {
-		mux.HandleFunc("POST /admin/reload", s.requireAdminToken(s.requireAuth(s.adminCSRF(http.HandlerFunc(s.handleReload)))))
+		mux.HandleFunc("POST /admin/reload", s.requireAdminToken(s.adminSensitive(s.requireAuth(s.adminCSRF(http.HandlerFunc(s.handleReload))))))
 		// Admin dashboard: cookie-authenticated browser UI. Assets are static
 		// and public — the login page (served without a cookie) references them,
 		// so they must NOT sit behind dashboardAuth. Overview/tokens/metrics are

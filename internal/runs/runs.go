@@ -27,8 +27,16 @@ import (
 )
 
 // shutdownTimeout bounds Shutdown when the caller passes a context without a
-// deadline (PRD Â§5: "10s force deadline").
+// deadline (PRD §5: "10s force deadline").
 const shutdownTimeout = 10 * time.Second
+
+// ErrShuttingDown is returned by Acquire/Precreate/Prewarm (via rotate)
+// once Shutdown has begun: the manager has been (or is being) drained and
+// the deferred-finish worker is stopped, so a run STARTed now would never
+// be FINISHed (P3). rotate re-checks the flag after its upstream StartRun
+// returns and discards/finishes the freshly started run inline instead of
+// tracking it.
+var ErrShuttingDown = errors.New("runs: manager shutting down; new run starts refused")
 
 // Defaults for the bounded deferred-FINISH queue (issue #90) and the
 // draining-runs list bounds (issue #55). Overridable via
@@ -144,6 +152,13 @@ type RunManager struct {
 	// to avoid a spurious "runs left after shutdown" warning on a clean
 	// shutdown of a persisted deployment (review P3).
 	keptForPersistence bool
+	// shuttingDown is set at the START of Shutdown, before the drain: no
+	// new run may be STARTed from that point on (P3). An in-flight request
+	// still in its acquire phase when the drain begins would otherwise
+	// rotate a fresh run into the cleared manager after the finish worker
+	// stopped — that run would never be FINISHed. rotate consults it both
+	// before the upstream StartRun and after it returns. Guarded by mu.
+	shuttingDown bool
 	// drainQueueCap / drainTTL bound the draining list (issue #55).
 	drainQueueCap int
 	drainTTL      time.Duration
@@ -282,7 +297,11 @@ func (m *RunManager) Acquire(ctx context.Context, agentID string) (*Run, error) 
 }
 
 // Release decrements the inflight counter of a leased run. Safe on nil.
-// Draining finishes happen on the maintain tick or the next rotation.
+// Draining finishes happen on the maintain tick or the next rotation;
+// when the LAST lease of a draining run releases (a FinishAllRuns
+// deferral, a rotation, or an abandonment), the FINISH is re-queued
+// immediately — otherwise a run drained with an outstanding lease would
+// never reach finishIfReadyCtx after its final release (P1).
 func (m *RunManager) Release(run *Run) {
 	if run == nil {
 		return
@@ -291,7 +310,18 @@ func (m *RunManager) Release(run *Run) {
 	if run.inflight > 0 {
 		run.inflight--
 	}
+	if run.inflight > 0 || !m.runDrainingLocked(run) {
+		m.mu.Unlock()
+		return
+	}
+	// Last lease on a draining run: drop it from the active set (a
+	// drain-marked run may still be current) so finishIfReadyCtx does not
+	// skip it as still-current, then re-queue the deferred FINISH.
+	if current, ok := m.runs[run.AgentID]; ok && current == run {
+		delete(m.runs, run.AgentID)
+	}
 	m.mu.Unlock()
+	m.enqueueFinish(run)
 }
 
 // InflightCount returns the total in-flight request count across all runs,
@@ -374,6 +404,16 @@ func (m *RunManager) Shutdown(ctx context.Context) {
 		ctx, cancel = context.WithTimeout(ctx, shutdownTimeout)
 		defer cancel()
 	}
+
+	// P3: refuse new run STARTs from this instant: an in-flight request
+	// still in its acquire phase when the drain begins must not start a
+	// fresh run after the manager is cleared — the finish worker is
+	// stopped, so that run would never be FINISHed. rotate re-checks the
+	// flag after its upstream StartRun returns and discards (inline-
+	// FINISHing) the fresh run instead of tracking it.
+	m.mu.Lock()
+	m.shuttingDown = true
+	m.mu.Unlock()
 
 	// Stop the deferred-job worker first (issue #90): it drains whatever is
 	// queued, so its FINISHes land before our own claim below, and no job
@@ -538,6 +578,10 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 		}
 
 		m.mu.Lock()
+		if m.shuttingDown {
+			m.mu.Unlock()
+			return ErrShuttingDown
+		}
 		if now := time.Now(); now.Before(m.cooldownUntil) {
 			until := m.cooldownUntil
 			m.mu.Unlock()
@@ -583,6 +627,10 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 			if pr := m.store.LoadRun(m.key, agentID); pr != nil {
 				if pr.RunID != "" && time.Since(pr.StartedAt) < m.rotationInterval {
 					m.mu.Lock()
+					if m.shuttingDown {
+						m.mu.Unlock()
+						return ErrShuttingDown
+					}
 					oldRun := m.runs[agentID]
 					m.runs[agentID] = &Run{
 						AgentID:        agentID,
@@ -595,9 +643,7 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 					close(flight.done)
 					delete(m.starting, agentID)
 					if oldRun != nil {
-						oldRun.drainedAt = time.Now()
-						m.draining = append(m.draining, oldRun)
-						m.pruneDrainingLocked()
+						m.appendDrainingLocked(oldRun)
 					}
 					m.mu.Unlock()
 					if oldRun != nil {
@@ -621,6 +667,17 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 			m.mu.Unlock()
 			return err
 		}
+		if m.shuttingDown {
+			// Shutdown began while the upstream START was in flight: the
+			// manager was (or is being) drained and the finish worker is
+			// stopped, so tracking this fresh run would leave it never
+			// FINISHed (P3). Discard it — best-effort FINISH it inline
+			// (bounded by the shutdown deadline) so the upstream agent run
+			// does not leak until its own rotation expiry.
+			m.mu.Unlock()
+			m.finishInline(runID, agentID)
+			return ErrShuttingDown
+		}
 		// Mint the trace session id before logging so the run-started line
 		// and every chat trace of this run share it (T3, D2).
 		traceSessionID := newTraceSessionID()
@@ -630,9 +687,7 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 		oldRun := m.runs[agentID]
 		m.runs[agentID] = newRun
 		if oldRun != nil {
-			oldRun.drainedAt = time.Now()
-			m.draining = append(m.draining, oldRun)
-			m.pruneDrainingLocked()
+			m.appendDrainingLocked(oldRun)
 		}
 		m.mu.Unlock()
 

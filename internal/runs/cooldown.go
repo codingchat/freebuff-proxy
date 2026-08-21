@@ -24,6 +24,29 @@ const DefaultCooldown = 30 * time.Minute
 // client switches egress/VPN.
 const countryBlockCooldown = 15 * time.Minute
 
+// cooldownCeiling is the farthest future any cooldown deadline may extend
+// (7 days, mirroring upstream.MaxCooldown). Applied defensively when
+// converting upstream-controlled retry durations to deadlines: without it a
+// huge RetryAfter (or a far-future ResetAt) would park the token in a
+// cooldown for years.
+const cooldownCeiling = 7 * 24 * time.Hour
+
+// cappedAfter returns now.Add(d) clamped to at most now+cooldownCeiling.
+func cappedAfter(now time.Time, d time.Duration) time.Time {
+	if d > cooldownCeiling {
+		d = cooldownCeiling
+	}
+	return now.Add(d)
+}
+
+// cappedDeadline clamps a future deadline to at most now+cooldownCeiling.
+func cappedDeadline(t time.Time) time.Time {
+	if ceiling := time.Now().Add(cooldownCeiling); t.After(ceiling) {
+		return ceiling
+	}
+	return t
+}
+
 // maxIpCappedReAdmitsPerDay caps how many times one token may re-admit
 // (and be refused ip_capped again) per Pacific day before it is locked
 // until the next Pacific midnight. The CLI treats ip_capped as
@@ -96,9 +119,9 @@ func (m *RunManager) CooldownRateLimit(rle *upstream.RateLimitError) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if rle.RetryAfter > 0 {
-		m.cooldownUntil = time.Now().Add(rle.RetryAfter)
+		m.cooldownUntil = cappedAfter(time.Now(), rle.RetryAfter)
 	} else if !rle.ResetAt.IsZero() && rle.ResetAt.After(time.Now()) {
-		m.cooldownUntil = rle.ResetAt
+		m.cooldownUntil = cappedDeadline(rle.ResetAt)
 	} else {
 		m.cooldownUntil = upstream.NextPacificMidnight()
 	}
@@ -150,7 +173,7 @@ func (m *RunManager) CooldownIpCapped(ice *upstream.IpCappedError) {
 		return
 	}
 	m.ipCapped = ice
-	m.ipCappedUntil = now.Add(ice.RetryAfter).Add(ipCappedJitter(ice.RetryAfter))
+	m.ipCappedUntil = cappedAfter(now, ice.RetryAfter+ipCappedJitter(ice.RetryAfter))
 	m.cooldownUntil = m.ipCappedUntil
 }
 

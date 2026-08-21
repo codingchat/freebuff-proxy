@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"freebuff-proxy/internal/config"
+	"freebuff-proxy/internal/testutil"
 	"freebuff-proxy/internal/upstream"
 )
 
@@ -606,4 +607,59 @@ func TestWriteErrorLoadSheddingAndPeakHours(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAdminReloadAdminSensitiveGate pins the auth boundary on POST
+// /admin/reload: reload is a state-changing admin action (re-reads .env +
+// JSON, atomically swaps config, resets pool/registry/rate-limiter), so with
+// ADMIN_TOKEN unset it must require a loopback client (adminSensitive),
+// mirroring the /admin/config wiring. With ADMIN_TOKEN set the bearer-token
+// gate still applies and keeps working from non-loopback clients.
+func TestAdminReloadAdminSensitiveGate(t *testing.T) {
+	// Isolate cwd: handleReload runs config.Load("") which reads ./.env
+	// (see TestAdminReload).
+	t.Chdir(t.TempDir())
+
+	reload := func(t *testing.T, srv *Server, remote, host, auth string) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/admin/reload", nil)
+		req.RemoteAddr = remote
+		req.Host = host
+		if auth != "" {
+			req.Header.Set("Authorization", "Bearer "+auth)
+		}
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	t.Run("open mode non-loopback forbidden", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		srv := newServerOpts(t, mock, nil) // no ADMIN_TOKEN, no API keys
+		if got := reload(t, srv, "198.51.100.7:1234", "proxy.example.com", ""); got != http.StatusForbidden {
+			t.Errorf("reload from non-loopback client without ADMIN_TOKEN = %d, want 403", got)
+		}
+	})
+
+	t.Run("open mode loopback allowed", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		srv := newServerOpts(t, mock, nil)
+		if got := reload(t, srv, "127.0.0.1:1234", "127.0.0.1:3457", ""); got != http.StatusOK {
+			t.Errorf("reload from loopback client = %d, want 200", got)
+		}
+	})
+
+	t.Run("admin token bearer gate", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		srv := newServerOpts(t, mock, func(c *config.Config) { c.AdminToken = "admin-secret" })
+		if got := reload(t, srv, "198.51.100.7:1234", "proxy.example.com", ""); got != http.StatusUnauthorized {
+			t.Errorf("reload without bearer = %d, want 401", got)
+		}
+		if got := reload(t, srv, "198.51.100.7:1234", "proxy.example.com", "admin-secret"); got != http.StatusOK {
+			t.Errorf("reload with bearer = %d, want 200", got)
+		}
+	})
 }
