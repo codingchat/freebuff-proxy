@@ -246,9 +246,12 @@ sessionReady:
 	ss := entry.session.Snapshot()
 	effectiveModel := model
 	effectiveAgentID := agentID
-	// Bridge mode: always use the requested model. The upstream may pin
-	// sessions to one model regardless of request — the proxy tracks what
-	// the CLIENT asked for, not what the upstream decided to serve.
+	// Bridge mode: verify the upstream actually serves the requested model.
+	// When the upstream pins a session to a different model (e.g. MIMO),
+	// reject the request instead of silently serving a different model.
+	if ss.Model != "" && ss.Model != model {
+		return nil, fmt.Errorf("bridge: upstream serves %s, not %s — model not available on this token", ss.Model, model)
+	}
 	if p.reg != nil {
 		if resolvedAgent, aerr := p.reg.AgentForModel(effectiveModel); aerr == nil {
 			effectiveAgentID = resolvedAgent

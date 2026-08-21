@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -479,21 +480,13 @@ func TestBridgeAcquireSyncsAdmittedModel(t *testing.T) {
 	}
 	p := newBridgePool(t, mock)
 
-	lease, err := p.AcquireBridge(context.Background(), "test-token", modelA)
-	if err != nil {
-		t.Fatalf("AcquireBridge failed: %v", err)
+	// Bridge mode rejects when upstream serves a different model than requested.
+	_, err := p.AcquireBridge(context.Background(), "test-token", modelA)
+	if err == nil {
+		t.Fatal("expected error when upstream serves different model")
 	}
-	defer p.LeaseRelease(lease)
-
-	// Bridge mode uses the REQUESTED model, not the upstream's coerced model.
-	// The upstream may pin sessions to one model regardless of request —
-	// the proxy tracks what the client asked for.
-	if lease.Model != modelA {
-		t.Errorf("lease.Model = %q, want requested model %q", lease.Model, modelA)
-	}
-	wantAgent := agentA
-	if lease.AgentID != wantAgent {
-		t.Errorf("lease.AgentID = %q, want %q", lease.AgentID, wantAgent)
+	if !strings.Contains(err.Error(), "model not available") {
+		t.Errorf("error = %v, want 'model not available'", err)
 	}
 }
 
