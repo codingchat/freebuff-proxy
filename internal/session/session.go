@@ -60,6 +60,13 @@ const (
 	reasonPoll       = "poll"
 	reasonStore      = "store"
 
+	// ReasonSuperseded is the T9 terminal-event reason for a session another
+	// instance took over (session_superseded, endsTheSession:true). Exported
+	// so the chat recovery path records superseded invalidations under the
+	// vocabulary — the re-admit storm detector's (T10) superseded count
+	// depends on the reason reaching recordInvalidation (#159).
+	ReasonSuperseded = reasonSuperseded
+
 	// Re-admit storm detector (T10): more than stormThreshold terminal
 	// session events within stormWindow is a session re-admit storm — each
 	// invalidation is followed by a fresh admission that burns a daily
@@ -1081,6 +1088,15 @@ func (m *Manager) InvalidateWithReason(reason string, status int) {
 // next request to re-create and restart the churn. A mismatch leaves the
 // cache untouched.
 func (m *Manager) InvalidateInstance(instanceID string) {
+	m.InvalidateInstanceWithReason(instanceID, "instance_invalidated", 0)
+}
+
+// InvalidateInstanceWithReason is the reason-aware form of InvalidateInstance
+// (#159): instance-guarded drop that records WHY (T9/T10) and the triggering
+// HTTP status. The chat recovery path uses it so a session_superseded
+// invalidation feeds the re-admit storm detector's superseded count and the
+// log names the cause instead of the generic instance_invalidated reason.
+func (m *Manager) InvalidateInstanceWithReason(instanceID, reason string, status int) {
 	if instanceID == "" {
 		return
 	}
@@ -1091,8 +1107,12 @@ func (m *Manager) InvalidateInstance(instanceID string) {
 	}
 	m.commit(nil)
 	m.mu.Unlock()
-	m.recordInvalidation("instance_invalidated")
-	slog.Debug("session invalidated", "instance_id", instanceID)
+	m.recordInvalidation(reason)
+	if status > 0 {
+		slog.Debug("session invalidated", "instance_id", instanceID, "reason", reason, "status", status)
+		return
+	}
+	slog.Debug("session invalidated", "instance_id", instanceID, "reason", reason)
 }
 
 // ClearQueued drops the cached session only when it is in the queued

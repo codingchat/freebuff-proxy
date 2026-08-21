@@ -568,53 +568,56 @@ func TestBridgeChatSessionInvalidBoundedRetry(t *testing.T) {
 	}
 }
 
-// TestBridgeChatSessionSupersededRetries pins #119 on the bridge path: 409
-// session_superseded retries once — the cached session is dropped and a fresh
-// session is acquired for the retry. This avoids the 30s model lock 9router
-// applies on a 503 response. Two chat attempts, two session creates, success
-// on the retry.
-func TestBridgeChatSessionSupersededRetries(t *testing.T) {
+// TestBridgeChatSessionSupersededTerminal pins #159 on the bridge path: 409
+// session_superseded is TERMINAL — the cached session is dropped immediately
+// and the error surfaces with NO in-request retry (the #119 re-admit-once
+// behavior wasted a fresh daily session slot against the superseding
+// instance). One chat attempt, one session create, 503 session_superseded.
+func TestBridgeChatSessionSupersededTerminal(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	// First chat attempt returns session_superseded, second succeeds.
+	// First chat attempt returns session_superseded; a second would succeed
+	// (canary) — the 503 must land without the canary ever firing.
 	callCount := 0
 	originalHandler := mock.ChatHandler
 	mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		if callCount == 1 {
-			// First call: session_superseded
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":{"message":"session_superseded"}}`))
 			return
 		}
-		// Second call: success
 		if originalHandler != nil {
 			originalHandler(w, r)
-		} else {
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte("data: " + chunk("cmpl-test", 1234567890, `"choices":[{"delta":{"content":"ok"},"index":0}]`) + "\n\n"))
-			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			return
 		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: " + chunk("cmpl-test", 1234567890, `"choices":[{"delta":{"content":"ok"},"index":0}]`) + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}
 	ts, _ := newBridgeTestServer(t, mock)
 
 	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA),
 		map[string]string{"Authorization": "Bearer client-tok-ss"})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, data)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", resp.StatusCode, data)
 	}
-	if got := len(mock.RecordedChatHeaders); got != 2 {
-		t.Errorf("upstream chat attempts = %d, want exactly 2 (retry on superseded)", got)
+	if !strings.Contains(string(data), "session_superseded") {
+		t.Errorf("body missing session_superseded: %s", data)
 	}
-	if got := mock.SessionCreates; got != 2 {
-		t.Errorf("session creates = %d, want exactly 2 (invalidated + re-acquired)", got)
+	if got := callCount; got != 1 {
+		t.Errorf("upstream chat attempts = %d, want exactly 1 (no retry on the dead instance)", got)
+	}
+	if got := mock.SessionCreates; got != 1 {
+		t.Errorf("session creates = %d, want exactly 1 (no re-admit against the superseding instance)", got)
 	}
 }
 
-// TestBridgeChatSessionSupersededBoundedRetry pins #119 on the bridge path:
-// when the retry ALSO fails on session_superseded, the attempt budget caps at
-// 2 attempts and surfaces 503 session_superseded.
-func TestBridgeChatSessionSupersededBoundedRetry(t *testing.T) {
+// TestBridgeChatSessionSupersededNextRequestReadmits pins #159 on the bridge
+// path: a superseded chat invalidates the cached session immediately, so the
+// NEXT request re-admits fresh. Two requests: 503 session_superseded (one
+// create), then success on a NEW session (second create — cache was dropped).
+func TestBridgeChatSessionSupersededNextRequestReadmits(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.ChatStatus = http.StatusBadRequest
@@ -629,11 +632,24 @@ func TestBridgeChatSessionSupersededBoundedRetry(t *testing.T) {
 	if !strings.Contains(string(data), "session_superseded") {
 		t.Errorf("body missing session_superseded: %s", data)
 	}
-	if got := len(mock.RecordedChatHeaders); got != 2 {
-		t.Errorf("upstream chat attempts = %d, want exactly 2 (bounded retry on superseded)", got)
+	if got := mock.SessionCreates; got != 1 {
+		t.Fatalf("session creates after superseded request = %d, want 1", got)
+	}
+
+	// Upstream heals; the next request must create a FRESH session (the
+	// superseded row was invalidated, so no cached instance is reused).
+	mock.ChatStatus = http.StatusOK
+	mock.ChatErrorBody = ""
+	resp2, data2 := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA),
+		map[string]string{"Authorization": "Bearer client-tok-ss"})
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("second request status = %d, want 200: %s", resp2.StatusCode, data2)
 	}
 	if got := mock.SessionCreates; got != 2 {
-		t.Errorf("session creates = %d, want exactly 2 (invalidated + re-acquired once)", got)
+		t.Errorf("session creates after re-admit request = %d, want 2 (fresh session, not cache reuse)", got)
+	}
+	if got := len(mock.RecordedChatHeaders); got != 2 {
+		t.Errorf("upstream chat attempts = %d, want 2 (1 per request — no in-request retry)", got)
 	}
 }
 
