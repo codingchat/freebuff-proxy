@@ -149,6 +149,158 @@ func TestReAdmitDisabledByDefault(t *testing.T) {
 	}
 }
 
+// TestGraceWindowTriggersAsyncReAdmitAndHandsOver pins issue #163: when a
+// request arrives while the cached session is being ridden only through
+// its grace drain (a long stream crossed the expiresAt boundary), the
+// request rides the OLD instance while a background re-admit fires; once
+// the fresh admission lands, the next request gets the NEW instance — no
+// synchronous admission (waiting room) is paid at grace end, and the
+// handover consumes exactly one create.
+func TestGraceWindowTriggersAsyncReAdmitAndHandsOver(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	var creates atomic.Int32
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		creates.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":     "active",
+			"instanceId": "inst-new",
+			"expiresAt":  time.Now().Add(30 * time.Minute).Format(time.RFC3339),
+		})
+	}
+	m := newTestSession(t, mock)
+	m.SetReAdmitLead(time.Minute)
+
+	// Seed an expired-but-in-grace cache: the shape left by a long stream
+	// that crossed expiresAt while chat was still being served (gap #13).
+	m.mu.Lock()
+	m.commit(&cachedState{
+		status:            "active",
+		instanceID:        "inst-grace",
+		model:             "deepseek/deepseek-v4-pro",
+		expiresAt:         time.Now().Add(-10 * time.Minute),
+		gracePeriodEndsAt: time.Now().Add(20 * time.Minute),
+	})
+	m.mu.Unlock()
+
+	// The first request rides the old instance and triggers the async
+	// re-admit.
+	instance, err := m.EnsureSessionForModel(context.Background(), "deepseek/deepseek-v4-pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance != "inst-grace" {
+		t.Fatalf("first instance = %q, want inst-grace (ride old through grace)", instance)
+	}
+	// The background re-admit created the fresh session.
+	eventually(t, "grace re-admit create", func() bool { return creates.Load() >= 1 })
+	// Once the re-admit lands, the next request gets the new instance.
+	eventually(t, "fresh instance served after handover", func() bool {
+		id, err := m.EnsureSessionForModel(context.Background(), "deepseek/deepseek-v4-pro")
+		return err == nil && id == "inst-new"
+	})
+	// No storm: the handover consumed exactly one create.
+	time.Sleep(150 * time.Millisecond)
+	if got := creates.Load(); got != 1 {
+		t.Errorf("creates = %d, want 1 (once per expiry, no storm)", got)
+	}
+}
+
+// TestGraceWindowReAdmitRefusedRidesOldOnce pins the anti-supersede rule
+// (issue #163): a grace-window re-admit that the upstream refuses (the old
+// session is still authoritative — the create returns ended/superseded/
+// none) keeps the old row riding through the drain and fires at most ONCE
+// per expiry — no create storm.
+func TestGraceWindowReAdmitRefusedRidesOldOnce(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	var creates atomic.Int32
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		creates.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ended"})
+	}
+	m := newTestSession(t, mock)
+	m.SetReAdmitLead(time.Minute)
+
+	m.mu.Lock()
+	m.commit(&cachedState{
+		status:            "active",
+		instanceID:        "inst-grace",
+		model:             "deepseek/deepseek-v4-pro",
+		expiresAt:         time.Now().Add(-10 * time.Minute),
+		gracePeriodEndsAt: time.Now().Add(20 * time.Minute),
+	})
+	m.mu.Unlock()
+
+	// First request triggers the re-admit (refused upstream) and rides.
+	if got, err := m.EnsureSessionForModel(context.Background(), "deepseek/deepseek-v4-pro"); err != nil || got != "inst-grace" {
+		t.Fatalf("first = %q/%v, want inst-grace ride", got, err)
+	}
+	eventually(t, "refused re-admit attempted", func() bool { return creates.Load() >= 1 })
+	// The refused re-admit left the old row authoritative: every later
+	// request keeps riding it with no re-trigger and no error.
+	for i := 0; i < 5; i++ {
+		if got, err := m.EnsureSessionForModel(context.Background(), "deepseek/deepseek-v4-pro"); err != nil || got != "inst-grace" {
+			t.Fatalf("ride %d = %q/%v, want inst-grace", i, got, err)
+		}
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := creates.Load(); got != 1 {
+		t.Errorf("creates = %d, want 1 (refused re-admit fires once)", got)
+	}
+}
+
+// TestGraceWindowReAdmitQueuedRidesOldOnce pins the queued side of the
+// anti-supersede rule (issue #163): a grace-window re-admit that lands in
+// the upstream waiting room must NOT displace the ridden session — the
+// next request keeps riding the old row through the drain instead of
+// surfacing waiting-room latency, and the re-admit fires only once.
+func TestGraceWindowReAdmitQueuedRidesOldOnce(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	var creates atomic.Int32
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		creates.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":          "queued",
+			"instanceId":      "inst-q",
+			"position":        3,
+			"queueDepth":      7,
+			"estimatedWaitMs": 60000,
+			"pollAt":          time.Now().Add(time.Hour).Format(time.RFC3339),
+		})
+	}
+	m := newTestSession(t, mock)
+	m.SetReAdmitLead(time.Minute)
+
+	m.mu.Lock()
+	m.commit(&cachedState{
+		status:            "active",
+		instanceID:        "inst-grace",
+		model:             "deepseek/deepseek-v4-pro",
+		expiresAt:         time.Now().Add(-10 * time.Minute),
+		gracePeriodEndsAt: time.Now().Add(20 * time.Minute),
+	})
+	m.mu.Unlock()
+
+	// First request triggers the re-admit (lands queued) and rides.
+	if got, err := m.EnsureSessionForModel(context.Background(), "deepseek/deepseek-v4-pro"); err != nil || got != "inst-grace" {
+		t.Fatalf("first = %q/%v, want inst-grace ride", got, err)
+	}
+	eventually(t, "queued re-admit attempted", func() bool { return creates.Load() >= 1 })
+	// The queued admission was NOT cached: the next request keeps riding
+	// the old row — no WaitingRoomError, no re-trigger.
+	for i := 0; i < 5; i++ {
+		if got, err := m.EnsureSessionForModel(context.Background(), "deepseek/deepseek-v4-pro"); err != nil || got != "inst-grace" {
+			t.Fatalf("ride %d = %q/%v, want inst-grace (no waiting room)", i, got, err)
+		}
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := creates.Load(); got != 1 {
+		t.Errorf("creates = %d, want 1 (queued re-admit fires once)", got)
+	}
+}
+
 // TestPollSkipsWithinProbeTTL pins issue #60(a): session poll GETs within
 // the admission probe cache TTL of a successful session response are
 // skipped; after the TTL the GET happens.
