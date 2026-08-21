@@ -12,7 +12,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -505,7 +504,6 @@ func (s *Server) ingestStreamReasoning(model string, reasoningParts, contentPart
 // nothing is written and a 502 is returned (the client asked for a single
 // response; a partial one would be worse than none).
 func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Reader, stats *relayStats, chatStart time.Time) {
-	slog.Debug("relayJSON entered", "served_model", stats.servedModel)
 	acc := convert.NewAccumulator()
 	// Override the upstream model in the response with the served model
 	// (which is the requested model, not necessarily what upstream returned).
@@ -599,9 +597,7 @@ func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Read
 	if stats.servedModel != "" {
 		var comp map[string]any
 		if json.Unmarshal(out, &comp) == nil {
-			cur, _ := comp["model"].(string)
-			slog.Warn("relayJSON model stamp", "upstream_model", cur, "served_model", stats.servedModel, "match", cur == stats.servedModel)
-			if cur != stats.servedModel {
+			if cur, _ := comp["model"].(string); cur != stats.servedModel {
 				comp["model"] = stats.servedModel
 				if b, err := json.Marshal(comp); err == nil {
 					out = b
