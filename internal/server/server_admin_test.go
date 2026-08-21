@@ -21,7 +21,7 @@ func TestAdminReload(t *testing.T) {
 	defer mock0.Close()
 	ts, _ := newTestServer(t, nil, mock0)
 
-	resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/reload", nil, nil)
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/reload", nil, map[string]string{"Authorization": "Bearer " + config.DefaultAdminToken})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, data)
 	}
@@ -62,7 +62,7 @@ func TestAdminReloadToken(t *testing.T) {
 	// Unset: legacy behavior (open), still works.
 	mockLegacy := testutil.NewMock()
 	defer mockLegacy.Close()
-	tsLegacy, _ := newTestServer(t, nil, mockLegacy)
+	tsLegacy, _ := newTestServerCfg(t, nil, func(cfg *config.Config) { cfg.AdminToken = "" }, mockLegacy)
 	resp, data = doJSON(t, http.MethodPost, tsLegacy.URL+"/admin/reload", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("reload without ADMIN_TOKEN status = %d, want 200 (legacy): %s", resp.StatusCode, data)
@@ -119,7 +119,7 @@ func TestConcurrentReloadAndChat(t *testing.T) {
 		worker(http.MethodGet, ts.URL+"/v1/models", nil)
 	}
 	for i := 0; i < 20; i++ {
-		resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/reload", nil, nil)
+		resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/reload", nil, map[string]string{"Authorization": "Bearer " + config.DefaultAdminToken})
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("reload %d status = %d, want 200: %s", i, resp.StatusCode, data)
 		}
@@ -133,7 +133,7 @@ func TestConcurrentReloadAndChat(t *testing.T) {
 func TestAdminSensitiveOpenMode(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	ts, _ := newTestServer(t, nil, mock)
+	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) { c.AdminToken = "" }, mock)
 
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/admin/config", nil)
 	req.Host = "127.0.0.1:3457"

@@ -198,6 +198,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /admin/api/metrics", s.dashboardAuth(s.dash.APIHandler("metrics")))
 		mux.Handle("GET /admin/api/version", s.dashboardAuth(http.HandlerFunc(s.dash.APIVersion)))
 
+		mux.Handle("GET /admin/api/auth/status", s.dashboardAuth(http.HandlerFunc(s.handleAdminAuthStatus)))
 		// SPA: all admin/* GET routes serve the embedded Svelte SPA
 		mux.Handle("GET /admin", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
 		mux.Handle("GET /admin/", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
@@ -221,6 +222,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /admin/tokens/remove", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenRemove)))))
 		mux.Handle("POST /admin/mode", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleModeSwitch)))))
 		mux.Handle("POST /admin/diag", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleDiag)))))
+		mux.Handle("POST /admin/api/change-password", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleAdminChangePassword)))))
 		mux.Handle("POST /admin/smoke", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleSmoke)))))
 		// Static assets: serve from embedded dist/assets
 		mux.Handle("GET /admin/assets/", noDirListing(http.StripPrefix("/admin/assets/", http.FileServerFS(mustSubFS(dashboard.DistFS(), "assets")))))

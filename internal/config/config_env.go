@@ -332,6 +332,10 @@ func Load(configPath string) (Config, error) {
 		logFormat = "text"
 	}
 
+	adminToken := strings.TrimSpace(raw.AdminToken)
+	if adminToken == "" {
+		adminToken = DefaultAdminToken
+	}
 	cfg := Config{
 		ListenAddr:                       strings.TrimSpace(raw.ListenAddr),
 		UpstreamBaseURL:                  upstreamBaseURL,
@@ -340,7 +344,7 @@ func Load(configPath string) (Config, error) {
 		RequestTimeout:                   requestTimeout,
 		SessionCallTimeout:               sessionCallTimeout,
 		APIKeys:                          dedupeStrings(raw.APIKeys),
-		AdminToken:                       strings.TrimSpace(raw.AdminToken),
+		AdminToken:                       adminToken,
 		HTTP2Upstream:                    raw.HTTP2Upstream,
 		CostMode:                         strings.TrimSpace(raw.CostMode),
 		ActingUserID:                     strings.TrimSpace(raw.ActingUserID),

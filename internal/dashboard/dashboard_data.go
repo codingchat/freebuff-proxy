@@ -595,6 +595,7 @@ type overviewData struct {
 	FingerprintRotations int64       `json:"fingerprint_rotations"`
 	Tokens               []tokenCard `json:"tokens"`
 	HasTokens            bool        `json:"has_tokens"`
+	IsDefaultAdminToken  bool        `json:"is_default_admin_token"`
 }
 
 type tokenCard struct {
@@ -717,10 +718,10 @@ func (d *Dashboard) overviewData() overviewData {
 		TransientRetries:     ps.TransientRetries,
 		FingerprintRotations: ps.FingerprintRotations,
 		BridgeTokens:         d.pool.BridgeCount(),
+		IsDefaultAdminToken:  cfg.IsDefaultAdminToken(),
 	}
 	for _, t := range ps.Tokens {
 		od.Tokens = append(od.Tokens, cardFromSnapshot(t))
 	}
-	od.HasTokens = len(od.Tokens) > 0
 	return od
 }

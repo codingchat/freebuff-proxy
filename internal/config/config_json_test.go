@@ -432,3 +432,28 @@ func TestAdminToken(t *testing.T) {
 		t.Errorf("AdminToken = %q, want from-dotenv (.env beats JSON)", cfg.AdminToken)
 	}
 }
+func TestAdminTokenDefault(t *testing.T) {
+	clearEnv(t)
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AdminToken != DefaultAdminToken {
+		t.Errorf("AdminToken = %q, want default %q", cfg.AdminToken, DefaultAdminToken)
+	}
+	if !cfg.IsDefaultAdminToken() {
+		t.Errorf("IsDefaultAdminToken() = false, want true")
+	}
+
+	t.Setenv("ADMIN_TOKEN", "custom-token")
+	cfg2, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg2.AdminToken != "custom-token" {
+		t.Errorf("AdminToken = %q, want custom-token", cfg2.AdminToken)
+	}
+	if cfg2.IsDefaultAdminToken() {
+		t.Errorf("IsDefaultAdminToken() = true, want false")
+	}
+}

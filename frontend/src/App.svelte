@@ -9,6 +9,9 @@
   import Logs from './lib/pages/Logs.svelte';
   import Setup from './lib/pages/Setup.svelte';
   import Login from './lib/pages/Login.svelte';
+  import SecurityBanner from './lib/components/SecurityBanner.svelte';
+  import ChangePasswordModal from './lib/components/ChangePasswordModal.svelte';
+  import { fetchAPI } from './lib/api/client.js';
 
   function getInitialTab() {
     if (typeof window === 'undefined') return 'overview';
@@ -25,6 +28,8 @@
 
   let activeTab = $state(getInitialTab());
   let versionInfo = $state(null);
+  let isDefaultAdminToken = $state(false);
+  let showChangePasswordModal = $state(false);
 
   function syncTabFromURL() {
     activeTab = getInitialTab();
@@ -53,6 +58,13 @@
       })
       .catch((e) => console.warn('version check failed', e));
 
+    // Check if using default admin token (for security banner)
+    fetchAPI('/admin/api/auth/status')
+      .then((data) => {
+        isDefaultAdminToken = data?.is_default_admin_token ?? false;
+      })
+      .catch(() => {});
+
     return () => {
       window.removeEventListener('hashchange', syncTabFromURL);
     };
@@ -71,8 +83,21 @@
     <Sidebar bind:activeTab {versionInfo} />
   {/if}
 
+  {#if isDefaultAdminToken && activeTab !== 'login'}
+    <ChangePasswordModal
+      bind:open={showChangePasswordModal}
+      onSuccess={() => { isDefaultAdminToken = false; }}
+    />
+  {/if}
+
   <div class="flex-1 flex flex-col {activeTab !== 'login' ? 'md:pl-56' : ''}">
     <main id="main-content" class="flex-1 w-full max-w-[1200px] mx-auto px-6 py-8">
+      {#if isDefaultAdminToken && activeTab !== 'login'}
+        <div class="mb-6">
+          <SecurityBanner onChangePassword={() => { showChangePasswordModal = true; }} />
+        </div>
+      {/if}
+
       {#key activeTab}
         <div class="page-enter">
           {#if activeTab === 'overview'}

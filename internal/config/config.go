@@ -29,7 +29,7 @@ type Config struct {
 	RequestTimeout     time.Duration
 	SessionCallTimeout time.Duration
 	APIKeys            []string
-	AdminToken         string // bearer token required for POST /admin/reload ("" = unauthenticated in default deployments)
+	AdminToken         string // bearer token required for POST /admin/reload (defaults to "123456" when unset/empty)
 	HTTP2Upstream      bool   // true = negotiate HTTP/2 with the upstream so the ALPN matches real browsers (HTTP2_UPSTREAM); false forces HTTP/1.1 (#51)
 	CostMode           string // "" (omit) or "free"; A/B pending, PRD §8
 	// ActingUserID is the optional FreeBuff account id sent as
@@ -176,6 +176,14 @@ type Config struct {
 	EnvFile          string
 	DiscoveredSource string // auto-discovered credentials file path (if any)
 	DiscoveredEmail  string // auto-discovered account email (if any)
+}
+
+// DefaultAdminToken is the default dashboard admin password ("123456") used when ADMIN_TOKEN is unconfigured or empty.
+const DefaultAdminToken = "123456"
+
+// IsDefaultAdminToken reports whether AdminToken matches the factory default credentials ("123456").
+func (c *Config) IsDefaultAdminToken() bool {
+	return c != nil && c.AdminToken == DefaultAdminToken
 }
 
 // BridgeMode reports whether the proxy runs without any AUTH_TOKENS: every

@@ -578,10 +578,11 @@ func TestSmokeDefaultsToFallbackModel(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.ChatBody = testutil.SSEEvent(chunk("chatcmpl-sm", 1, `"choices":[{"index":0,"delta":{"content":"ping"},"finish_reason":"stop"}]`))
-	ts, _ := newTestServer(t, nil, mock)
+	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) { c.AdminToken = "secret" }, mock)
 
 	// Smoke with no model field: server picks the fallback.
-	resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/smoke", []byte(`{"prompt":"ping"}`), nil)
+	cookie := authedCookie(t, ts)
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/smoke", []byte(`{"prompt":"ping"}`), map[string]string{"Cookie": cookie})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("smoke status = %d, want 200: %s", resp.StatusCode, data)
 	}

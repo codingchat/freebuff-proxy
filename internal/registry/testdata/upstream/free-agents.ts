@@ -258,7 +258,7 @@ export const FREEBUFF_ROOT_AGENT_IDS = [
   'base2-free-deepseek-flash',
   'base2-free-mimo',
   'base2-free-minimax-m3',
-  'base2-free-luna',
+  'base3-free-luna',
   'base2-free-glm',
   'base2-free-kimi-k3-eco',
   // Extended-context `-max` roots. Listed here for the same reason every other
@@ -271,7 +271,7 @@ export const FREEBUFF_ROOT_AGENT_IDS = [
   // there and no base3 twin to list.
   'base2-free-deepseek-pro-max',
   'base2-free-deepseek-flash-max',
-  'base2-free-luna-max',
+  'base3-free-luna-max',
   // Freebuff Web only (Meta Muse Spark 1.2 Contributor). Listed here like every
   // other root so its subagents pass the hierarchy gate; the model, not this
   // list, is what keeps it off the CLI and Desktop.
@@ -316,7 +316,7 @@ const FREEBUFF_ROOT_AGENT_ID_SET: ReadonlySet<string> = new Set(
 export const FREEBUFF_ROOT_AGENT_ID_BY_MODEL: Record<string, string> = {
   [FREEBUFF_MIMO_V25_MODEL_ID]: 'base2-free-mimo',
   [FREEBUFF_MINIMAX_M3_MODEL_ID]: 'base2-free-minimax-m3',
-  [FREEBUFF_GPT_5_6_LUNA_MODEL_ID]: 'base2-free-luna',
+  [FREEBUFF_GPT_5_6_LUNA_MODEL_ID]: 'base3-free-luna',
   [FREEBUFF_DEEPSEEK_V4_PRO_MODEL_ID]: 'base2-free-deepseek',
   [FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID]: 'base2-free-deepseek-flash',
   [FREEBUFF_GLM_V52_MODEL_ID]: 'base2-free-glm',
@@ -447,7 +447,7 @@ export const FREE_MODE_AGENT_MODELS: Record<string, Set<string>> = {
   'base2-free-deepseek-flash': new Set([FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID]),
   'base2-free-mimo': new Set([FREEBUFF_MIMO_V25_MODEL_ID]),
   'base2-free-minimax-m3': new Set([FREEBUFF_MINIMAX_M3_MODEL_ID]),
-  'base2-free-luna': new Set([FREEBUFF_GPT_5_6_LUNA_MODEL_ID]),
+  'base3-free-luna': new Set([FREEBUFF_GPT_5_6_LUNA_MODEL_ID]),
   'base2-free-glm': new Set([FREEBUFF_GLM_V52_MODEL_ID]),
   'base2-free-kimi-k3-eco': new Set([FREEBUFF_KIMI_K3_ECO_MODEL_ID]),
   // Extended-context roots for the provisioned `-max` tiers. Pinned one model
@@ -460,7 +460,7 @@ export const FREE_MODE_AGENT_MODELS: Record<string, Set<string>> = {
   'base2-free-deepseek-flash-max': new Set([
     FREEBUFF_DEEPSEEK_V4_FLASH_MAX_MODEL_ID,
   ]),
-  'base2-free-luna-max': new Set([FREEBUFF_GPT_5_6_LUNA_MAX_MODEL_ID]),
+  'base3-free-luna-max': new Set([FREEBUFF_GPT_5_6_LUNA_MAX_MODEL_ID]),
   // Web-only Muse Spark root. Exactly one model, like every other pinned root:
   // the rate-limit queue accounts by model, so a root that could also run
   // something else would let a turn escape the queue's bookkeeping.
@@ -533,7 +533,7 @@ export const FREE_MODE_AGENT_MODELS: Record<string, Set<string>> = {
   // keeps those sessions working.
   //
   // Never add lite's model (GPT-5.6 Luna) here. Freebuff now offers that model
-  // too, but it reaches it through its OWN agents — base2-free-luna and
+  // too, but it reaches it through its OWN agents — base3-free-luna and
   // code-reviewer-luna — which carry Freebuff's pinned OpenAI routing and
   // effort. This entry exists only for pre-provider-reviewer clients; widening
   // it would let a free session run the PAID product's reviewer.

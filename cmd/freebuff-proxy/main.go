@@ -297,11 +297,9 @@ func main() {
 		// foreign user and can flag the account.
 		logger.Info("acting user id set — x-freebuff-acting-user-id will be sent on chat calls (only safe with the token's own account id; any other value impersonates another user)", "acting_user_id", cfg.ActingUserID)
 	}
-	// /admin/reload and the admin dashboard are open in default deployments
-	// (no API_KEYS, or bridge mode): warn loudly so operators can decide
-	// whether to set ADMIN_TOKEN.
-	if cfg.DashboardEnabled && cfg.AdminToken == "" && (len(cfg.APIKeys) == 0 || cfg.BridgeMode()) {
-		logger.Warn("/admin/reload and the /admin dashboard are unauthenticated — any client that can reach the proxy can reload configuration and view its state. Set ADMIN_TOKEN to require a bearer token")
+	// Warn loudly if the dashboard is running with the factory default password ("123456").
+	if cfg.DashboardEnabled && cfg.IsDefaultAdminToken() {
+		logger.Warn("ADMIN_TOKEN is using default password ('123456') — change it immediately in dashboard settings or .env to secure this instance")
 	}
 	if w := adminTokenCleartextWarning(cfg.AdminToken, cfg.ListenAddr); w != "" {
 		logger.Warn(w)

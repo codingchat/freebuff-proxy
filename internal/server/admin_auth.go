@@ -7,10 +7,13 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"freebuff-proxy/internal/config"
 	"freebuff-proxy/internal/upstream"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -319,4 +322,95 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/admin/login", http.StatusFound)
+}
+
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+func (s *Server) handleAdminAuthStatus(w http.ResponseWriter, r *http.Request) {
+	cfg := s.cfg.Load()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"authenticated":          true,
+		"is_default_admin_token": cfg.IsDefaultAdminToken(),
+	})
+}
+
+func (s *Server) handleAdminChangePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req changePasswordRequest
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "application/json") {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+		if err != nil {
+			s.writeJSONError(w, http.StatusBadRequest, "failed to read request body", "invalid_request_error", "invalid_request", 0)
+			return
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			s.writeJSONError(w, http.StatusBadRequest, "invalid request JSON", "invalid_request_error", "invalid_json", 0)
+			return
+		}
+	} else {
+		req.CurrentPassword = r.FormValue("current_password")
+		req.NewPassword = r.FormValue("new_password")
+	}
+
+	req.CurrentPassword = strings.TrimSpace(req.CurrentPassword)
+	req.NewPassword = strings.TrimSpace(req.NewPassword)
+
+	cfg := s.cfg.Load()
+
+	// Verify current password with constant-time comparison
+	if subtle.ConstantTimeCompare([]byte(req.CurrentPassword), []byte(cfg.AdminToken)) != 1 {
+		s.writeJSONError(w, http.StatusBadRequest, "Current password is incorrect.", "invalid_request_error", "invalid_credentials", 0)
+		return
+	}
+
+	if len(req.NewPassword) < 6 {
+		s.writeJSONError(w, http.StatusBadRequest, "New password must be at least 6 characters.", "invalid_request_error", "password_too_short", 0)
+		return
+	}
+
+	if req.NewPassword == config.DefaultAdminToken {
+		s.writeJSONError(w, http.StatusBadRequest, "New password cannot be the factory default password ('123456').", "invalid_request_error", "password_insecure", 0)
+		return
+	}
+
+	s.adminSaveMu.Lock()
+	defer s.adminSaveMu.Unlock()
+
+	oldBytes, oldErr := os.ReadFile(".env")
+	_, err := updateEnvKeys([]envUpdate{{Key: "ADMIN_TOKEN", Value: req.NewPassword}})
+	if err != nil {
+		s.writeJSONError(w, http.StatusInternalServerError, "Failed to update .env: "+err.Error(), "internal_error", "env_write_failed", 0)
+		return
+	}
+
+	newCfg, err := config.Load(s.configPath)
+	if err != nil {
+		restoreEnvFile(oldBytes, oldErr)
+		s.logger.Warn("admin change password reload failed; restored .env", "err", err)
+		s.writeJSONError(w, http.StatusInternalServerError, "Failed to reload configuration: "+err.Error(), "internal_error", "reload_failed", 0)
+		return
+	}
+
+	s.cfg.Store(&newCfg)
+	s.reg.SetConfig(&newCfg)
+	s.pool.SetConfig(&newCfg)
+
+	// Set updated session cookie
+	s.adminAuth.setCookie(w, r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
+
+	s.logger.Info("admin password changed successfully", "remote", remoteHost(r))
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"message": "Admin password updated successfully.",
+	})
 }
