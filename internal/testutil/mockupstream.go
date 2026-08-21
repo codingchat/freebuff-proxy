@@ -672,6 +672,30 @@ func (m *MockUpstream) SetFinishFailures(n int) {
 	m.mu.Unlock()
 }
 
+// SetAuthReject updates AuthReject under the mock's mutex to avoid
+// write races under -race.
+func (m *MockUpstream) SetAuthReject(b bool) {
+	m.mu.Lock()
+	m.AuthReject = b
+	m.mu.Unlock()
+}
+
+// SetRateLimit updates RateLimit under the mock's mutex to avoid
+// write races under -race.
+func (m *MockUpstream) SetRateLimit(b bool) {
+	m.mu.Lock()
+	m.RateLimit = b
+	m.mu.Unlock()
+}
+
+// SetBan updates Ban under the mock's mutex to avoid
+// write races under -race.
+func (m *MockUpstream) SetBan(b bool) {
+	m.mu.Lock()
+	m.Ban = b
+	m.mu.Unlock()
+}
+
 // SessionCreatesSnapshot returns a locked copy of the session-create
 // counter (see StartedRunsSnapshot). Tests poll it while an admission is in
 // flight without racing the mock server goroutine.

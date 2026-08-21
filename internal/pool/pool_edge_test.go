@@ -456,7 +456,7 @@ func TestBridgeDeadTokenEvictDefersWhenBusy(t *testing.T) {
 	// the same token hits a 401 (session admission for another model forces
 	// an upstream create past the cached session) and triggers the
 	// dead-token eviction path.
-	mock.AuthReject = true
+	mock.SetAuthReject(true)
 	_, err = p.AcquireBridge(context.Background(), "dead-tok", modelB)
 	if !errors.Is(err, upstream.ErrAuthRejected) {
 		t.Fatalf("second acquire err = %v, want ErrAuthRejected", err)
@@ -476,7 +476,7 @@ func TestBridgeDeadTokenEvictDefersWhenBusy(t *testing.T) {
 	// The token-death knob also 401s the FINISH/EndSession cleanup calls,
 	// so restore it before the reclaim phase (the eviction decision, not
 	// the mock's persistent rejection, is what the sweep must honor).
-	mock.AuthReject = false
+	mock.SetAuthReject(false)
 
 	// Once the lease drains and the entry idles, the sweep reclaims it:
 	// FINISH + EndSession + cache removal.
