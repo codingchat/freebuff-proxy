@@ -153,6 +153,10 @@ type TokenSnapshot struct {
 	// nests entitlement inside each rate-limit entry).
 	QuotaByModel map[string]session.QuotaSnapshot
 	Entitlement  map[string]float64
+	// GlmPromo is the raw upstream glmPromo block ({dailySessions, endsAt})
+	// from the token's last admission (issue #178); "" when absent. The
+	// dashboard synthesizes the z-ai/glm-5.2 promo quota row from it.
+	GlmPromo string
 	// Standing is the upstream account standing block (issue #96); nil until
 	// the session reports it.
 	Standing *upstream.SessionStanding

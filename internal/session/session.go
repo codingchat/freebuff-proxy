@@ -131,6 +131,11 @@ type Manager struct {
 	// commit(non-nil) without fresh quota restores it so the dashboard
 	// quota table stays visible between quota-carrying responses.
 	savedQuota map[string]upstream.ModelQuota
+	// savedGlmPromo preserves the last glmPromo block across
+	// invalidation/re-admission cycles, mirroring savedQuota (issue #178):
+	// the GLM promo quota row must stay visible while the session is
+	// between quota-carrying responses.
+	savedGlmPromo string
 
 	// adopt is the issue #97 CLI-session adoption mode (ADOPT_CLI_SESSION):
 	// nil (default) = create sessions normally. When set, the manager adopts
@@ -194,6 +199,10 @@ type cachedState struct {
 	// admission/poll that carried rateLimitsByModel (key = model id);
 	// nil until such a response is seen.
 	quotaByModel map[string]upstream.ModelQuota
+	// glmPromo carries the raw upstream glmPromo block ({dailySessions,
+	// endsAt}) from the last admission/poll that included it (issue #178);
+	// "" until such a response is seen.
+	glmPromo string
 	// standing is the upstream account standing block (issue #96); nil until
 	// an admission/poll that carried it.
 	standing *upstream.SessionStanding
@@ -249,6 +258,12 @@ func (m *Manager) commit(cs *cachedState) {
 		if m.state.quotaByModel != nil {
 			m.savedQuota = m.state.quotaByModel
 		}
+		// Stash the glmPromo block the same way (issue #178): it survives
+		// invalidation so the GLM promo row stays on the dashboard between
+		// quota-carrying responses.
+		if m.state.glmPromo != "" {
+			m.savedGlmPromo = m.state.glmPromo
+		}
 	}
 	// Restore the previously-seen quota map when the new state omits
 	// rateLimitsByModel (the upstream intermittently drops the field on
@@ -256,6 +271,11 @@ func (m *Manager) commit(cs *cachedState) {
 	// dashboard quota table visible between quota-carrying responses.
 	if cs != nil && cs.quotaByModel == nil && m.savedQuota != nil {
 		cs.quotaByModel = m.savedQuota
+	}
+	// Restore the previously-seen glmPromo block when the new state omits
+	// it (issue #178), mirroring the quota-map restore above.
+	if cs != nil && cs.glmPromo == "" && m.savedGlmPromo != "" {
+		cs.glmPromo = m.savedGlmPromo
 	}
 	m.state = cs
 	if m.store != nil && m.key != "" {
@@ -469,6 +489,11 @@ type SessionSnapshot struct {
 	// upstream wire nests entitlement inside each rate-limit entry.
 	QuotaByModel map[string]QuotaSnapshot
 	Entitlement  map[string]float64
+	// GlmPromo carries the raw upstream glmPromo block ({dailySessions,
+	// endsAt}) from the last admission/poll (issue #178); "" when absent.
+	// Kept as a string so callers render the shape without the upstream
+	// adding fields.
+	GlmPromo string
 	// Standing is the upstream account standing block (issue #96); nil until
 	// an admission/poll that carried it.
 	Standing *upstream.SessionStanding
@@ -524,6 +549,7 @@ func (m *Manager) Snapshot() SessionSnapshot {
 		ExpiresAt:          m.state.expiresAt,
 		GracePeriodEndsAt:  m.state.gracePeriodEndsAt,
 		QuotaByModel:       quota,
+		GlmPromo:           m.state.glmPromo,
 		Standing:           m.state.standing,
 	}
 }
