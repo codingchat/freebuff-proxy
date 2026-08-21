@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -170,30 +171,33 @@ var (
 // that were emitted into content instead of native OpenAI tool_calls fields.
 // It returns the cleaned content string and the extracted tool calls.
 func extractXMLToolCalls(content string) (string, []*toolCall) {
-	matches := xmlToolCallBlockRe.FindAllStringSubmatchIndex(content, -1)
-	fencedMatches := fencedToolCallRe.FindAllStringSubmatchIndex(content, -1)
+	return extractXMLToolCallsBytes([]byte(content))
+}
+
+// extractXMLToolCallsBytes is the []byte-input form of extractXMLToolCalls.
+// The streaming extractor feeds its pooled buffer straight in, avoiding a
+// per-closed-block string conversion (issue #165). Submatch boundaries from
+// the initial FindAll* pass are reused directly instead of re-matching each
+// block with Find*Submatch.
+func extractXMLToolCallsBytes(content []byte) (string, []*toolCall) {
+	matches := xmlToolCallBlockRe.FindAllSubmatchIndex(content, -1)
+	fencedMatches := fencedToolCallRe.FindAllSubmatchIndex(content, -1)
 	if len(matches) == 0 && len(fencedMatches) == 0 {
-		return content, nil
+		return string(content), nil
 	}
 
 	var calls []*toolCall
 
-	// 1. Check XML block matches (<tool_call>...</tool_call>)
+	// 1. Check XML block matches (<tool_call>...</tool_call>).
+	// FindAllSubmatchIndex reports each alternation group's span; the
+	// matching branch's group (1..4) carries the raw payload.
 	for _, loc := range matches {
-		block := content[loc[0]:loc[1]]
-		inner := xmlToolCallBlockRe.FindStringSubmatch(block)
-		if len(inner) < 2 {
-			continue
-		}
-		raw := inner[1]
-		if raw == "" && len(inner) > 2 {
-			raw = inner[2]
-		}
-		if raw == "" && len(inner) > 3 {
-			raw = inner[3]
-		}
-		if raw == "" && len(inner) > 4 {
-			raw = inner[4]
+		raw := ""
+		for g := 1; g <= 4 && 2*g+1 < len(loc); g++ {
+			if loc[2*g] >= 0 && loc[2*g+1] > loc[2*g] {
+				raw = string(content[loc[2*g]:loc[2*g+1]])
+				break
+			}
 		}
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
@@ -208,10 +212,8 @@ func extractXMLToolCalls(content string) (string, []*toolCall) {
 	// 2. Check fenced code blocks (```json {"name": "..."} ```)
 	if len(calls) == 0 {
 		for _, loc := range fencedMatches {
-			block := content[loc[0]:loc[1]]
-			inner := fencedToolCallRe.FindStringSubmatch(block)
-			if len(inner) >= 2 {
-				raw := strings.TrimSpace(inner[1])
+			if len(loc) >= 4 && loc[2] >= 0 && loc[3] > loc[2] {
+				raw := strings.TrimSpace(string(content[loc[2]:loc[3]]))
 				if tc := parseToolCallRaw(raw); tc != nil {
 					calls = append(calls, tc)
 				}
@@ -220,13 +222,13 @@ func extractXMLToolCalls(content string) (string, []*toolCall) {
 	}
 
 	if len(calls) == 0 {
-		return content, nil
+		return string(content), nil
 	}
 
 	// Clean the tool_call blocks from content
-	cleaned := xmlToolCallBlockRe.ReplaceAllString(content, "")
-	cleaned = fencedToolCallRe.ReplaceAllString(cleaned, "")
-	return strings.TrimSpace(cleaned), calls
+	cleaned := xmlToolCallBlockRe.ReplaceAll(content, nil)
+	cleaned = fencedToolCallRe.ReplaceAll(cleaned, nil)
+	return strings.TrimSpace(string(cleaned)), calls
 }
 
 // parseToolCallRaw parses a single raw tool call string in either JSON or XML format.
@@ -338,6 +340,43 @@ var xmlStreamClosers = map[xmlStreamShape]string{
 	xmlShapeFunctionCall: "</function_call>",
 }
 
+// xmlStreamCloserBytes mirrors xmlStreamClosers as byte slices for the hot
+// closerEnd lookup (bytes.Index over the pooled buffer — no per-chunk string
+// conversion).
+var xmlStreamCloserBytes = map[xmlStreamShape][]byte{
+	xmlShapeToolCall:     []byte("</tool_call>"),
+	xmlShapeCodebuff:     []byte("</codebuff_tool_call>"),
+	xmlShapeFunctionCall: []byte("</function_call>"),
+}
+
+// streamBufPool recycles the extractor's per-block accumulation buffer
+// (issue #165: cut per-chunk heap allocations). Each stream owns one
+// XMLToolCallExtractor and an extractor holds at most one pooled buffer at a
+// time, so concurrent streams never touch the same backing array. Buffers
+// that outgrew maxStreamXMLBuffer are dropped on release instead of pooled,
+// so a pathological block cannot pin an oversized allocation in the pool.
+var streamBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 512)
+		return &b
+	},
+}
+
+// acquireStreamBuf borrows a buffer from the pool, reset to length 0.
+func acquireStreamBuf() []byte {
+	b := *streamBufPool.Get().(*[]byte)
+	return b[:0]
+}
+
+// releaseStreamBuf returns b to the pool for reuse, or drops it when it
+// outgrew maxStreamXMLBuffer (bounded reuse — see streamBufPool).
+func releaseStreamBuf(b []byte) {
+	if cap(b) > maxStreamXMLBuffer {
+		return
+	}
+	streamBufPool.Put(&b)
+}
+
 // XMLToolCallExtractor incrementally converts XML-based tool calls embedded
 // in streamed content into native toolCall values. One instance per stream;
 // not safe for concurrent use.
@@ -349,27 +388,30 @@ var xmlStreamClosers = map[xmlStreamShape]string{
 // completed tool calls. Text inside a candidate block is withheld until the
 // block closes or the buffer bound is exceeded.
 type XMLToolCallExtractor struct {
-	buffered   string
+	// buf accumulates the open candidate block. It is borrowed from
+	// streamBufPool while a block is open and released (nil) once the block
+	// closes, the buffer bound trips, or Flush runs.
+	buf        []byte
 	shape      xmlStreamShape
-	fenceBrace int // xmlShapeFence: index in buffered just past the opening '{'; -1 while the opener still awaits a '{' from a later fragment
+	fenceBrace int // xmlShapeFence: index in buf just past the opening '{'; -1 while the opener still awaits a '{' from a later fragment
 }
 
 // Feed processes one content fragment. It returns the fragment's safe text
 // (possibly shorter than the input while a candidate block is open) and any
 // tool calls that completed within it.
 func (x *XMLToolCallExtractor) Feed(fragment string) (string, []*toolCall) {
-	if x.buffered == "" && x.findOpener(fragment) < 0 {
+	if len(x.buf) == 0 && x.findOpener(fragment) < 0 {
 		return fragment, nil
 	}
 	var text strings.Builder
 	var calls []*toolCall
 	rest := fragment
 	for {
-		if x.buffered != "" {
+		if len(x.buf) > 0 {
 			// A candidate block is open: absorb the whole fragment (or the
 			// remainder after a block just closed) before looking for its
 			// closer — the closer may land in any later fragment.
-			x.buffered += rest
+			x.buf = append(x.buf, rest...)
 			rest = ""
 		} else {
 			idx := x.findOpener(rest)
@@ -378,26 +420,29 @@ func (x *XMLToolCallExtractor) Feed(fragment string) (string, []*toolCall) {
 				return text.String(), calls
 			}
 			text.WriteString(rest[:idx])
-			x.buffered = rest[idx:]
+			x.buf = acquireStreamBuf()
+			x.buf = append(x.buf, rest[idx:]...)
 			rest = ""
 		}
 		if end := x.closerEnd(); end >= 0 {
-			block := x.buffered[:end]
-			remainder := x.buffered[end:]
-			x.buffered = ""
-			x.shape = xmlShapeNone
-			_, parsed := extractXMLToolCalls(block)
+			// Parse the block straight from the pooled buffer; only the
+			// remainder crosses a string boundary, and only before the
+			// buffer is released — the pool may hand the backing array to
+			// another stream's extractor the moment it is returned.
+			_, parsed := extractXMLToolCallsBytes(x.buf[:end])
 			if len(parsed) > 0 {
 				calls = append(calls, parsed...)
 			} else {
-				text.WriteString(block) // false positive: keep as plain text
+				text.WriteString(string(x.buf[:end])) // false positive: keep as plain text
 			}
-			rest = remainder
+			rest = string(x.buf[end:])
+			x.releaseBuf()
+			x.shape = xmlShapeNone
 			continue
 		}
-		if len(x.buffered) > maxStreamXMLBuffer {
-			text.WriteString(x.buffered)
-			x.buffered = ""
+		if len(x.buf) > maxStreamXMLBuffer {
+			text.WriteString(string(x.buf))
+			x.releaseBuf()
 			x.shape = xmlShapeNone
 			return text.String(), calls
 		}
@@ -409,17 +454,27 @@ func (x *XMLToolCallExtractor) Feed(fragment string) (string, []*toolCall) {
 // unclosed blocks are still parsed; the remainder is returned as text with
 // dangling tool tags scrubbed (mirroring the accumulator's Finish).
 func (x *XMLToolCallExtractor) Flush() (string, []*toolCall) {
-	if x.buffered == "" {
+	if len(x.buf) == 0 {
 		return "", nil
 	}
-	buffered := x.buffered
-	x.buffered = ""
+	// Parse from the pooled buffer before releasing it back to the pool.
+	cleaned, calls := extractXMLToolCallsBytes(x.buf)
+	x.releaseBuf()
 	x.shape = xmlShapeNone
-	cleaned, calls := extractXMLToolCalls(buffered)
 	if len(calls) > 0 {
 		return cleaned, calls
 	}
-	return danglingToolTagsRe.ReplaceAllString(buffered, ""), nil
+	// No calls parsed: extractXMLToolCallsBytes returned the buffer unchanged,
+	// so scrubbing it is equivalent to scrubbing the raw buffered text.
+	return danglingToolTagsRe.ReplaceAllString(cleaned, ""), nil
+}
+
+// releaseBuf returns the extractor's pooled buffer (if any) to the pool.
+func (x *XMLToolCallExtractor) releaseBuf() {
+	if b := x.buf; b != nil {
+		x.buf = nil
+		releaseStreamBuf(b)
+	}
 }
 
 // findOpener returns the index of the earliest candidate block opener in s,
@@ -456,13 +511,13 @@ func (x *XMLToolCallExtractor) findOpener(s string) int {
 			break
 		}
 		i += from
-		if brace := xmlStreamFenceBrace(s, i+3); brace >= 0 {
+		if brace := xmlStreamFenceBrace([]byte(s), i+3); brace >= 0 {
 			if best < 0 || i < best {
 				best = i
 				x.shape = xmlShapeFence
-				// fenceBrace indexes buffered, which Feed slices from best —
+				// fenceBrace indexes buf, which Feed slices from best —
 				// never the fragment s itself (brace and best are both
-				// indexes into s; buffered starts at best).
+				// indexes into s; buf starts at best).
 				x.fenceBrace = brace - best + 1
 			}
 			break // later fences are later still; the earliest one decided
@@ -489,7 +544,7 @@ func (x *XMLToolCallExtractor) findOpener(s string) int {
 // opener token (optional json/tool_call tag + whitespace), or -1 when the
 // fragment ends before a '{' is visible. A plain code fence (```go, ```py)
 // never counts as a candidate opener.
-func xmlStreamFenceBrace(s string, from int) int {
+func xmlStreamFenceBrace(s []byte, from int) int {
 	if from >= len(s) {
 		return -1
 	}
@@ -540,7 +595,7 @@ func isStreamFenceTag(tag string) bool {
 // at or after from that appears OUTSIDE a JSON string value (quotes toggle
 // string state, backslash escapes are honored), or -1. A "```" inside a
 // string value (e.g. {"a": "x ``` y"}) must not close the block.
-func xmlFenceCloseEnd(s string, from int) int {
+func xmlFenceCloseEnd(s []byte, from int) int {
 	inStr := false
 	for i := from; i < len(s); i++ {
 		c := s[i]
@@ -567,30 +622,30 @@ func xmlFenceCloseEnd(s string, from int) int {
 }
 
 // closerEnd returns the index just past the open candidate's closing tag in
-// buffered, or -1 while the block is still open.
+// buf, or -1 while the block is still open.
 func (x *XMLToolCallExtractor) closerEnd() int {
 	switch x.shape {
 	case xmlShapeToolCall, xmlShapeCodebuff, xmlShapeFunctionCall:
-		if i := strings.Index(x.buffered, xmlStreamClosers[x.shape]); i >= 0 {
+		if i := bytes.Index(x.buf, xmlStreamCloserBytes[x.shape]); i >= 0 {
 			return i + len(xmlStreamClosers[x.shape])
 		}
 	case xmlShapePipe:
-		if loc := xmlStreamPipeCloseRe.FindStringIndex(x.buffered); loc != nil {
+		if loc := xmlStreamPipeCloseRe.FindIndex(x.buf); loc != nil {
 			return loc[1]
 		}
 	case xmlShapeFence:
 		if x.fenceBrace < 0 {
 			// Split opener: the '{' has not arrived yet. Confirm it against
 			// the accumulated buffer (the fence always sits at index 0 of
-			// buffered); until the '{' shows, the block is still a candidate
+			// buf); until the '{' shows, the block is still a candidate
 			// and stays open (the 64 KiB bound / Flush recover false hits).
-			if brace := xmlStreamFenceBrace(x.buffered, 3); brace >= 0 {
+			if brace := xmlStreamFenceBrace(x.buf, 3); brace >= 0 {
 				x.fenceBrace = brace + 1
 			} else {
 				return -1
 			}
 		}
-		if i := xmlFenceCloseEnd(x.buffered, x.fenceBrace); i >= 0 {
+		if i := xmlFenceCloseEnd(x.buf, x.fenceBrace); i >= 0 {
 			return i
 		}
 	}
