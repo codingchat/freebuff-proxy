@@ -47,8 +47,7 @@ If you are a beginner, you don't need to write code or compile anything:
    - **Windows**: Double-click `start-proxy.cmd`.
    - **Linux / macOS**: Open terminal in the extracted folder and run `./start-proxy.sh`.
 3. **Log in**: When prompted, press Enter to open your browser and sign in with your FreeBuff/GitHub account. Your token is saved automatically!
-4. **Open Web Dashboard**: Open [**http://localhost:3457/admin**](http://localhost:3457/admin) in your browser to view your live status, test chat, and manage tokens visually.
-5. **Connect your tool**: In Cursor, VS Code Continue/Cline, Chatbox, or OpenCode, set:
+4. **Connect your tool**: In Cursor, VS Code Continue/Cline, Chatbox, or OpenCode, set:
    - **Base URL**: `http://localhost:3457/v1`
    - **API Key**: `not-needed`
    - **Model**: `deepseek/deepseek-v4-flash` (full-tier only; limited-tier accounts are coerced to `mimo/mimo-v2.5`)
@@ -87,8 +86,7 @@ For a guided walkthrough, read [Getting Started](docs/getting-started.md) (5 min
 
 ## Features
 
-- **OpenAI-Compatible API**: `POST /v1/chat/completions` (stream + non-stream), `POST /v1/responses`, `POST /v1/messages` (Anthropic shape) + `/v1/messages/count_tokens`, `POST /v1/embeddings` (unsupported → `400 unsupported_endpoint`), `GET /v1/models`, `GET /healthz`, Prometheus `GET /metrics`, and hot config reload via `POST /admin/reload`.
-- **Admin Dashboard**: embedded single-binary web UI at `http://<host>:3457/admin`: a modern **Svelte 5 + Tailwind CSS v4** single-page application with self-hosted **Geist** typography. Features a live overview with a 1-click smoke test, runtime token management with an always-visible 2-mode pool controller (`Pooled`, `Bridge`), a real-time SSE Playground with collapsible reasoning inspection, a **Configuration Studio** with 1-click presets and interactive quick knobs, universal client setup cards with 5 extension snippets, in-memory log stream with filtering, and SVG metrics sparklines. Zero external CDN or runtime Node.js dependency.
+- **OpenAI-Compatible API**: `POST /v1/chat/completions` (stream + non-stream), `POST /v1/responses`, `POST /v1/messages` (Anthropic shape) + `/v1/messages/count_tokens`, `POST /v1/embeddings` (unsupported → `400 unsupported_endpoint`), `GET /v1/models`, `GET /healthz`, Prometheus `GET /metrics`.
 - **Dynamic Reasoning Effort**: OpenAI `reasoning_effort` (`low`/`medium`/`high`/`max`) and Codex/Anthropic `reasoning.effort` are normalized and mapped to upstream reasoning engines.
 - **Session & Run Lifecycle**: Upstream session handshakes, model-lock recovery (`DELETE` → re-`POST`), grace draining, and idle-run finishing, all automatic.
 - **Token Pooling & Bridge Mode**: Hot-session-first pooling with round-robin start and failover across `AUTH_TOKENS`, or zero-storage relay when clients bring their own token. See [Key Concepts](#key-concepts).
@@ -120,7 +118,6 @@ graph TD
     Proxy -->|2. Inject Envelope + Stealth| Upstream[Upstream Backend API]
     Upstream -->|3. SSE Stream| Proxy
     Proxy -->|4. OpenAI SSE Chunks| Client
-    Client -.->|GET /metrics · GET /healthz · POST /admin/reload| Proxy
 ```
 
 ## Key Concepts
@@ -247,7 +244,6 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `MODELS_ALLOW` | `""` | Comma-separated model allowlist (JSON array or string). When set, only these model ids are served — `/v1/models` lists only them, and `chat/messages/responses` requests whose resolved model (after alias resolution) is not listed are rejected with `404 model_not_found` (`"model not allowed by MODELS_ALLOW"`). Empty = all models allowed |
 | `AUTO_DISCOVER_TOKEN` | `true` | When `AUTH_TOKENS` is empty, read credentials from the official CLI login files (`false` disables) |
 | `API_KEYS` | `""` | Comma-separated client keys required for `/v1/*` (empty = open; ignored in bridge mode) |
-| `ADMIN_TOKEN` | `""` | Bearer token that `POST /admin/reload` requires when set (empty = unauthenticated in default deployments; a startup warning is logged). Also the login password for the [admin dashboard](#admin-dashboard): the same value unlocks the login page |
 | `ROTATION_INTERVAL` | `6h` | Agent-run rotation interval |
 | `REQUEST_TIMEOUT` | `15m` | Upstream request timeout |
 | `SESSION_CALL_TIMEOUT` | `30s` | Session call timeout |
@@ -260,12 +256,11 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`, `trace` (trace = wire-level bodies) |
 | `LOG_FORMAT` | `text` | `text` (key=value, colored) or `json` (one JSON object per line) |
 | `LOG_ACCESS` | `true` | Log one `access` line per HTTP request (`false` disables; `/healthz`, `/metrics`, OPTIONS are rate-limited to 1/min regardless) |
-| `LOG_RING_SIZE` | `500` | In-memory log ring for `/admin/logs` (50–5000) |
 | `MAX_MESSAGES_PER_DAY` | `0` | Per-token daily cap on successful chats (`0` = unlimited, default; the upstream `429` lock is the real enforcement) |
 | `IDLE_ROTATION_TIMEOUT` | `0` | Finish runs after this idle period (`0` = disabled; `SAFE_MODE` sets 30m when unset) |
 | `SAFE_MODE` | `true` | Apply anti-ban presets (see below; set `false` to disable) |
 | `REQUEST_JITTER` | `0s` | Random delay range `[0, REQUEST_JITTER)` before upstream calls (`SAFE_MODE` sets 2s when unset) |
-| `CLI_VERSION` | `0.10.7` | Informational only: parsed and shown on the admin dashboard (Configuration Studio). No wire impact — the chat UA is pinned to `ai-sdk/openai-compatible/1.0.0/codebuff` and the ads UA to `Freebuff-CLI/0.0.150` |
+| `CLI_VERSION` | `0.10.7` | Informational only — no wire impact: the chat UA is pinned to `ai-sdk/openai-compatible/1.0.0/codebuff` and the ads UA to `Freebuff-CLI/0.0.150` |
 | `MODEL_ALIASES` | `""` | Map aliases to real model IDs, e.g. `gpt-4o:deepseek/deepseek-v4-pro`. When unset (or empty / parsing to no pairs) the built-ins apply: `deepseek-chat` → `deepseek/deepseek-v4-flash`, `gpt-4o` → `deepseek/deepseek-v4-pro`, `claude-3-5-sonnet` → `anthropic/claude-fable-5`. A non-empty value with ≥1 valid pair REPLACES the defaults entirely; the built-ins cannot be disabled (there is no way to express an empty alias map) |
 | `TRANSIENT_RETRIES` | `1` | Max additional attempts after a transient transport failure; `0` disables |
 | `SESSION_PERSIST` | `false` | Persist session state AND active agent runs to disk so a restart resumes them instead of re-creating (new daily slot / re-START) |
@@ -365,31 +360,6 @@ opt out). It enables essential anti-ban protections and presets:
 | `GET /v1/models` | `API_KEYS` (when set) | Model catalog from the registry (fallback at boot + live refresh). Each row carries `available`/`status`/`current_access_tier`: models outside the limited-tier allowlist (`mimo-v2.5`) are marked `available:false, status:"region_limited"` when the token's egress region demotes it to the limited tier; `MODELS_HIDE_UNAVAILABLE=true` prunes them from the list; `MODELS_ALLOW` prunes every id not in the allowlist |
 | `GET /healthz` | none | JSON: `status`, `uptime_seconds`, `models`, per-token snapshot (incl. per-model `quota` map when the last admission carried it), `bridge_tokens` |
 | `GET /metrics` | none | Prometheus text format: uptime, model count, per-token 24h messages / requests / active runs / cooldown, per-model quota (`freebuff_proxy_quota_recent` / `freebuff_proxy_quota_limit`) |
-| `POST /admin/reload` | `ADMIN_TOKEN` (when set) | Hot-reload configuration from disk without restart |
-| `GET /admin` | session cookie (login via `ADMIN_TOKEN`) | Admin dashboard: overview, tokens, config, logs, metrics (see [Admin Dashboard](#admin-dashboard)) |
-| `GET/POST /admin/login` | none | Dashboard login: constant-time `ADMIN_TOKEN` check, per-IP rate limit, `HttpOnly` + `SameSite=Strict` session cookie |
-| `POST /admin/config` | session cookie | Validate and persist the `.env` file, then hot-reload the config (rolls back on rejection) |
-| `POST /admin/smoke` | session cookie (loopback when `ADMIN_TOKEN` unset) | One real chat through the pool: reports model, token, latency, and a content preview (bridge mode needs a client token in the payload) |
-| `POST /admin/diag` | session cookie (loopback when `ADMIN_TOKEN` unset) | Dashboard diagnostics (same checks as `-doctor`): config state, DNS + TCP reachability, registry count; zero-cost per-token validity probes run on every request |
-| `POST /admin/mode` | session cookie (loopback when `ADMIN_TOKEN` unset) | Runtime pooled↔bridge switch; `{"mode":"bridge"}` empties the pool and clears `AUTH_TOKENS` in `.env` |
-| `POST /admin/tokens/...` | session cookie (loopback when `ADMIN_TOKEN` unset) | Runtime pool management: `/add`, `/remove` (last token), `/test-all`, and per-token `/test`, `/unlock`, `/finish`, persisted to `.env` |
-
-## Admin Dashboard
-
-The proxy ships with a built-in modern SPA web dashboard: single binary, no external dependencies, and zero runtime Node.js requirement (the Svelte 5 production build is compiled and embedded into the binary at build time). Open `http://127.0.0.1:3457/admin` (or your `LISTEN_ADDR`).
-
-- **Login**: enter your `ADMIN_TOKEN` on the login page. It is the same value as the bearer token for `POST /admin/reload`. Without `ADMIN_TOKEN` the dashboard is open (matching `/admin/reload`'s legacy behavior; a startup warning is logged). Failed logins are rate-limited per IP (5 fails → 1 minute lockout), and the session cookie is `HttpOnly` + `SameSite=Strict` (+ `Secure` when TLS or `X-Forwarded-Proto: https` is present).
-- **Overview**: live relay state (pooled/bridge mode, model count, uptime, safe mode) with per-token cards: session status, risk score, usage vs `MAX_MESSAGES_PER_DAY`, transient-retry counters, plus a **smoke test** that sends one real chat through the pool (status, latency, preview).
-- **Tokens & Quotas**: per-token session detail + live per-model session quota table with usage bars and reset times; per-token **Unlock** (clears cooldown/ban), **Finish runs**, and **Test** (zero-cost validity probe). Features an **always-visible 2-mode pool switcher** (`Pooled`, `Bridge`), runtime **Add Token to Pool** form, and **Test all**, with changes automatically persisted to `.env`.
-- **Models**: live catalog with upstream agent mappings, default model badges, and `MODEL_ALIASES`.
-- **Traces**: recent chat requests and their routing outcome (token, model, status, duration, error class), the observability view for ban-avoidance debugging.
-- **Playground**: interactive prompt console with real-time SSE chat streaming, model selector, and collapsible thinking/reasoning blocks.
-- **Configuration Studio**: hot-reloading `.env` editor equipped with **3 One-Click Presets** (*Stealth Anti-Ban*, *Maximum Speed*, *Deep Debugging*), **interactive quick knobs** (boolean switches, enum pills, duration sliders) with real-time bidirectional sync, and **hover quick info cards** explaining every setting and default.
-- **Setup & Tool Integration**: universal 1-click copy cards (Base URL, API Key, Default Model), copy-paste snippets for 5 major AI coding tools (OpenCode, Continue/Cline, aider, 9router, cURL), headless OAuth login wizard, and diagnostic suite.
-- **Logs**: real-time in-memory log stream with level filtering (`INFO`, `DEBUG`, `WARN`, `ERROR`), search filtering, and structured field tags.
-- **Metrics**: tabular stat cards with SVG sparklines and direct link to the raw `/metrics` Prometheus feed.
-
-See [Dashboard Guide](docs/dashboard.md) for access, Docker caveats, and hardening.
 
 ---
 
@@ -405,7 +375,6 @@ See [Dashboard Guide](docs/dashboard.md) for access, Docker caveats, and hardeni
 - [Getting Started](docs/getting-started.md): 5-minute setup walkthrough
 - [Client Integration](docs/client-integration.md): OpenCode, pi, 9router, LiteLLM, OpenAI SDKs
 - [9router Integration](docs/9router-integration.md): router dashboard setup in bridge mode
-- [Dashboard Guide](docs/dashboard.md): the admin web UI: access, pages, Docker caveats, hardening
 - [Manual Testing](docs/testing.md): verify the proxy on Linux or Windows by hand, step by step
 - [Version Stability & Ban Findings](docs/getting-started.md#access-tiers--workarounds): **read before upgrading** — why v0.11.2 bridge is the proven-stable deployment
 

@@ -1,22 +1,18 @@
 package upstream
 
 // Tests for the Wave-5 egress/stealth features that survive the proxy
-// removal: HTTP/2 upstream wiring (#51) and the passive risk-engine feed
-// (#64). Stable-egress pinning and its dial-fallback tests were deleted
-// with the outbound-proxy machinery (the official CLI has no proxy support
-// and the upstream hard-blocks proxied egress). Kept in their own file so
-// concurrent work on client_test.go does not collide.
+// removal: HTTP/2 upstream wiring (#51). Stable-egress pinning and its
+// dial-fallback tests were deleted with the outbound-proxy machinery (the
+// official CLI has no proxy support and the upstream hard-blocks proxied
+// egress). Kept in their own file so concurrent work on client_test.go
+// does not collide.
 
 import (
-	"context"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
 
 	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/stealth"
-	"freebuff-proxy/internal/testutil"
 )
 
 // TestHTTP2UpstreamWiring guards the HTTP2_UPSTREAM wiring (issue #51):
@@ -114,53 +110,4 @@ func TestHTTP2UpstreamWiring(t *testing.T) {
 			t.Errorf("h1 stealth dial error = %q, want the tcp dial wrapper", msg)
 		}
 	})
-}
-
-// TestSessionResponseFeedsRiskEngine guards the passive risk feed (issue
-// #64): a session response carrying ipPrivacySignals and ip_capped
-// activeUsersForIp/limit lands in the client's risk engine.
-func TestSessionResponseFeedsRiskEngine(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"status":"ip_capped","model":"deepseek/deepseek-v4-flash","activeUsersForIp":8,"limit":10,"ipPrivacySignals":["proxy"],"retryAfterMs":500}`)
-	}
-
-	client, err := New("tok", testConfig(mock.URL(), nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	engine := stealth.NewRiskEngine()
-	client.risk = engine // isolate from the shared DefaultRiskEngine
-
-	if _, err := client.CreateSession(context.Background()); err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	st := engine.Score()
-	if st.Score != 70 { // 40 signal floor + 30 near-cap (8/10)
-		t.Errorf("risk Score = %d, want 70", st.Score)
-	}
-	if st.Level != stealth.RiskHigh {
-		t.Errorf("risk Level = %q, want high", st.Level)
-	}
-	if len(st.Reasons) != 2 {
-		t.Errorf("Reasons = %v, want the signal + cap reasons", st.Reasons)
-	}
-
-	// A clean response (no signals, no cap pressure) recovers the engine.
-	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-clean","model":"deepseek/deepseek-v4-flash"}`)
-	}
-	if _, err := client.CreateSession(context.Background()); err != nil {
-		t.Fatalf("clean CreateSession: %v", err)
-	}
-	// The clean sample carries no signals; the worst retained sample (from
-	// the ring) still drives the score — so assert the engine stays within
-	// bounds rather than a specific value (the retained-window semantics are
-	// tested in the stealth package).
-	if st := engine.Score(); st.Score < 0 || st.Score > 100 {
-		t.Errorf("risk Score out of bounds after clean sample: %+v", st)
-	}
 }

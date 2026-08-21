@@ -12,7 +12,6 @@ public repo.
 | [Getting Started](getting-started.md) | 5-minute onboarding: get a FreeBuff token, install, pooled vs bridge mode, verify the proxy, connect your AI client, troubleshoot common 403/502 errors |
 | [Client Integration](client-integration.md) | Config snippets for OpenAI-compatible clients: opencode, pi, Python/Node SDKs, Cursor, VS Code extensions, chat UIs, API routers |
 | [9router Integration](9router-integration.md) | Wire the proxy into 9router as a custom OpenAI-compatible provider |
-| [Dashboard Guide](dashboard.md) | The embedded admin web UI: access, pages, Docker caveats, hardening |
 | [Manual Testing](testing.md) | Step-by-step verification runbook (Linux and Windows), mirroring the CI checks |
 
 ## Related

@@ -77,26 +77,6 @@ func newCreateGate(maxGlobal, maxPerModel int) *createGate {
 	}
 }
 
-// setLimits updates the caps at runtime (config reload). Values <= 0 fall
-// back to the defaults.
-func (g *createGate) setLimits(maxGlobal, maxPerModel int) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if maxGlobal <= 0 {
-		maxGlobal = defaultMaxParallelCreatesGlobal
-	}
-	if maxPerModel <= 0 {
-		maxPerModel = defaultMaxParallelCreatesPerModel
-	}
-	if maxPerModel > maxGlobal {
-		maxPerModel = maxGlobal
-	}
-	g.maxGlobal = maxGlobal
-	g.maxPerModel = maxPerModel
-	// A tightened cap may now admit nobody; wake waiters to re-check.
-	g.notifyLocked()
-}
-
 // acquire reserves one create slot for model, waiting until a slot frees or
 // ctx expires. It returns a permit on success and ctx.Err() (surfaced as
 // 503 by the server) when the wait exceeds the caller's deadline.

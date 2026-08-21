@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"freebuff-proxy/internal/stealth"
 	"net/http"
 	"time"
 )
@@ -477,19 +476,6 @@ func (c *Client) sessionCall(req *http.Request) (*SessionState, error) {
 				}
 				state.RateLimitsByModel[modelID] = mq
 			}
-		}
-		// Feed the passive ban-risk engine (#64): ipPrivacySignals and the
-		// ip_capped activeUsersForIp/limit arrive on the session admission
-		// and probe responses. Read-only — the engine only warns.
-		if c.risk != nil && (len(state.IpPrivacySignals) > 0 ||
-			state.ActiveUsersForIP > 0 || state.Limit > 0 || state.CountryCode != "") {
-			c.risk.Observe(stealth.RiskSample{
-				At:               time.Now(),
-				Country:          state.CountryCode,
-				IPPrivacySignals: state.IpPrivacySignals,
-				ActiveUsersForIP: state.ActiveUsersForIP,
-				Limit:            state.Limit,
-			})
 		}
 		return state, nil
 	}

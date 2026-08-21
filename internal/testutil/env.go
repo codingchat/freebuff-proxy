@@ -8,13 +8,13 @@ import (
 // configEnvKeys lists every environment variable internal/config reads.
 // Ambient values from the developer's shell (e.g. AUTH_TOKENS exported for a
 // live proxy) leak into config.Load with HIGHER precedence than .env, which
-// breaks dashboard tests that assert on mode switches or token persistence.
+// breaks tests that assert on mode switches or token persistence.
 // Keep this in sync with every override* call in internal/config/config.go.
 var configEnvKeys = []string{
 	"LISTEN_ADDR", "UPSTREAM_BASE_URL", "AUTH_TOKENS", "ROTATION_INTERVAL",
-	"REQUEST_TIMEOUT", "SESSION_CALL_TIMEOUT", "API_KEYS", "ADMIN_TOKEN",
+	"REQUEST_TIMEOUT", "SESSION_CALL_TIMEOUT", "API_KEYS",
 	"COST_MODE", "TLS_FINGERPRINT", "REGISTRY_REFRESH", "DEBUG_DUMP",
-	"LOG_FILE", "LOG_LEVEL", "LOG_FORMAT", "LOG_ACCESS", "LOG_RING_SIZE", "MAX_MESSAGES_PER_DAY", "IDLE_ROTATION_TIMEOUT",
+	"LOG_FILE", "LOG_LEVEL", "LOG_FORMAT", "LOG_ACCESS", "MAX_MESSAGES_PER_DAY", "IDLE_ROTATION_TIMEOUT",
 	"SAFE_MODE", "MODELS_HIDE_UNAVAILABLE", "MODELS_ALLOW", "REQUEST_JITTER",
 	"CLI_VERSION", "MODEL_ALIASES", "TRANSIENT_RETRIES", "SESSION_PERSIST",
 	"SESSION_STATE_FILE", "AUTO_DISCOVER_TOKEN", "HTTP2_UPSTREAM",

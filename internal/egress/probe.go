@@ -16,8 +16,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"freebuff-proxy/internal/stealth"
 )
 
 // ProbeURL is the Cloudflare trace endpoint that reports the caller's
@@ -135,14 +133,6 @@ func RunLoop(ctx context.Context, logger *slog.Logger, cache *Cache, paths []Pat
 				logger.Warn("egress probe failed", "path", key, "err", r.Err)
 			} else {
 				logger.Debug("egress probe", "path", key, "ip", r.IP, "country", r.Country)
-				// Passive ban-risk feed (#64): every successful probe
-				// contributes an egress-geo sample to the shared risk
-				// engine. Read-only; the engine only warns.
-				stealth.DefaultRiskEngine.Observe(stealth.RiskSample{
-					At:       time.Now(),
-					EgressIP: r.IP,
-					Country:  r.Country,
-				})
 			}
 		}
 	}

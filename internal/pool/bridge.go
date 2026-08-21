@@ -194,36 +194,6 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		Bridge: entry, AcquiredAt: time.Now()}, nil
 }
 
-// ProbeNewToken validates a NOT-yet-added token against upstream with a
-// zero-cost GET session probe (no session claim, no model needed). It builds
-// the probe client from the pool's own config, so the base URL matches the
-// one a freshly-built client would use (tests inject a mock URL here).
-// Returns the session state on success, ErrNoActiveSession when the token is
-// valid but idle, or the classified auth/network error (ErrBanned /
-// ErrCountryBlocked / ErrAuthRejected / ErrRateLimited) otherwise.
-func (p *Pool) ProbeNewToken(ctx context.Context, token string) (*upstream.SessionState, error) {
-	if token == "" {
-		return nil, errors.New("pool: empty token")
-	}
-	cfg := *p.cfg
-	// Match the base URL of an existing pooled client when one exists: the
-	// pool's fixed-token clients were built by the caller with the effective
-	// upstream URL (tests inject a mock URL), while p.cfg.UpstreamBaseURL
-	// may still hold the production default. A probe built from the wrong
-	// URL would validate against a different host than the one the token
-	// will actually use — silently false results.
-	if len(p.toks) > 0 {
-		if base := p.toks[0].client.BaseURL(); base != "" {
-			cfg.UpstreamBaseURL = base
-		}
-	}
-	client, err := upstream.New(token, &cfg)
-	if err != nil {
-		return nil, fmt.Errorf("pool: probe token: %w", err)
-	}
-	return client.ProbeAccount(ctx)
-}
-
 // BridgeCount returns the number of cached bridge entries (healthz).
 func (p *Pool) BridgeCount() int {
 	p.bridgeMu.Lock()

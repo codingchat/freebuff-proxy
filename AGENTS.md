@@ -8,7 +8,6 @@ It enables any AI agent harness (Claude Code CLI, Cline, Roo Code, Cursor, Aider
 OpenCode, OMP, Vercel AI SDK, LiteLLM, LangChain) to interface seamlessly with FreeBuff upstream
 models in either Pooled or Bridge mode.
 
-A Svelte 5 SPA dashboard is embedded via `go:embed` in `internal/dashboard` and served under `/admin`.
 Official reference specifications and SDKs reside in `reference/` (gitignored).
 
 ---
@@ -54,7 +53,7 @@ Official reference specifications and SDKs reside in `reference/` (gitignored).
 ## Package Map
 
 - `cmd/freebuff-proxy` — Entrypoint, CLI flag parsing (`-doctor`, `-test-token`, `-version`, `-config`, `-setup`).
-- `internal/config` — Typed configuration loader, `.env` + JSON precedence, hot-reloading via `atomic.Pointer`.
+- `internal/config` — Typed configuration loader, `.env` + JSON precedence; loaded once at startup.
 - `internal/registry` — Model catalog synced from upstream; alias resolution and the `ServedModels` gate.
 - `internal/convert` — Pure conversion logic:
   - `convert.go` — Request normalization, parameter whitelisting, role rewriting (`developer` → `system`), legacy function normalization.
@@ -72,7 +71,6 @@ Official reference specifications and SDKs reside in `reference/` (gitignored).
   - `streamxml.go` — Streaming XML tool call extraction relays for chat and Anthropic.
   - `errors.go` — Protocol-aware error formatting (OpenAI vs Anthropic) and PRD error mapping.
   - `middleware.go` — Auth validation (`Authorization`, `x-api-key`, `anthropic-api-key`), CORS, access logging.
-  - `admin*.go` — Dashboard authentication, CSRF, config editor, token management API.
 - `internal/pool` — Token lifecycle, admission, bridge caching, cooldowns, quota windows, and spend tracking (`acquire.go`, `bridge.go`, `cooldown.go`, `quota.go`, `spend.go`, `unfit.go`).
 - `internal/session` — Upstream session manager and persistence.
 - `internal/upstream` — FreeBuff wire client: session admission, chat relay, rate limit parser, stealth profiles.
@@ -82,16 +80,14 @@ Official reference specifications and SDKs reside in `reference/` (gitignored).
 - `internal/ratelimit` — Per-IP token bucket rate limiter.
 - `internal/stealth` — TLS fingerprinting (utls) and header sanitization.
 - `internal/telemetry` — Prometheus `/metrics` instrumentation.
-- `internal/logring` — In-memory ring buffer for dashboard log streaming.
-- `internal/dashboard` — Embedded single-page application (`assets_embed.go` / `assets_stub.go`).
 
 ---
 
 ## Load-Bearing Invariants
 
-- **Hermetic Test Suite**: Always unset `AUTH_TOKENS` and `ADMIN_TOKEN` when running tests to avoid polluting bridge-mode test environments:
+- **Hermetic Test Suite**: Always unset `AUTH_TOKENS` when running tests to avoid polluting bridge-mode test environments:
   ```bash
-  env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
+  env -u AUTH_TOKENS go test ./...
   ```
 - **Anti-Ban Contract**:
   - Upstream session POST sends `x-freebuff-model` and `x-freebuff-instance-id`.
@@ -113,7 +109,7 @@ Official reference specifications and SDKs reside in `reference/` (gitignored).
 go build -o freebuff-proxy.exe ./cmd/freebuff-proxy
 
 # Run full hermetic test suite
-env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
+env -u AUTH_TOKENS go test ./...
 
 # Check code formatting
 gofmt -l cmd internal

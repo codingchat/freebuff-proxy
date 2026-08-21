@@ -7,16 +7,9 @@ tasks:
       - task --list
 
   build:
-    desc: Build frontend assets and compile the Go binary
-    deps: [build:ui]
+    desc: Compile the Go proxy binary
     cmds:
       - task: build:proxy
-
-  build:ui:
-    desc: Build Svelte 5 frontend into internal/dashboard/dist
-    dir: frontend
-    cmds:
-      - npm run build
 
   build:proxy:
     desc: Compile the Go proxy binary
@@ -27,7 +20,6 @@ tasks:
     desc: Run the hermetic Go test suite
     env:
       AUTH_TOKENS: ''
-      ADMIN_TOKEN: ''
     cmds:
       - go test ./...
 
@@ -35,7 +27,6 @@ tasks:
     desc: Run the Go test suite with -race detector
     env:
       AUTH_TOKENS: ''
-      ADMIN_TOKEN: ''
     cmds:
       - go test -race ./...
 
@@ -50,8 +41,3 @@ tasks:
     cmds:
       - go run ./cmd/freebuff-proxy
 
-  dev:ui:
-    desc: Run frontend Vite dev server on port 5173
-    dir: frontend
-    cmds:
-      - npm run dev

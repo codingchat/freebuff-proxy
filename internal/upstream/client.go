@@ -81,11 +81,6 @@ type Client struct {
 	// is itself a JA4 ALPN mismatch (#51). false forces HTTP/1.1.
 	http2Upstream bool
 
-	// risk is the passive ban-risk engine fed from session/probe responses
-	// (#64). Production always uses stealth.DefaultRiskEngine; nil disables
-	// feeding (test seam).
-	risk *stealth.RiskEngine
-
 	// Counters surfaced via the pool snapshot for /metrics.
 	transientRetries     atomic.Int64 // transient transport failures retried
 	fingerprintRotations atomic.Int64 // pinned fingerprint swaps ahead of a retry
@@ -172,7 +167,6 @@ func NewWithIndex(token string, tokenIndex int, cfg *config.Config) (*Client, er
 		debugDump:             cfg.DebugDump,
 		transientRetriesLimit: cfg.TransientRetries,
 		http2Upstream:         cfg.HTTP2Upstream,
-		risk:                  stealth.DefaultRiskEngine,
 		rateLimitEvents:       make(map[string]*atomic.Int64),
 	}
 

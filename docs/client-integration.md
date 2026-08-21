@@ -172,7 +172,7 @@ FreeBuff assigns access tiers at the Cloudflare edge based on TCP source IP GeoI
 - **Full tier** (`accessTier: "full"`): Tier-1 countries (US, UK, DE, JP, CA, etc.) with residential ASN. All models available. **4 premium sessions/day** (level ladder up to 7).
 - **Limited tier** (`accessTier: "limited"`): Non-Tier-1 countries. All model requests coerced to `mimo/mimo-v2.5` server-side. **3 limited sessions/day** (level ladder up to 7).
 
-Check your tier: the `/healthz` response includes access tier info when the last session admission carried it. The dashboard Overview page also shows it.
+Check your tier: the `/healthz` response includes access tier info when the last session admission carried it.
 
 See [Getting Started — Access Tiers & Workarounds](getting-started.md#access-tiers--workarounds) for how to reach full tier from a limited-tier location.
 

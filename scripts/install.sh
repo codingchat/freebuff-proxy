@@ -150,10 +150,10 @@ pkg_install() {
 # --- 0. warning --------------------------------------------------------------
 echo ""
 echo "WARNING: using your FreeBuff token through this proxy conflicts with FreeBuff/Codebuff" >&2
-echo "terms of service. Accounts get suspended or banned (403 account_banned, dashboard shows" >&2
-echo "'suspended'). Bans are per account, usually permanent, and there is no self-service" >&2
-echo "unban. Use ONE account, keep usage modest, do not run the proxy 24/7, and expect the" >&2
-echo "account to be banned eventually. You accept this risk by continuing." >&2
+echo "terms of service. Accounts get suspended or banned (403 account_banned; -doctor and" >&2
+echo "the proxy logs show ban status). Bans are per account, usually permanent, and there" >&2
+echo "is no self-service unban. Use ONE account, keep usage modest, do not run the proxy" >&2
+echo "24/7, and expect the account to be banned eventually. You accept this risk by continuing." >&2
 echo "" >&2
 
 # --- 1. deployment method ----------------------------------------------------

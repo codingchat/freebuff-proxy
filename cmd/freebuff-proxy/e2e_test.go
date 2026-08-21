@@ -113,7 +113,7 @@ func proxyInDir(t *testing.T, dir string) string {
 
 // e2eEnv returns the environment for a subprocess: the parent's environment
 // minus every freebuff-proxy config variable (a developer's exported
-// AUTH_TOKENS/ADMIN_TOKEN/... must not leak into the child), plus the given
+// AUTH_TOKENS/... must not leak into the child), plus the given
 // KEY=VALUE overrides. For duplicate keys the later entry wins.
 func e2eEnv(t *testing.T, overrides ...string) []string {
 	t.Helper()

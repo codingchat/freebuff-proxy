@@ -165,7 +165,7 @@ func runTokenRefresh(configPath string, index int, autoYes bool) {
 		if status.Done {
 			persistReplacement(cfg, index, status.AuthToken)
 			fmt.Printf("  Token #%d refreshed (account: %s <%s>).\n", index, status.User.Name, status.User.Email)
-			fmt.Println("  A running proxy picks the change up via /admin/reload or a restart.")
+			fmt.Println("  A running proxy picks the change up on restart.")
 			os.Exit(0)
 		}
 		select {

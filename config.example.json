@@ -7,7 +7,6 @@
   "SESSION_CALL_TIMEOUT": "30s",
   "REGISTRY_REFRESH": "6h",
   "API_KEYS": [],
-  "ADMIN_TOKEN": "",
   "COST_MODE": "free",
   "DEBUG_DUMP": false,
   "LOG_FILE": "",

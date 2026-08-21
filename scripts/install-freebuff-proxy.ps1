@@ -66,10 +66,10 @@ Write-Host ""
 
 # --- 0. warning -------------------------------------------------------------
 Write-Host "WARNING: using your FreeBuff token through this proxy conflicts with FreeBuff/Codebuff" -ForegroundColor Red
-Write-Host "terms of service. Accounts get suspended or banned (403 account_banned, dashboard shows" -ForegroundColor Red
-Write-Host "'suspended'). Bans are per account, usually permanent, and there is no self-service" -ForegroundColor Red
-Write-Host "unban. Use ONE account, keep usage modest, do not run the proxy 24/7, and expect the" -ForegroundColor Red
-Write-Host "account to be banned eventually. You accept this risk by continuing." -ForegroundColor Red
+Write-Host "terms of service. Accounts get suspended or banned (403 account_banned; -doctor and" -ForegroundColor Red
+Write-Host "the proxy logs show ban status). Bans are per account, usually permanent, and there" -ForegroundColor Red
+Write-Host "is no self-service unban. Use ONE account, keep usage modest, do not run the proxy" -ForegroundColor Red
+Write-Host "24/7, and expect the account to be banned eventually. You accept this risk by continuing." -ForegroundColor Red
 Write-Host ""
 
 # --- 1. target directory -----------------------------------------------------

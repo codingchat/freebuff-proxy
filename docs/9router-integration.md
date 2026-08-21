@@ -139,4 +139,3 @@ Go to 9router **Chat** tab, select provider `freebuff` and model `freebuff/deeps
 ## 🔗 Related Guides
 - [Getting Started Guide](getting-started.md)
 - [Client Integration Guide](client-integration.md)
-- [Admin Dashboard Guide](dashboard.md)

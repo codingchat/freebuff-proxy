@@ -9,7 +9,7 @@
 #
 # StateDirectory=freebuff-proxy auto-creates /var/lib/freebuff-proxy owned by
 # the service user at start. The app auto-loads .env from the working
-# directory, and the dashboard persists .env edits there (ReadWritePaths).
+# directory, and -refresh-token rewrites .env there (ReadWritePaths).
 #
 # Install:
 #   sudo cp scripts/freebuff-proxy.service /etc/systemd/system/
@@ -33,8 +33,9 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-# Dashboard .env writes live in the working dir; self-update swaps the binary
-# in place. Keep exactly these two trees writable despite ProtectSystem=strict.
+# -refresh-token .env writes live in the working dir; self-update swaps the
+# binary in place. Keep exactly these two trees writable despite
+# ProtectSystem=strict.
 ReadWritePaths=/var/lib/freebuff-proxy /usr/local/bin
 
 [Install]

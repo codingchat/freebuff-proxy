@@ -207,29 +207,7 @@ Watch for `[FAIL]` lines and read them; they are self-explanatory. A
 failed` means the token itself is expired or revoked; re-run the upstream
 CLI to refresh it.
 
-## 5. The dashboard
-
-Open the browser UI at `http://127.0.0.1:3457/admin`. Set `ADMIN_TOKEN`
-in `.env` if you want the login page; without it, the read-only pages
-(overview, tokens, models, traces) stay open and the secret-bearing pages
-(config, logs) require a loopback client.
-
-What a healthy dashboard shows:
-
-- **Overview**: uptime, a token risk card per token. `low` risk is
-  healthy; `high` is worth a look at what changed (new egress, new
-  device).
-- **Tokens**: per-model session quota tables.
-- **Logs**: a rolling ring of recent log lines, no `level=ERROR` spam.
-- **Metrics**: live SVG sparklines of requests, runs, and usage.
-- **Playground**: a chat box that hits your own proxy through the
-  browser. Same result as the section 3 curl, but without the terminal.
-
-The dashboard auto-polls every 5 seconds. If the overview numbers freeze
-while the proxy still answers curl, the dashboard is stale and a restart
-clears it.
-
-## 6. Service mode (run forever)
+## 5. Service mode (run forever)
 
 If you want the proxy to survive logout and reboot, install it as a
 service. This is the one section that modifies your system, and it needs
@@ -263,7 +241,7 @@ Status comes from `systemctl --user is-active freebuff-proxy`, logs from
 directory to the binary's location, so `.env` must live next to the
 binary, not in your shell's home.
 
-## 7. The restart and the upgrade
+## 6. The restart and the upgrade
 
 Two behaviors worth knowing before they surprise you.
 
@@ -273,22 +251,13 @@ is cut. Clients retry. With `SESSION_PERSIST=true`, active sessions are
 resumed on restart instead of recreated, which avoids burning a fresh
 session slot; that is the knob to test if you run long sessions.
 
-The config page in the dashboard and `POST /admin/reload` reload `.env`
-without restarting. What a reload applies: registry aliases and the
-runtime knobs (session-create caps, re-admit lead, probe-cache TTL). What
-it does not do: change the pool's token list — editing `AUTH_TOKENS` in
-`.env` and reloading does not add or remove pooled tokens; that needs a
-restart. The dashboard's Tokens page is the live path instead: Add-token,
-Remove last, and mode switch take effect immediately and persist to
-`AUTH_TOKENS` in `.env` (surviving a restart), no restart needed.
-
 Self-update is `./freebuff-proxy -update`, which checks GitHub and
 replaces the binary with the latest release. It skips the swap if the
 checksum does not match. On Windows the swap defers until the current
 process exits, so do not be surprised if the command exits before the
 file changes.
 
-## 8. Reading failures: the error taxonomy
+## 7. Reading failures: the error taxonomy
 
 When a test fails, the error body tells you which layer is at fault. The
 proxy classifies upstream responses deliberately.
@@ -309,7 +278,7 @@ resume time when the ban is temporary). Panicking over a 429 and rotating
 egress aggressively is how accounts get flagged; the proxy's job is to
 sit still on quota days.
 
-## 9. The "is it running perfectly" checklist
+## 8. The "is it running perfectly" checklist
 
 Run through this in order when you are unsure. Each line is one command
 or one glance.
@@ -320,18 +289,16 @@ or one glance.
 3. `curl /v1/models` → non-empty model list.
 4. One non-streaming chat → 200, real content, `usage.total_tokens` > 0.
 5. One streaming chat → `data:` lines, ends `[DONE]`, no mid-stream error.
-6. Dashboard overview → tokens listed, risk cards render, no ERROR spam
-   in logs.
-7. Logs show startup banner with `auth_tokens=N` matching your `.env`.
-8. `-test-token` exits 0 with `token OK`. (A quota 429 exits 1 — that is
+6. Logs show startup banner with `auth_tokens=N` matching your `.env`.
+7. `-test-token` exits 0 with `token OK`. (A quota 429 exits 1 — that is
    a quota day, not a proxy fault; the checklist then reads as "healthy
    but quota-spent".)
 
-If all eight pass, the proxy is doing its job. Remaining weirdness is
+If all seven pass, the proxy is doing its job. Remaining weirdness is
 upstream or account-side: a quota day, a regional model pick that got
 silently coerced to `deepseek/deepseek-v4-flash`, or a client misconfig.
 
-## 10. Platform-specific gotchas
+## 9. Platform-specific gotchas
 
 Windows:
 
@@ -341,8 +308,7 @@ Windows:
   tool that writes UTF-8 explicitly.
 - Loopback-only binding means other machines on your LAN cannot reach
   the proxy. That is intentional. To serve your LAN, set
-  `LISTEN_ADDR=:3457` and, if you set `ADMIN_TOKEN`, the dashboard cookie
-  gets the Secure flag automatically.
+  `LISTEN_ADDR=:3457`.
 - Windows Defender SmartScreen may flag the unsigned binary. Allow it
   once; the release carries SLSA provenance if you want to verify it
   instead of trusting the popup.
@@ -365,12 +331,11 @@ Both platforms:
   you: `TOK=$(grep AUTH_TOKENS .env | cut -d= -f2)` then
   `-H "Authorization: Bearer $TOK"`.
 
-## 11. When to file a bug versus when it is you
+## 10. When to file a bug versus when it is you
 
 File an issue when: a `[FAIL]` in doctor contradicts a working setup,
-`/v1/models` is empty while logs show no registry error, a stream ends
-without `[DONE]` and without an `upstream_error` event, or the dashboard
-freezes while curl works.
+`/v1/models` is empty while logs show no registry error, or a stream ends
+without `[DONE]` and without an `upstream_error` event.
 
 It is you, not the proxy, when: the token is wrong or quota-spent (429),
 the model id is not in `/v1/models`, `LISTEN_ADDR` mismatches the address
