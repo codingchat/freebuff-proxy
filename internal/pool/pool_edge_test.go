@@ -428,6 +428,109 @@ func TestBridgeIdleSweepSkipsBusy(t *testing.T) {
 	}
 }
 
+// TestBridgeDeadTokenEvictDefersWhenBusy is the regression guard for the
+// dead-token eviction race (B6): a token confirmed dead (ErrAuthRejected)
+// by one request while ANOTHER request on the same token is mid-stream must
+// not be evicted — FinishAllRuns on the busy entry would kill the
+// concurrent chat, and dropping it from the cache would orphan the
+// stream's draining run outside bridgeMaintain's and Pool.Shutdown's
+// reach. The eviction is deferred to the idle sweep: the entry stays
+// cached (cooled down, so no new request passes it) until its leases
+// drain and it sits idle past bridgeIdleEvict. Fails before the fix (the
+// dead-token path FINISHed the busy entry's run and ended its session).
+func TestBridgeDeadTokenEvictDefersWhenBusy(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	// A live chat holds a lease on the token (inflight = 1).
+	lease, err := p.AcquireBridge(context.Background(), "dead-tok", modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mock.SessionCreatesSnapshot() != 1 {
+		t.Fatalf("session creates = %d, want 1", mock.SessionCreatesSnapshot())
+	}
+
+	// The token dies while the chat is in flight: a concurrent request on
+	// the same token hits a 401 (session admission for another model forces
+	// an upstream create past the cached session) and triggers the
+	// dead-token eviction path.
+	mock.AuthReject = true
+	_, err = p.AcquireBridge(context.Background(), "dead-tok", modelB)
+	if !errors.Is(err, upstream.ErrAuthRejected) {
+		t.Fatalf("second acquire err = %v, want ErrAuthRejected", err)
+	}
+
+	// The busy entry must NOT be evicted or cleaned up: the in-flight run
+	// is not FINISHed and the session is not ended.
+	if got := p.bridgeToken("dead-tok"); got == nil {
+		t.Fatal("busy dead-token entry evicted while its lease is outstanding")
+	}
+	if got := parentFinished(mock); len(got) != 0 {
+		t.Errorf("finished runs = %d, want 0 (busy run must not be finished)", len(got))
+	}
+	if mock.SessionEnds != 0 {
+		t.Errorf("session ends = %d, want 0 (busy entry session must not be ended)", mock.SessionEnds)
+	}
+	// The token-death knob also 401s the FINISH/EndSession cleanup calls,
+	// so restore it before the reclaim phase (the eviction decision, not
+	// the mock's persistent rejection, is what the sweep must honor).
+	mock.AuthReject = false
+
+	// Once the lease drains and the entry idles, the sweep reclaims it:
+	// FINISH + EndSession + cache removal.
+	p.LeaseRelease(lease)
+	entry := p.bridgeToken("dead-tok")
+	if entry == nil {
+		t.Fatal("deferred dead-token entry missing")
+	}
+	entry.lastUsed = time.Now().Add(-bridgeIdleEvict - time.Minute)
+	p.bridgeMaintain(context.Background(), false)
+	if got := p.bridgeToken("dead-tok"); got != nil {
+		t.Error("idle dead-token entry not evicted by the sweep")
+	}
+	if got := parentFinished(mock); len(got) != 1 {
+		t.Errorf("finished runs = %d, want 1 (idle sweep FINISH)", len(got))
+	}
+	if mock.SessionEnds != 1 {
+		t.Errorf("session ends = %d, want 1 (idle sweep EndSession)", mock.SessionEnds)
+	}
+}
+
+// TestBridgeDeadTokenEvictsWhenIdle pins the non-racing half of the B6
+// gate: a dead token with NO outstanding lease is still evicted
+// immediately (run FINISHed + session ended, entry dropped from the
+// cache), not left for the idle sweep — that is the point of B6 (a dead
+// token must not sit in the cache for the full bridgeIdleEvict window).
+// The acquire-path wiring is exercised by
+// TestBridgeDeadTokenEvictDefersWhenBusy; this test calls the eviction
+// directly so the cleanup assertions are deterministic (the mock's
+// AuthReject knob 401s the FINISH/EndSession calls too).
+func TestBridgeDeadTokenEvictsWhenIdle(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	lease, err := p.AcquireBridge(context.Background(), "dead-tok", modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.LeaseRelease(lease)
+
+	p.bridgeEvictToken("dead-tok")
+
+	if got := p.bridgeToken("dead-tok"); got != nil {
+		t.Error("idle dead-token entry not evicted immediately")
+	}
+	if got := parentFinished(mock); len(got) != 1 {
+		t.Errorf("finished runs = %d, want 1 (dead-token FINISH)", len(got))
+	}
+	if mock.SessionEnds != 1 {
+		t.Errorf("session ends = %d, want 1 (dead-token EndSession)", mock.SessionEnds)
+	}
+}
+
 // TestBridgeEvictionAllBusyKeepsCap pins the all-busy eviction behavior:
 // when every cached entry holds an outstanding lease, a new distinct token
 // cannot evict any of them (FINISHing a busy entry would kill the in-flight
