@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"freebuff-proxy/internal/config"
 	"freebuff-proxy/internal/notify"
 	"freebuff-proxy/internal/phasetiming"
 	"freebuff-proxy/internal/runs"
@@ -49,6 +50,52 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	}
 
 	start := int(p.rr.Add(1)-1) % len(*toks)
+
+	// Issue #191: leader-election gate per model. The first Acquire for a
+	// model registers as the leader (creates a channel); concurrent
+	// followers block on it. When the leader picks a token (or fails), it
+	// updates p.admissions and closes the channel so followers re-read the
+	// leader's token and follow it — preventing duplicate session creates
+	// across different cold tokens.
+	p.modelAdmissionGateMu.Lock()
+	ch, exists := p.modelAdmissionGate[model]
+	if !exists {
+		// Leader: create the gate channel and register admission.
+		ch = make(chan struct{})
+		p.modelAdmissionGate[model] = ch
+		p.modelAdmissionGateMu.Unlock()
+		p.admissionsMu.Lock()
+		p.admissions[model] = -1 // sentinel: "leader, target unknown"
+		p.admissionsMu.Unlock()
+		// Ensure the gate is closed and cleaned up on every exit path.
+		defer func() {
+			p.modelAdmissionGateMu.Lock()
+			close(ch)
+			delete(p.modelAdmissionGate, model)
+			p.modelAdmissionGateMu.Unlock()
+		}()
+	} else {
+		// Follower: release the gate lock, then block on the leader's channel.
+		p.modelAdmissionGateMu.Unlock()
+		<-ch
+		// Leader finished: re-read the admission to get the real token.
+		p.admissionsMu.Lock()
+		leaderToken := p.admissions[model]
+		p.admissionsMu.Unlock()
+		if leaderToken >= 0 {
+			order, quotaLimited := p.acquireOrder(toks, start, model)
+			reordered := make([]int, 0, len(order))
+			reordered = append(reordered, leaderToken)
+			for _, idx := range order {
+				if idx != leaderToken {
+					reordered = append(reordered, idx)
+				}
+			}
+			return p.leaseFromOrder(ctx, model, agentID, cfg, toks, reordered, quotaLimited)
+		}
+		// Leader failed (admission cleaned up) — fall through to normal path.
+	}
+
 	// Hot-session-first selection: tokens that already hold a live session
 	// are tried before any fresh account, so a request reuses the live slot
 	// instead of admitting a new session (never create where one already
@@ -58,30 +105,13 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	// from the round-robin start (cold path), exactly like the historical
 	// linear failover. When no token is hot the order is unchanged.
 	order, quotaLimited := p.acquireOrder(toks, start, model)
+	return p.leaseFromOrder(ctx, model, agentID, cfg, toks, order, quotaLimited)
+}
 
-	// Issue #191: when an admission for this model is already in-flight on a
-	// different token, override the cold ordering so concurrent requests land
-	// on the same token and park on the existing single-flight refreshCh
-	// instead of creating a competing session.
-	p.admissionsMu.Lock()
-	admittingToken, isAdmitting := p.admissions[model]
-	if !isAdmitting {
-		// No leader yet — register this goroutine as the admission leader
-		// for this model so any concurrent cold request will follow us.
-		p.admissions[model] = 0 // placeholder; will be updated in the token loop
-	} else if admittingToken >= 0 {
-		// An existing admission is in progress on admittingToken — pin
-		// the cold ordering to that token so we park on its single-flight.
-		reordered := make([]int, 0, len(order))
-		reordered = append(reordered, admittingToken)
-		for _, idx := range order {
-			if idx != admittingToken {
-				reordered = append(reordered, idx)
-			}
-		}
-		order = reordered
-	}
-	p.admissionsMu.Unlock()
+// leaseFromOrder runs the token failover loop against the given order.
+// Extracted from Acquire so the leader-election follower path can call it
+// with a reordered token list without duplicating the loop.
+func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string, cfg *config.Config, toks *[]*tokenEntry, order []int, quotaLimited []*upstream.RateLimitError) (*Lease, error) {
 	var errs []string
 	var waiting []*session.WaitingRoomError
 	var rateLimited []*upstream.RateLimitError
@@ -220,7 +250,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		permit, err := p.gate.acquire(ctx, model)
 		if err != nil {
 			p.admissionsMu.Lock()
-			if p.admissions != nil && p.admissions[model] == idx {
+			if p.admissions != nil && (p.admissions[model] == idx || p.admissions[model] == -1) {
 				delete(p.admissions, model)
 			}
 			p.admissionsMu.Unlock()
@@ -239,7 +269,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		instanceID, err := tok.session.EnsureSessionForModel(ctx, model)
 		permit.Release()
 		p.admissionsMu.Lock()
-		if p.admissions != nil && p.admissions[model] == idx {
+		if p.admissions != nil && (p.admissions[model] == idx || p.admissions[model] == -1) {
 			delete(p.admissions, model)
 		}
 		p.admissionsMu.Unlock()

@@ -283,6 +283,14 @@ type Pool struct {
 	admissionsMu sync.Mutex
 	admissions   map[string]int
 
+	// modelAdmissionGate serializes cold-path Acquire per model: the leader
+	// creates a channel on registration; concurrent followers block on it
+	// until the leader either picks a token (and they follow) or fails.
+	// Guarded by modelAdmissionGateMu; entries are deleted when the channel
+	// is closed.
+	modelAdmissionGateMu sync.Mutex
+	modelAdmissionGate   map[string]chan struct{}
+
 	// store persists session state across restarts (SESSION_PERSIST); nil
 	// disables. Injected by the caller (main) via SetSessionStore so there
 	// is exactly one store shared by pooled and bridge entries.
@@ -345,7 +353,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		return nil, fmt.Errorf("pool: %d sessions for %d tokens", len(sessions), len(cfg.AuthTokens))
 	}
 
-	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int)}
+	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]chan struct{})}
 	p.cfg.Store(cfg)
 	p.msgsPerToken = make([][]time.Time, len(cfg.AuthTokens))
 	p.spendPerToken = make([]*spendLedger, len(cfg.AuthTokens))
