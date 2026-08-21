@@ -61,10 +61,8 @@ const (
 	reasonStore      = "store"
 
 	// ReasonSuperseded is the T9 terminal-event reason for a session another
-	// instance took over (session_superseded, endsTheSession:true). Exported
-	// so the chat recovery path records superseded invalidations under the
-	// vocabulary — the re-admit storm detector's (T10) superseded count
-	// depends on the reason reaching recordInvalidation (#159).
+	// instance took over (session_superseded, endsTheSession:true); exported
+	// so the chat recovery path feeds the re-admit storm detector (T10).
 	ReasonSuperseded = reasonSuperseded
 
 	// Re-admit storm detector (T10): more than stormThreshold terminal
@@ -1092,10 +1090,7 @@ func (m *Manager) InvalidateInstance(instanceID string) {
 }
 
 // InvalidateInstanceWithReason is the reason-aware form of InvalidateInstance
-// (#159): instance-guarded drop that records WHY (T9/T10) and the triggering
-// HTTP status. The chat recovery path uses it so a session_superseded
-// invalidation feeds the re-admit storm detector's superseded count and the
-// log names the cause instead of the generic instance_invalidated reason.
+// (#159): additionally records WHY (T9/T10) and the triggering HTTP status.
 func (m *Manager) InvalidateInstanceWithReason(instanceID, reason string, status int) {
 	if instanceID == "" {
 		return
