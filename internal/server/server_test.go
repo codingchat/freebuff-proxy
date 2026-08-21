@@ -277,6 +277,30 @@ func TestChatNonStream(t *testing.T) {
 	}
 }
 
+// waitSpendTimeout bounds the spend-ledger polling below.
+const waitSpendTimeout = 2 * time.Second
+
+// waitSpend polls the pool snapshot until the first token's spend reaches
+// want (both Pacific-day and rolling-24h buckets), or fails. The spend
+// feeder runs after the relay writes the response (chatCore: relay →
+// RecordSpend), so a client that has already read the full response can
+// snapshot the pool before the ledger lands; polling makes the assertion
+// robust to scheduler preemption instead of depending on write ordering.
+func waitSpend(t *testing.T, pool *pool.Pool, want int64) []pool.TokenSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(waitSpendTimeout)
+	for {
+		snaps := pool.Snapshot()
+		if len(snaps) > 0 && snaps[0].SpendDay == want && snaps[0].Spend24h == want {
+			return snaps
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("spend did not reach %d/%d within %s (last: %v)", want, want, waitSpendTimeout, snaps)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestChatFeedsSpendLedger pins the #122 spend feeder: every successful chat
 // completion records the upstream usage total into the token's spend ledger
 // (streaming and non-stream paths), so SpendDay/Spend24h reflect real usage
@@ -294,12 +318,9 @@ func TestChatFeedsSpendLedger(t *testing.T) {
 		t.Fatalf("stream status = %d, want 200: %s", resp.StatusCode, data)
 	}
 
-	snaps := pool.Snapshot()
+	snaps := waitSpend(t, pool, 13)
 	if len(snaps) != 1 {
 		t.Fatalf("pool tokens = %d, want 1", len(snaps))
-	}
-	if snaps[0].SpendDay != 13 || snaps[0].Spend24h != 13 {
-		t.Errorf("spend after stream chat = %d/%d, want 13/13 (usage 11+2)", snaps[0].SpendDay, snaps[0].Spend24h)
 	}
 
 	// The non-stream path feeds the same ledger: a second completion
@@ -311,10 +332,7 @@ func TestChatFeedsSpendLedger(t *testing.T) {
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("non-stream status = %d, want 200", resp2.StatusCode)
 	}
-	snaps = pool.Snapshot()
-	if snaps[0].SpendDay != 25 || snaps[0].Spend24h != 25 {
-		t.Errorf("spend after two chats = %d/%d, want 25/25 (13+12)", snaps[0].SpendDay, snaps[0].Spend24h)
-	}
+	snaps = waitSpend(t, pool, 25)
 }
 
 // TestHealthzSpend pins the /healthz spend surface (issue #122): the ledger
@@ -333,28 +351,44 @@ func TestHealthzSpend(t *testing.T) {
 		t.Fatalf("stream status = %d, want 200: %s", resp.StatusCode, data)
 	}
 
-	resp, data = doJSON(t, http.MethodGet, ts.URL+"/healthz", nil, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("healthz status = %d, want 200: %s", resp.StatusCode, data)
+	// The spend feeder runs after the relay flushes the response, so the
+	// first healthz read can race it (see waitSpend); poll briefly.
+	deadline := time.Now().Add(waitSpendTimeout)
+	var tok struct {
+		Spend24h     int64 `json:"Spend24h"`
+		SpendDay     int64 `json:"SpendDay"`
+		SpendLimit   int64 `json:"SpendLimit"`
+		SpendPct     int   `json:"SpendPct"`
+		SpendLimited int   `json:"SpendLimited"`
 	}
-	var out struct {
-		Tokens []struct {
-			Spend24h     int64 `json:"Spend24h"`
-			SpendDay     int64 `json:"SpendDay"`
-			SpendLimit   int64 `json:"SpendLimit"`
-			SpendPct     int   `json:"SpendPct"`
-			SpendLimited int   `json:"SpendLimited"`
-		} `json:"tokens"`
-	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("healthz is not JSON: %v: %s", err, data)
-	}
-	if len(out.Tokens) != 1 {
-		t.Fatalf("tokens = %d, want 1", len(out.Tokens))
-	}
-	tok := out.Tokens[0]
-	if tok.Spend24h != 13 || tok.SpendDay != 13 {
-		t.Errorf("healthz spend = %d/%d, want 13/13 (usage 11+2)", tok.Spend24h, tok.SpendDay)
+	for {
+		resp, data = doJSON(t, http.MethodGet, ts.URL+"/healthz", nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("healthz status = %d, want 200: %s", resp.StatusCode, data)
+		}
+		var out struct {
+			Tokens []struct {
+				Spend24h     int64 `json:"Spend24h"`
+				SpendDay     int64 `json:"SpendDay"`
+				SpendLimit   int64 `json:"SpendLimit"`
+				SpendPct     int   `json:"SpendPct"`
+				SpendLimited int   `json:"SpendLimited"`
+			} `json:"tokens"`
+		}
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("healthz is not JSON: %v: %s", err, data)
+		}
+		if len(out.Tokens) != 1 {
+			t.Fatalf("tokens = %d, want 1", len(out.Tokens))
+		}
+		tok = out.Tokens[0]
+		if tok.Spend24h == 13 && tok.SpendDay == 13 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("healthz spend did not reach 13/13 within %s (last: %d/%d)", waitSpendTimeout, tok.SpendDay, tok.Spend24h)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if tok.SpendLimit != 100 {
 		t.Errorf("SpendLimit = %d, want 100 (MAX_SPEND_PER_DAY)", tok.SpendLimit)
@@ -2304,12 +2338,9 @@ func TestChatSpendLedgerIgnoresUsageNull(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("stream status = %d, want 200: %s", resp.StatusCode, data)
 	}
-	snaps := pool.Snapshot()
+	snaps := waitSpend(t, pool, 13)
 	if len(snaps) != 1 {
 		t.Fatalf("pool tokens = %d, want 1", len(snaps))
-	}
-	if snaps[0].SpendDay != 13 || snaps[0].Spend24h != 13 {
-		t.Errorf("spend after usage-null trailing chunk = %d/%d, want 13/13 (not zeroed)", snaps[0].SpendDay, snaps[0].Spend24h)
 	}
 }
 
