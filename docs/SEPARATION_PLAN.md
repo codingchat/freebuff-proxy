@@ -1,5 +1,8 @@
 # Project Separation Plan: Core CLI/Backend vs Dashboard
 
+> **Status: ARCHIVED / SUPERSEDED**
+> The project uses a unified all-in-one architecture on `main` with build-tag and runtime feature toggling (`DASHBOARD_ENABLED`, `-tags dashboard`). Separate lane branches and module splitting were evaluated and retired in favor of the single integrated repo.
+
 ## Executive Summary
 
 This plan separates the freebuff-proxy project into two independent modules:
