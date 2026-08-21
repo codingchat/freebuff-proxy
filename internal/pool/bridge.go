@@ -233,10 +233,16 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	// other bridge operation for the full creation duration.
 	//
 	// B1: Acquire a creation-rate gate slot to cap concurrent New calls.
+
+	// Use a stoppable timer: time.After would leave a 5s timer pending on
+	// the acquired path (per creation under gate pressure).
+	timer := time.NewTimer(5 * time.Second)
 	select {
 	case p.bridgeCreateGate <- struct{}{}:
-		// Acquired.
-	case <-time.After(5 * time.Second):
+		if !timer.Stop() {
+			<-timer.C
+		}
+	case <-timer.C:
 		return nil, fmt.Errorf("bridge: creation rate limit exceeded (too many concurrent client builds)")
 	}
 	defer func() { <-p.bridgeCreateGate }()
@@ -543,12 +549,29 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 // bridgeEvictToken immediately removes a token from the bridge cache (B6):
 // used when a token is confirmed dead (ErrAuthRejected) so it does not sit
 // in the cache for the full bridgeIdleEvict window. The removed entry's
-// runs are FINISHed best-effort after releasing the lock.
+// runs are FINISHed best-effort after releasing the lock. Entries with an
+// outstanding lease are left cached for the idle sweep instead: FINISHing
+// their runs would kill the concurrent chat stream, and dropping the entry
+// now would orphan the stream's draining run outside bridgeMaintain's and
+// Pool.Shutdown's reach.
 func (p *Pool) bridgeEvictToken(rawToken string) {
 	key := tokenKey(rawToken)
 	p.bridgeMu.Lock()
 	entry, ok := p.bridge[key]
 	if !ok {
+		p.bridgeMu.Unlock()
+		return
+	}
+	// B6: gate the eviction on zero in-flight leases. A token confirmed
+	// dead can still serve a live stream (the 401 may have raced another
+	// request on the same token); FinishAllRuns on the busy entry would
+	// kill the concurrent chat, and removing it would leave the stream's
+	// run invisible to bridgeMaintain and Pool.Shutdown. When busy, keep
+	// the entry cached — it is cooled down, so no new request passes it —
+	// and let the idle sweep drop it once the leases drain.
+	if inflight := entry.runs.InflightCount(); inflight > 0 {
+		p.logger.Debug("pool: dead-token eviction deferred (in-flight leases)",
+			"token_label", bridgeTokenLabel(entry), "inflight", inflight)
 		p.bridgeMu.Unlock()
 		return
 	}
