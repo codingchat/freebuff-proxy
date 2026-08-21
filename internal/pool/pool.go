@@ -366,6 +366,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		sess := sessions[i]
 		sess.SetReAdmitLead(cfg.SessionReAdmitLead)
 		sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
+		sess.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
 		sess.SetScarceModels(cfg.ScarceSessionModels)
 		toks = append(toks, &tokenEntry{
 			session: sess,
@@ -404,12 +405,14 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 	for _, tok := range *toks {
 		tok.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 		tok.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
+		tok.session.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
 		tok.session.SetScarceModels(cfg.ScarceSessionModels)
 	}
 	p.bridgeMu.Lock()
 	for _, entry := range p.bridge {
 		entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 		entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
+		entry.session.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
 		entry.session.SetScarceModels(cfg.ScarceSessionModels)
 	}
 	p.bridgeMu.Unlock()

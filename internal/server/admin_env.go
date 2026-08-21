@@ -380,6 +380,7 @@ func effectiveConfigKV(cfg *config.Config) map[string]string {
 		"RUNS_DRAIN_TTL":                        cfg.RunsDrainTTL.String(),
 		"SESSION_RE_ADMIT_LEAD":                 cfg.SessionReAdmitLead.String(),
 		"SESSION_PROBE_CACHE_TTL":               cfg.SessionProbeCacheTTL.String(),
+		"MODEL_UNAVAILABLE_CACHE_TTL":           cfg.ModelUnavailableCacheTTL.String(),
 		"WEBHOOK_URL":                           boolWord(cfg.WebhookURL != ""),
 		"FALLBACK_AFTER_MS":                     cfg.FallbackAfter.String(),
 		"FALLBACK_MODEL":                        strconv.Itoa(len(cfg.FallbackModels)),
