@@ -11,6 +11,9 @@
 #   ./gen-freebuff-token.sh --save       # save to ~/.config/manicode/credentials.json
 #   ./gen-freebuff-token.sh --append     # append to .env AUTH_TOKENS (auto-copies .env.example if missing)
 #   ./gen-freebuff-token.sh --env /path/.env  # target .env for --append
+#   ./gen-freebuff-token.sh --verify     # opt-in: probe the fresh token against
+#                                        # /api/v1/freebuff/session for ban/tier check
+#                                        # (default: never sends the token to the server)
 #
 # Each run generates a unique fingerprintId. Log into a DIFFERENT GitHub
 # account in your browser to get a token for that account.
@@ -24,6 +27,7 @@ TIMEOUT=300
 POLL_INTERVAL=5
 MODE="interactive"  # interactive (default) | print | save | clipboard | append | incognito
 ENV_FILE=""
+VERIFY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,6 +38,7 @@ while [ $# -gt 0 ]; do
     --append)    MODE="append"; shift ;;
     --env)       ENV_FILE="$2"; shift 2 ;;
     --env=*)     ENV_FILE="${1#--env=}"; shift ;;
+    --verify)    VERIFY=1; shift ;;
     -h|--help)   head -15 "$0"; exit 0 ;;
     *)           echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
@@ -222,11 +227,12 @@ ok "Login successful!"
 c "  Account: $USER_NAME ($USER_EMAIL)"
 echo "  Token:   $AUTH_TOKEN"
 
-# --- 4.5 zero-cost post-auth verification (anti-ban) -------------------------
-# Probe /api/v1/freebuff/session WITHOUT x-freebuff-instance-id so no session
-# slot is claimed (matches the proxy's -test-token probe). Refuses to save a
-# banned/spend-limited account — a fresh token check here beats discovering a
-# dead token in a chat after it burned pool cooldowns.
+# --- 4.5 opt-in post-auth verification (anti-ban) ----------------------------
+# OFF by default: the fresh token is never sent back to the server. Pass
+# --verify to opt in — it probes /api/v1/freebuff/session WITHOUT
+# x-freebuff-instance-id so no session slot is claimed (matches the proxy's
+# -test-token probe), and refuses to save a banned/spend-limited account.
+if [ "$VERIFY" = "1" ]; then
 PROBE_RESP=$(curl -sS --max-time 15 \
   -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "User-Agent: ai-sdk/openai-compatible/1.0.0/codebuff" \
@@ -243,6 +249,7 @@ if [ "$PROBE_STATUS" = "unknown" ] && [ -z "$PROBE_TIER" ]; then
   gray "  $(echo "$PROBE_RESP" | tr -d '\n' | head -c 160)"
 else
   c "Account check: status=$PROBE_STATUS tier=${PROBE_TIER:-?} risk=${PROBE_RISK:-?}"
+fi
 fi
 
 # --- 5. save credentials locally (opt-in with --save) ------------------------

@@ -4,6 +4,7 @@ param(
     [switch]$ToClipboard,
     [switch]$Incognito,
     [switch]$Append,
+    [switch]$Verify,
     [string]$EnvFile = "",
     [string]$BaseUrl = "https://www.codebuff.com",
     [int]$TimeoutSeconds = 300,

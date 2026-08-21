@@ -1,10 +1,14 @@
 # gen-freebuff-token.ps1 - Generate a FreeBuff auth token via headless login flow
+# Default: the fresh token is NEVER sent back to the server after login.
+# Pass -Verify to opt in to the post-auth /api/v1/freebuff/session probe
+# (ban/tier check, no session slot claimed).
 [CmdletBinding()]
 param(
     [switch]$Save,
     [switch]$ToClipboard,
     [switch]$Incognito,
     [switch]$Append,
+    [switch]$Verify,
     [string]$EnvFile = "",
     [string]$BaseUrl = $(if ($env:FREEBUFF_BASE_URL) { $env:FREEBUFF_BASE_URL } else { "https://www.codebuff.com" }),
     [int]$TimeoutSeconds = 300,
@@ -325,7 +329,12 @@ Write-Host "Login successful!" -ForegroundColor Green
 Write-Host " Account: $userName ($userEmail)" -ForegroundColor Cyan
 Write-Host " Token: $authToken" -ForegroundColor White
 
-# --- 4.5 zero-cost post-auth verification ------------------------------------
+# --- 4.5 opt-in post-auth verification (anti-ban) ----------------------------
+# OFF by default: the fresh token is never sent back to the server. Pass
+# -Verify to opt in — it probes /api/v1/freebuff/session (no
+# x-freebuff-instance-id, so no session slot is claimed; matches the proxy's
+# -test-token probe) and refuses to save a banned account.
+if ($Verify) {
 try {
     $probeResp = Invoke-FreebuffApi -Uri "$BaseUrl/api/v1/freebuff/session" -Method GET -Headers @{ "Authorization" = "Bearer $authToken"; "User-Agent" = "ai-sdk/openai-compatible/1.0.0/codebuff" } -TimeoutSec 15
     # StrictMode-safe reads: the live session response carries status +
@@ -342,6 +351,7 @@ try {
     Write-Host "Account check: status=$probeStatus tier=$(if ($probeTier) { $probeTier } else { '?' }) risk=$(if ($probeRisk) { $probeRisk } else { '?' })" -ForegroundColor Cyan
 } catch {
     Write-Host "Probe unreadable; continuing without tier confirmation: $($_.Exception.Message)" -ForegroundColor Yellow
+}
 }
 
 # --- 5. save credentials locally ---------------------------------------------
