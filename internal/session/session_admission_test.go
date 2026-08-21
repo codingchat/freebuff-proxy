@@ -39,6 +39,58 @@ func TestStatusErrorModelIPLimited(t *testing.T) {
 	}
 }
 
+// TestStatusErrorClampsCooldown pins the parse-time ceiling on the session
+// admission path: an absurd upstream retryAfterMs (int64 max) must clamp to
+// upstream.MaxCooldown — not wrap the ms→ns multiply into a multi-year
+// positive window — across every status that derives a cooldown from it.
+func TestStatusErrorClampsCooldown(t *testing.T) {
+	huge := &upstream.SessionState{RetryAfterMs: int64(1<<63 - 1)}
+
+	err := statusError("rate_limited", huge)
+	var rle *upstream.RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("statusError(rate_limited) = %v, want *upstream.RateLimitError", err)
+	}
+	if rle.RetryAfter != upstream.MaxCooldown {
+		t.Errorf("rate_limited RetryAfter = %v, want %v (clamped)", rle.RetryAfter, upstream.MaxCooldown)
+	}
+
+	err = statusError("spend_limited", huge)
+	if !errors.As(err, &rle) {
+		t.Fatalf("statusError(spend_limited) = %v, want *upstream.RateLimitError", err)
+	}
+	if rle.RetryAfter != upstream.MaxCooldown {
+		t.Errorf("spend_limited RetryAfter = %v, want %v (clamped)", rle.RetryAfter, upstream.MaxCooldown)
+	}
+
+	err = statusError("ip_capped", huge)
+	var ice *upstream.IpCappedError
+	if !errors.As(err, &ice) {
+		t.Fatalf("statusError(ip_capped) = %v, want *upstream.IpCappedError", err)
+	}
+	if ice.RetryAfter != upstream.MaxCooldown {
+		t.Errorf("ip_capped RetryAfter = %v, want %v (clamped)", ice.RetryAfter, upstream.MaxCooldown)
+	}
+
+	err = statusError("limited_ip", &upstream.SessionState{Message: "model is limited on this IP", RetryAfterMs: int64(1<<63 - 1)})
+	var lie *upstream.LimitedIpError
+	if !errors.As(err, &lie) {
+		t.Fatalf("statusError(limited_ip) = %v, want *upstream.LimitedIpError", err)
+	}
+	if lie.RetryAfter != upstream.MaxCooldown {
+		t.Errorf("limited_ip RetryAfter = %v, want %v (clamped)", lie.RetryAfter, upstream.MaxCooldown)
+	}
+
+	// Normal values are untouched.
+	err = statusError("rate_limited", &upstream.SessionState{RetryAfterMs: 60000})
+	if !errors.As(err, &rle) {
+		t.Fatalf("statusError(rate_limited) = %v, want *upstream.RateLimitError", err)
+	}
+	if rle.RetryAfter != 60*time.Second {
+		t.Errorf("rate_limited RetryAfter = %v, want 60s", rle.RetryAfter)
+	}
+}
+
 func TestWaitingRoomThenActive(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()

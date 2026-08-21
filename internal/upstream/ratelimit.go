@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -414,9 +415,9 @@ func parseIpCapped(body string, headerRetryAfter time.Duration) error {
 		}
 
 		if ms, ok := getNumber(target, "retryAfterMs", "retry_after_ms"); ok && ms > 0 {
-			ice.RetryAfter = time.Duration(ms) * time.Millisecond
+			ice.RetryAfter = CooldownFromMillis(ms)
 		} else if sec, ok := getNumber(target, "retryAfter", "retry_after"); ok && sec > 0 {
-			ice.RetryAfter = time.Duration(sec * float64(time.Second))
+			ice.RetryAfter = cooldownFromSeconds(sec)
 		}
 
 		if n, ok := getNumber(target, "activeUsersForIp", "active_users_for_ip"); ok {
@@ -427,6 +428,7 @@ func parseIpCapped(body string, headerRetryAfter time.Duration) error {
 		}
 	}
 
+	ice.RetryAfter = clampCooldown(ice.RetryAfter)
 	if ice.RetryAfter <= 0 {
 		ice.RetryAfter = time.Minute
 	}
@@ -459,6 +461,69 @@ const PeakHoursCooldown = 30 * time.Minute
 // refusals get.
 const opaqueRateLimitBackoff = 60 * time.Second
 
+// MaxCooldown is the ceiling for any cooldown derived from upstream retry
+// fields (retryAfterMs, Retry-After, resetAt): 7 days. Those fields are
+// untrusted input; without a ceiling an absurd value could overflow the
+// int64-nanosecond duration multiply — wrapping to a multi-year positive
+// window (time.Duration(ms)*time.Millisecond wraps for ms >= ~9.2e12) — or
+// lock a token for decades on a misbehaving upstream.
+const MaxCooldown = 7 * 24 * time.Hour
+
+// CooldownFromMillis converts an upstream retryAfterMs value to a cooldown
+// duration clamped to MaxCooldown. The overflow guard runs BEFORE the
+// multiply: time.Duration(ms)*time.Millisecond wraps for ms >=
+// math.MaxInt64/1e6 (~9.2e12), which would turn an absurd upstream value
+// into a (positive) multi-year window. Non-positive values return 0 so
+// callers' <=0 fallback logic is unaffected.
+func CooldownFromMillis(ms float64) time.Duration {
+	if ms <= 0 {
+		return 0
+	}
+	if ms > float64(math.MaxInt64)/float64(time.Millisecond) {
+		return MaxCooldown
+	}
+	return clampCooldown(time.Duration(ms) * time.Millisecond)
+}
+
+// cooldownFromSeconds converts an upstream retryAfter (seconds) value to a
+// cooldown clamped to MaxCooldown, guarding the float64→duration conversion
+// the same way CooldownFromMillis guards the multiply.
+func cooldownFromSeconds(sec float64) time.Duration {
+	if sec <= 0 {
+		return 0
+	}
+	if sec > float64(math.MaxInt64)/float64(time.Second) {
+		return MaxCooldown
+	}
+	return clampCooldown(time.Duration(sec * float64(time.Second)))
+}
+
+// clampCooldown bounds a positive duration to MaxCooldown; non-positive
+// durations pass through untouched so callers' <=0 fallback logic is
+// unaffected.
+func clampCooldown(d time.Duration) time.Duration {
+	if d > MaxCooldown {
+		return MaxCooldown
+	}
+	return d
+}
+
+// untilResetAt converts a future reset timestamp to a cooldown clamped to
+// MaxCooldown. time.Until (time.Time.Sub) is undefined when the difference
+// exceeds the int64-nanosecond range (~292 years), so a centuries-out
+// timestamp is detected on the unix-seconds difference instead of relying
+// on a wrapped Duration.
+func untilResetAt(t, now time.Time) time.Duration {
+	secs := t.Unix() - now.Unix()
+	if secs <= 0 {
+		return 0
+	}
+	if secs > math.MaxInt64/int64(time.Second) {
+		return MaxCooldown
+	}
+	return clampCooldown(time.Duration(secs) * time.Second)
+}
+
 // parseRateLimit builds a RateLimitError from a 429 body, extracting
 // retryAfterMs/resetAt/limit/recentCount/period best-effort across multiple
 // JSON schemas. Falls back to the Retry-After header; a body with no
@@ -476,9 +541,9 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 		}
 
 		if ms, ok := getNumber(target, "retryAfterMs", "retry_after_ms"); ok && ms > 0 {
-			rle.RetryAfter = time.Duration(ms) * time.Millisecond
+			rle.RetryAfter = CooldownFromMillis(ms)
 		} else if sec, ok := getNumber(target, "retryAfter", "retry_after"); ok && sec > 0 {
-			rle.RetryAfter = time.Duration(sec * float64(time.Second))
+			rle.RetryAfter = cooldownFromSeconds(sec)
 		}
 
 		if t, ok := getTime(target, "resetAt", "reset_at", "resets_at", "resumes_at", "reset"); ok && !t.IsZero() {
@@ -504,7 +569,7 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 
 	if !rle.ResetAt.IsZero() && rle.ResetAt.After(time.Now()) {
 		if rle.RetryAfter <= 0 {
-			rle.RetryAfter = time.Until(rle.ResetAt)
+			rle.RetryAfter = untilResetAt(rle.ResetAt, time.Now())
 		}
 	} else if rle.RetryAfter <= 0 {
 		// No timestamp and no header delay: lock until the next Pacific
@@ -517,7 +582,7 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 		if isDailyCapReset(rle) {
 			nextReset := NextPacificMidnight()
 			rle.ResetAt = nextReset
-			rle.RetryAfter = time.Until(nextReset)
+			rle.RetryAfter = untilResetAt(nextReset, time.Now())
 		} else {
 			rle.RetryAfter = opaqueRateLimitBackoff
 		}
@@ -526,6 +591,7 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 	if rle.RetryAfter <= 0 {
 		rle.RetryAfter = 60 * time.Second
 	}
+	rle.RetryAfter = clampCooldown(rle.RetryAfter)
 	// T7 ledger window, computed after ResetAt/RetryAfter are finalized
 	// (the daily-cap fallback above sets ResetAt so the window is "reset"
 	// for daily-cap timestamp-less 429s; opaque ones carry just
@@ -570,10 +636,10 @@ func parseRetryAfter(hdr http.Header) time.Duration {
 		return 0
 	}
 	if seconds, err := strconv.Atoi(raw); err == nil && seconds >= 0 {
-		return time.Duration(seconds) * time.Second
+		return cooldownFromSeconds(float64(seconds))
 	}
 	if t, err := http.ParseTime(raw); err == nil {
-		return time.Until(t)
+		return untilResetAt(t, time.Now())
 	}
 	return 0
 }

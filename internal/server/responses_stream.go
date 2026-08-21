@@ -40,6 +40,10 @@ type responsesStreamState struct {
 	toolByUpIdx map[int]*responsesItem
 	model       string
 	usage       any
+	// finishReason is the last upstream finish_reason seen (recorded in
+	// accumulateResponsesChunk); the terminal response status keys on it
+	// ("length" → incomplete/max_output_tokens, everything else completed).
+	finishReason string
 }
 
 // relayResponsesStream translates upstream chat SSE chunks into Responses
@@ -63,6 +67,9 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 	st := &responsesStreamState{toolByUpIdx: make(map[int]*responsesItem), model: model}
 	send := func(ev map[string]any) {
 		b, _ := json.Marshal(ev)
+		// SSE frames carry the documented event: field (like the Anthropic
+		// relay) so non-JSON-parsing clients can dispatch on the event type.
+		_, _ = io.WriteString(w, "event: "+stringValue(ev["type"])+"\n")
 		_, _ = w.Write(convert.EncodeSSE(b))
 		flusher.Flush()
 	}
@@ -148,7 +155,10 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 				if ctx.Err() == nil {
 					s.logger.Warn("responses upstream stream error", "err", lc.err)
 					flushXMLCalls()
-					s.endResponsesStream(w, send, st, model, respID, createdAt, true, nil)
+					s.endResponsesStream(w, send, st, model, respID, createdAt, true, map[string]any{
+						"type":    "upstream_stream_error",
+						"message": "upstream stream error: " + lc.err.Error(),
+					})
 				}
 				return
 			}
@@ -354,25 +364,30 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 }
 
 // endResponsesStream emits the per-item done events and the terminal
-// response.completed (or response.failed) event.
+// response.completed (or response.failed) event. On the failure path no
+// done events are emitted — the items stay in_progress and the terminal
+// response.failed carries the error (a failed response must not claim
+// completed items).
 func (s *Server) endResponsesStream(w http.ResponseWriter, send func(map[string]any), st *responsesStreamState, model, respID string, createdAt int64, failed bool, errObj map[string]any) {
-	// Ensure at least one output item so output is never empty.
-	if len(st.items) == 0 {
-		item := &responsesItem{id: "msg_" + randHexString(12), kind: "message", outputIndex: st.nextIndex}
-		st.nextIndex++
-		st.items = append(st.items, item)
-	}
-	for _, item := range st.items {
-		if item.kind == "message" {
-			if !item.started {
-				sendResponsesItemAdded(send, item)
+	if !failed {
+		// Ensure at least one output item so output is never empty.
+		if len(st.items) == 0 {
+			item := &responsesItem{id: "msg_" + randHexString(12), kind: "message", outputIndex: st.nextIndex}
+			st.nextIndex++
+			st.items = append(st.items, item)
+		}
+		for _, item := range st.items {
+			if item.kind == "message" {
+				if !item.started {
+					sendResponsesItemAdded(send, item)
+				}
+				part := map[string]any{"type": "output_text", "text": item.text, "annotations": []any{}}
+				send(map[string]any{"type": "response.output_text.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "text": item.text})
+				send(map[string]any{"type": "response.content_part.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "part": part})
+				send(map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "message", "status": "completed", "role": "assistant", "content": []any{part}}})
+			} else {
+				send(map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "function_call", "status": "completed", "call_id": item.callID, "name": item.name, "arguments": item.args.String()}})
 			}
-			part := map[string]any{"type": "output_text", "text": item.text, "annotations": []any{}}
-			send(map[string]any{"type": "response.output_text.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "text": item.text})
-			send(map[string]any{"type": "response.content_part.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "part": part})
-			send(map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "message", "status": "completed", "role": "assistant", "content": []any{part}}})
-		} else {
-			send(map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "function_call", "status": "completed", "call_id": item.callID, "name": item.name, "arguments": item.args.String()}})
 		}
 	}
 	resp := responsesBase(model, respID, createdAt, "completed")
@@ -394,6 +409,13 @@ func (s *Server) endResponsesStream(w http.ResponseWriter, send func(map[string]
 	resp["output"] = out
 	if st.usage != nil {
 		resp["usage"] = responsesUsage(st.usage)
+	}
+	// Upstream "length" means the output was truncated by max_output_tokens:
+	// the Responses object must read "incomplete" with the matching
+	// incomplete_details (never "completed" — issue #172).
+	if !failed && st.finishReason == "length" {
+		resp["status"] = "incomplete"
+		resp["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
 	}
 	if failed {
 		resp["status"] = "failed"
@@ -424,6 +446,11 @@ func (s *Server) accumulateResponsesChunk(st *responsesStreamState, chunk map[st
 	choice, ok := choices[0].(map[string]any)
 	if !ok || choice == nil {
 		return
+	}
+	// Record the upstream finish_reason (before the delta guard: the
+	// terminal chunk can carry finish_reason with an empty delta).
+	if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
+		st.finishReason = fr
 	}
 	delta, _ := choice["delta"].(map[string]any)
 	if delta == nil {
@@ -528,8 +555,10 @@ func (s *Server) relayResponsesJSON(ctx context.Context, w http.ResponseWriter, 
 	}
 	out := make([]any, 0, 2)
 	choices, _ := completion["choices"].([]any)
+	finishReason := ""
 	if len(choices) > 0 {
 		if choice, ok := choices[0].(map[string]any); ok {
+			finishReason, _ = choice["finish_reason"].(string)
 			if msg, ok := choice["message"].(map[string]any); ok {
 				text, _ := msg["content"].(string)
 				if text != "" {
@@ -562,6 +591,12 @@ func (s *Server) relayResponsesJSON(ctx context.Context, w http.ResponseWriter, 
 		}
 	}
 	resp["output"] = out
+	// Upstream "length" = truncated by max_output_tokens: mirror the
+	// streaming path's incomplete status (issue #172).
+	if finishReason == "length" {
+		resp["status"] = "incomplete"
+		resp["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
+	}
 	if usage, ok := completion["usage"]; ok && usage != nil {
 		resp["usage"] = responsesUsage(usage)
 		stats.usageTokens = usageTotalTokens(usage) // #122 spend ledger

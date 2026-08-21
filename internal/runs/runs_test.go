@@ -688,6 +688,62 @@ func TestClearCooldowns(t *testing.T) {
 	}
 }
 
+// TestCooldownDeadlineCeiling pins the defensive deadline cap: a huge
+// upstream RetryAfter or a far-future ResetAt must park the token in a
+// cooldown no farther than cooldownCeiling (7 days) instead of years.
+func TestCooldownDeadlineCeiling(t *testing.T) {
+	m := NewRunManager(nil, nil, time.Hour)
+
+	t.Run("huge RetryAfter", func(t *testing.T) {
+		m.ClearCooldowns()
+		m.CooldownRateLimit(&upstream.RateLimitError{RetryAfter: 1000 * 24 * time.Hour})
+		until := m.CooldownUntil()
+		now := time.Now()
+		// Capped at the 7-day ceiling — not the 1000-day RetryAfter, not
+		// a wrapped negative deadline.
+		if until.Before(now) || until.After(now.Add(cooldownCeiling)) {
+			t.Errorf("CooldownUntil = %v, want within %v of now", until, cooldownCeiling)
+		}
+		// At the ceiling (not truncated to some small default): the cap
+		// must land at ~7d for an absurd input.
+		if until.Before(now.Add(6 * 24 * time.Hour)) {
+			t.Errorf("CooldownUntil = %v, want ~%v (at the ceiling, not a short default)", until, cooldownCeiling)
+		}
+	})
+
+	t.Run("far-future ResetAt", func(t *testing.T) {
+		m.ClearCooldowns()
+		m.CooldownRateLimit(&upstream.RateLimitError{ResetAt: time.Now().Add(500 * 24 * time.Hour)})
+		until := m.CooldownUntil()
+		now := time.Now()
+		if until.Before(now) || until.After(now.Add(cooldownCeiling)) {
+			t.Errorf("CooldownUntil = %v, want within %v of now", until, cooldownCeiling)
+		}
+		if until.Before(now.Add(6 * 24 * time.Hour)) {
+			t.Errorf("CooldownUntil = %v, want ~%v (at the ceiling, not the far-future ResetAt)", until, cooldownCeiling)
+		}
+	})
+
+	t.Run("ip_capped RetryAfter capped with jitter", func(t *testing.T) {
+		m.ClearCooldowns()
+		m.CooldownIpCapped(&upstream.IpCappedError{RetryAfter: 10 * 24 * time.Hour})
+		until := m.CooldownUntil()
+		if until.After(time.Now().Add(cooldownCeiling)) {
+			t.Errorf("CooldownUntil = %v, want within %v of now", until, cooldownCeiling)
+		}
+	})
+
+	t.Run("normal RetryAfter untouched", func(t *testing.T) {
+		m.ClearCooldowns()
+		m.CooldownRateLimit(&upstream.RateLimitError{RetryAfter: 5 * time.Minute})
+		until := m.CooldownUntil()
+		now := time.Now()
+		if until.Before(now.Add(4*time.Minute)) || until.After(now.Add(6*time.Minute)) {
+			t.Errorf("CooldownUntil = %v, want ~5m from now (unchanged)", until)
+		}
+	})
+}
+
 // TestCooldownIpCappedCapsReAdmits pins #118: the CLI treats ip_capped as
 // terminal-until-reset (never an automatic re-admission loop), so the
 // proxy's CooldownIpCapped honors the FULL retryAfterMs (+jitter) for the

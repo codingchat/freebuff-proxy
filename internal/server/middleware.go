@@ -233,13 +233,14 @@ func (s *Server) authorized(r *http.Request) bool {
 // requireAdminToken guards POST /admin/reload when ADMIN_TOKEN is set: the
 // request must present it as "Authorization: Bearer <token>" (constant-time
 // compare). When ADMIN_TOKEN is unset the handler passes through untouched —
-// the legacy API_KEYS gate still applies via requireAuth, and main.go logs a
+// the loopback gate (adminSensitive, wired between requireAdminToken and
+// requireAuth) and the legacy API_KEYS gate then apply, and main.go logs a
 // startup warning for the open (default) case.
-func (s *Server) requireAdminToken(next http.HandlerFunc) http.HandlerFunc {
+func (s *Server) requireAdminToken(next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cfg := s.cfg.Load()
 		if cfg.AdminToken == "" {
-			next(w, r)
+			next.ServeHTTP(w, r)
 			return
 		}
 		provided := ""
@@ -251,7 +252,7 @@ func (s *Server) requireAdminToken(next http.HandlerFunc) http.HandlerFunc {
 				"Invalid admin token", "invalid_request_error", "invalid_admin_token", 0)
 			return
 		}
-		next(w, r)
+		next.ServeHTTP(w, r)
 	}
 }
 

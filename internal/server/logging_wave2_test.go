@@ -119,19 +119,36 @@ func TestAccessLogDisabledSuppressesLines(t *testing.T) {
 }
 
 // TestAdminReloadLogsAudit verifies T15: /admin/reload success logs INFO and
-// failure logs WARN, both with remote and path.
+// failure logs WARN, both with remote and path. The server carries an
+// ADMIN_TOKEN so the non-loopback test client passes the adminSensitive gate
+// via the bearer token (the open-mode loopback requirement is pinned by
+// TestAdminReloadAdminSensitiveGate).
 func TestAdminReloadLogsAudit(t *testing.T) {
 	testutil.UnsetConfigEnv(t)
 	t.Chdir(t.TempDir())
 	mock := testutil.NewMock()
 	defer mock.Close()
-	srv, sink := newLoggingServer(t, mock, nil)
+	srv, sink := newLoggingServer(t, mock, func(c *config.Config) { c.AdminToken = "secret-admin-token" })
 	h := srv.Handler()
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/reload", nil)
-	req.RemoteAddr = "198.51.100.7:1234"
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	// The .env carries ADMIN_TOKEN too: a successful reload swaps s.cfg for
+	// config.Load(""), so the bearer gate must survive the swap for the
+	// non-loopback test client (the adminSensitive loopback gate would
+	// otherwise 403 the audit requests).
+	if err := os.WriteFile(".env", []byte("ADMIN_TOKEN=secret-admin-token\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reload := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/admin/reload", nil)
+		req.RemoteAddr = "198.51.100.7:1234"
+		req.Header.Set("Authorization", "Bearer secret-admin-token")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := reload()
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reload status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -142,16 +159,14 @@ func TestAdminReloadLogsAudit(t *testing.T) {
 		}
 	}
 
-	// Failure path: an invalid .env makes config.Load reject the reload.
-	if err := os.WriteFile(".env", []byte("ROTATION_INTERVAL=not-a-duration\n"), 0o644); err != nil {
+	// Failure path: an invalid .env makes config.Load reject the reload
+	// (ADMIN_TOKEN line kept so the gate still passes on the retry).
+	if err := os.WriteFile(".env", []byte("ROTATION_INTERVAL=not-a-duration\nADMIN_TOKEN=secret-admin-token\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reqFail := httptest.NewRequest(http.MethodPost, "/admin/reload", nil)
-	reqFail.RemoteAddr = "198.51.100.7:1234"
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, reqFail)
+	rec = reload()
 	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("reload failure status = %d, want 500", rec.Code)
+		t.Fatalf("reload failure status = %d, want 500: %s", rec.Code, rec.Body.String())
 	}
 	logs = sink.String()
 	for _, want := range []string{"admin reload failed", "remote=198.51.100.7", "path=/admin/reload"} {

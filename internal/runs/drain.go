@@ -35,16 +35,47 @@ type asyncJob struct {
 	run  *Run
 }
 
-// FinishAllRuns finishes all active and draining runs synchronously.
+// FinishAllRuns finishes all idle active and draining runs synchronously.
+// Runs with an outstanding lease are NOT dropped: they are marked draining
+// (drainedAt) and kept in the manager so the LAST lease release re-queues
+// their FINISH. Previously every run was deleted from both sets up front,
+// so a run with inflight > 0 was skipped by finishIfReadyCtx AND became
+// unreachable — Release only decremented, ReleaseAbandoned only re-queued
+// runs still current in m.runs, and Maintain iterates the current sets —
+// so its upstream FINISH never ran (P1, anti-ban contract): the terminal
+// status was lost and the run leaked upstream until its own rotation
+// expiry.
 func (m *RunManager) FinishAllRuns(ctx context.Context) {
 	m.mu.Lock()
 	runsToFinish := make([]*Run, 0, len(m.runs)+len(m.draining))
 	for agentID, run := range m.runs {
+		if run.inflight > 0 {
+			continue
+		}
 		delete(m.runs, agentID)
 		runsToFinish = append(runsToFinish, run)
 	}
-	runsToFinish = append(runsToFinish, m.draining...)
-	m.draining = nil
+	// Draining runs: finish the idle ones; busy ones stay draining (the
+	// lease release re-queues them once inflight drains).
+	kept := m.draining[:0]
+	for _, run := range m.draining {
+		if run.inflight > 0 {
+			kept = append(kept, run)
+			continue
+		}
+		runsToFinish = append(runsToFinish, run)
+	}
+	m.draining = kept
+	// In-flight active runs stay in the manager so the last lease release
+	// re-queues the FINISH; mark them draining so the release path (and
+	// Maintain) sees them, with pruneDrainingLocked still bounding the
+	// list.
+	for _, run := range m.runs {
+		if run.inflight > 0 {
+			m.appendDrainingLocked(run)
+		}
+	}
+	m.pruneDrainingLocked()
 	m.mu.Unlock()
 	for _, r := range runsToFinish {
 		m.finishIfReadyCtx(ctx, r)
@@ -66,9 +97,7 @@ func (m *RunManager) FinishRun(ctx context.Context, run *Run) {
 		// Keep the run around for a Maintain retry; the id is not
 		// necessarily dead upstream (network errors, 5xx).
 		m.mu.Lock()
-		run.drainedAt = time.Now()
-		m.draining = append(m.draining, run)
-		m.pruneDrainingLocked()
+		m.appendDrainingLocked(run)
 		m.mu.Unlock()
 		slog.Debug("runs: FINISH failed, will retry on maintain", "run_id", run.RunID, "err", err)
 		return
@@ -228,6 +257,38 @@ func logRunFinished(run *Run, steps int, termination string) {
 		"termination", termination)
 }
 
+// appendDrainingLocked adds run to the draining list unless it is already
+// present, stamping drainedAt (the TTL start, issue #55) and bounding the
+// list. Caller holds m.mu. Shared by rotate, ReleaseAbandoned,
+// FinishAllRuns, and FinishRun's failure path so a run is never tracked
+// twice — a duplicate draining entry would be FINISHed twice upstream once
+// the finishing flag resets.
+func (m *RunManager) appendDrainingLocked(run *Run) {
+	if run == nil {
+		return
+	}
+	for _, d := range m.draining {
+		if d == run {
+			return
+		}
+	}
+	run.drainedAt = time.Now()
+	m.draining = append(m.draining, run)
+	m.pruneDrainingLocked()
+}
+
+// runDrainingLocked reports whether run is on the draining list. Caller
+// holds m.mu. Release consults it to re-queue a deferred FINISH when the
+// last lease of a draining run releases (P1).
+func (m *RunManager) runDrainingLocked(run *Run) bool {
+	for _, d := range m.draining {
+		if d == run {
+			return true
+		}
+	}
+	return false
+}
+
 // pruneDrainingLocked bounds the draining list (issue #55): entries stuck
 // past DrainTTL or beyond DrainQueueCap are force-dropped with a warn log â€”
 // their upstream FINISH is best-effort anyway, and the list must never grow
@@ -296,6 +357,24 @@ func (m *RunManager) finishIfReadyCtx(ctx context.Context, run *Run) {
 	m.mu.Unlock()
 	m.removeRun(run)
 	logRunFinished(run, len(steps), "finish")
+}
+
+// finishInline best-effort FINISHes a run that was never tracked by the
+// manager (P3): rotate discards a fresh run whose upstream START completed
+// after Shutdown began. The finish worker is stopped by then, so the
+// FINISH runs here, bounded by the shutdown deadline — never the caller's
+// request ctx, which may already be cancelled. The payload defaults mirror
+// a zero-request run (status completed, no steps). No manager state is
+// touched: the run was never inserted, and it must not disturb a persisted
+// entry for the same agent.
+func (m *RunManager) finishInline(runID, agentID string) {
+	fctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := m.client.FinishRun(fctx, runID, "completed", 0, nil, ""); err != nil {
+		slog.Warn("runs: inline FINISH of run started during shutdown failed", "run_id", runID, "agent_id", agentID, "err", err)
+		return
+	}
+	slog.Debug("runs: run started during shutdown FINISHed inline", "run_id", runID, "agent_id", agentID)
 }
 
 // drop removes run from the active set (if it is still current) and the

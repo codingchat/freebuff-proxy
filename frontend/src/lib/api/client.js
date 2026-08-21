@@ -20,6 +20,14 @@ export async function fetchAPI(path, opts = {}) {
     },
   });
 
+  // dashboardAuth answers unauthenticated admin API requests with a 302 to
+  // /admin/login; fetch follows it and res.json() would then throw a
+  // 'Unexpected token <' HTML parse error. Detect the redirect explicitly.
+  if (res.redirected && new URL(res.url).pathname.endsWith('/admin/login')) {
+    window.location.assign('/admin/login');
+    throw new Error('Session expired — redirecting to login');
+  }
+
   if (res.status === 401) {
     window.location.href = '/admin/login';
     throw new Error('Unauthorized');

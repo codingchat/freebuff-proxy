@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // Entry is one retained log record, pre-formatted for display.
@@ -195,11 +196,12 @@ func flatten(prefix string, a slog.Attr) []string {
 }
 
 // formatAttr renders an attr value the way slog's text handler does: strings
-// raw, everything else via the text formatter.
+// raw (unless they need quoting — see quoteIfNeeded), everything else via
+// the text formatter.
 func formatAttr(v slog.Value) string {
 	switch v.Kind() {
 	case slog.KindString:
-		return v.String()
+		return quoteIfNeeded(v.String())
 	case slog.KindBool:
 		return strconv.FormatBool(v.Bool())
 	case slog.KindInt64:
@@ -215,4 +217,33 @@ func formatAttr(v slog.Value) string {
 	default:
 		return v.String()
 	}
+}
+
+// quoteIfNeeded quotes a string value that would break one-entry-per-line
+// rendering in the dashboard log viewer: a URL path or other attr value
+// with an embedded newline/carriage return — e.g. %0A/%0D-decoded from the
+// request line — would otherwise forge additional log lines inside a single
+// ring entry. Mirrors internal/telemetry's quoteMessage for the control
+// characters (the file sink applies the same rule to \n/\r/tab/other
+// controls).
+func quoteIfNeeded(s string) string {
+	if needsQuote(s) {
+		return strconv.Quote(s)
+	}
+	return s
+}
+
+// needsQuote reports whether s contains control characters that would
+// corrupt one-entry-per-line rendering when written unquoted. Deliberately
+// NARROWER than telemetry's needsQuote: spaces and quotes alone are left
+// raw so common values ("30 minutes") keep their plain form — the ring is
+// structured ([]string fields), so only control characters can forge or
+// corrupt lines.
+func needsQuote(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
 }

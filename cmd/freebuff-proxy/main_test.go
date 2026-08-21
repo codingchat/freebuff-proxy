@@ -321,3 +321,40 @@ func TestIgnoredExeAdjacentEnv(t *testing.T) {
 		}
 	})
 }
+
+// TestAdminTokenCleartextWarning pins the transport-security startup warning:
+// ADMIN_TOKEN set + non-loopback LISTEN_ADDR must warn (the binary has no TLS
+// support, so the admin login POST and session cookie travel in cleartext);
+// loopback listen or no ADMIN_TOKEN must not.
+func TestAdminTokenCleartextWarning(t *testing.T) {
+	cases := []struct {
+		name       string
+		adminToken string
+		listenAddr string
+		wantWarn   bool
+	}{
+		{"no token, loopback", "", "127.0.0.1:3457", false},
+		{"no token, all interfaces", "", ":3457", false},
+		{"token, loopback v4", "secret", "127.0.0.1:3457", false},
+		{"token, loopback v6", "secret", "[::1]:3457", false},
+		{"token, localhost", "secret", "localhost:3457", false},
+		{"token, all interfaces", "secret", ":3457", true},
+		{"token, wildcard v4", "secret", "0.0.0.0:3457", true},
+		{"token, non-loopback IP", "secret", "192.168.1.50:3457", true},
+		{"token, hostname", "secret", "proxy.example.com:3457", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := adminTokenCleartextWarning(tc.adminToken, tc.listenAddr)
+			if tc.wantWarn && got == "" {
+				t.Errorf("adminTokenCleartextWarning(%q, %q) = \"\", want a warning", tc.adminToken, tc.listenAddr)
+			}
+			if !tc.wantWarn && got != "" {
+				t.Errorf("adminTokenCleartextWarning(%q, %q) = %q, want empty", tc.adminToken, tc.listenAddr, got)
+			}
+			if tc.wantWarn && !strings.Contains(got, "loopback") {
+				t.Errorf("warning %q does not advise a loopback bind", got)
+			}
+		})
+	}
+}

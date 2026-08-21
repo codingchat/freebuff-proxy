@@ -290,11 +290,11 @@ func (s *Server) accumulateAnthropicChunk(send func(map[string]any), st *anthrop
 			}
 			if name != "" && ts.name == "" {
 				ts.name = name
-				ts.ensureStarted(send)
+				st.ensureStarted(ts, send)
 			}
 			if args, ok := fn["arguments"].(string); ok && args != "" {
 				if ts.name != "" {
-					ts.ensureStarted(send)
+					st.ensureStarted(ts, send)
 					send(map[string]any{
 						"type":  "content_block_delta",
 						"index": ts.index,
@@ -324,10 +324,18 @@ func (s *Server) finalizeAnthropicStream(send func(map[string]any), st *anthropi
 		send(map[string]any{"type": "content_block_stop", "index": ts.index})
 		ts.blockClosed = true
 	}
+	// stop_reason parity with the non-streaming path
+	// (anthropicMessageFromCompletion): "end_turn" is promoted to "tool_use"
+	// only when real tool fragments were relayed, and a "tool_use" with zero
+	// relayed tool blocks (end_turn-only turn) demotes to "end_turn". Any
+	// other recorded reason — max_tokens from a truncated stream,
+	// content_filter, etc. — is preserved exactly: a max_tokens-truncated
+	// stream with partial tool fragments must NOT read as a complete
+	// tool_use turn (issue #170).
 	stopReason := st.finishReason
-	if st.sawToolCall {
+	if stopReason == "end_turn" && st.sawToolCall {
 		stopReason = "tool_use"
-	} else if stopReason == "tool_use" {
+	} else if !st.sawToolCall && stopReason == "tool_use" {
 		// finish_reason "tool_calls" whose fragments were ALL stripped
 		// (end_turn-only turn) must not emit a tool_use stop_reason with zero
 		// tool_use blocks (mirror of anthropicMessageFromCompletion).
@@ -372,9 +380,13 @@ func (st *anthropicStreamState) ensureThinking(send func(map[string]any)) {
 	if st.thinkingStarted && !st.thinkingClosed {
 		return
 	}
-	if st.thinkingStarted {
-		st.closeText(send)
-	}
+	// Mirror ensureText: close any open text or tool_use block before the
+	// thinking block opens (both calls idempotent). The previous code only
+	// closed the text block on the REOPEN path and never closed open
+	// tool_use blocks, so a thinking start could straddle an open block and
+	// violate the sequential block lifecycle (issue #171).
+	st.closeText(send)
+	st.closeOpenToolCalls(send)
 	st.thinkingIndex = st.nextBlockIdx
 	st.nextBlockIdx++
 	st.thinkingStarted = true
@@ -453,10 +465,20 @@ func (st *anthropicStreamState) toolState(upIdx int) *anthropicToolState {
 }
 
 // ensureStarted emits the tool_use content_block_start once the name is
-// known.
-func (ts *anthropicToolState) ensureStarted(send func(map[string]any)) {
-	if ts.started {
+// known. A block closed by an interleaved text/thinking block (or finalize)
+// REOPENS on a later fragment for the same upstream index: the block is
+// reset and assigned a FRESH index — the closed index must never receive a
+// second start, and the reopened block carries the accumulated id/name
+// (issue #171). Sequential block lifecycle preserved.
+func (st *anthropicStreamState) ensureStarted(ts *anthropicToolState, send func(map[string]any)) {
+	if ts.started && !ts.blockClosed {
 		return
+	}
+	if ts.started && ts.blockClosed {
+		ts.index = st.nextBlockIdx
+		st.nextBlockIdx++
+		ts.started = false
+		ts.blockClosed = false
 	}
 	ts.started = true
 	send(map[string]any{

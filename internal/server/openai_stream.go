@@ -187,52 +187,17 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 				var chunk map[string]any
 				if json.Unmarshal(clean, &chunk) == nil {
 					convert.StripEndTurnToolCalls(chunk)
-					// Drop continuation fragments for already-stripped end_turn indexes.
-					if len(endTurnCallIndexes) > 0 {
-						if choices, ok := chunk["choices"].([]any); ok {
-							for _, raw := range choices {
-								choice, _ := raw.(map[string]any)
-								if choice == nil {
-									continue
-								}
-								delta, _ := choice["delta"].(map[string]any)
-								if delta == nil {
-									continue
-								}
-								tcs, _ := delta["tool_calls"].([]any)
-								if len(tcs) == 0 {
-									continue
-								}
-								filtered := make([]any, 0, len(tcs))
-								for _, tc := range tcs {
-									tcMap, _ := tc.(map[string]any)
-									if tcMap == nil {
-										filtered = append(filtered, tc)
-										continue
-									}
-									idx := 0
-									if i, ok := tcMap["index"].(float64); ok {
-										idx = int(i)
-									}
-									if endTurnCallIndexes[idx] {
-										continue // drop continuation fragment
-									}
-									filtered = append(filtered, tc)
-								}
-								if len(filtered) == 0 {
-									delete(delta, "tool_calls")
-								} else {
-									delta["tool_calls"] = filtered
-								}
-							}
-						}
-					}
-					reEncoded, err := json.Marshal(chunk)
-					if err == nil {
-						clean = reEncoded
+					if b, err := json.Marshal(chunk); err == nil {
+						clean = b
 					}
 				}
 			}
+			// Drop continuation fragments for already-stripped end_turn
+			// indexes. This runs on EVERY chunk carrying tool_calls, not
+			// only chunks containing the "end_turn" name: a later
+			// arguments-only fragment for a stripped index has an empty
+			// name, so only its index identifies it (issue #169).
+			clean = dropEndTurnContinuations(clean, endTurnCallIndexes)
 			// Extract XML-embedded tool calls from delta.content (streaming
 			// parity with the accumulator's Finish): feed each content
 			// fragment through the extractor, withhold text inside a
@@ -438,6 +403,71 @@ func trackToolCallIndexes(clean []byte, endTurnCallIndexes map[int]bool, seenRea
 			}
 		}
 	}
+}
+
+// dropEndTurnContinuations removes delta.tool_calls fragments whose index
+// belongs to an already-stripped end_turn call. Upstream models emit a
+// call's arguments in later fragments that carry only the index and an
+// empty name — never the "end_turn" string — so the drop must run on every
+// tool-bearing chunk, not just chunks containing the name (a nameless
+// fragment would otherwise leak as a native tool_calls entry). The chunk is
+// re-marshaled only when a fragment was actually dropped.
+func dropEndTurnContinuations(clean []byte, endTurnCallIndexes map[int]bool) []byte {
+	if len(endTurnCallIndexes) == 0 || !bytes.Contains(clean, []byte(`"tool_calls"`)) {
+		return clean
+	}
+	var chunk map[string]any
+	if json.Unmarshal(clean, &chunk) != nil {
+		return clean
+	}
+	dropped := false
+	if choices, ok := chunk["choices"].([]any); ok {
+		for _, raw := range choices {
+			choice, _ := raw.(map[string]any)
+			if choice == nil {
+				continue
+			}
+			delta, _ := choice["delta"].(map[string]any)
+			if delta == nil {
+				continue
+			}
+			tcs, _ := delta["tool_calls"].([]any)
+			if len(tcs) == 0 {
+				continue
+			}
+			filtered := make([]any, 0, len(tcs))
+			for _, tc := range tcs {
+				tcMap, _ := tc.(map[string]any)
+				if tcMap == nil {
+					filtered = append(filtered, tc)
+					continue
+				}
+				idx := 0
+				if i, ok := tcMap["index"].(float64); ok {
+					idx = int(i)
+				}
+				if endTurnCallIndexes[idx] {
+					dropped = true
+					continue // drop continuation fragment
+				}
+				filtered = append(filtered, tc)
+			}
+			if dropped {
+				if len(filtered) == 0 {
+					delete(delta, "tool_calls")
+				} else {
+					delta["tool_calls"] = filtered
+				}
+			}
+		}
+	}
+	if !dropped {
+		return clean
+	}
+	if b, err := json.Marshal(chunk); err == nil {
+		return b
+	}
+	return clean
 }
 
 // bumpXMLCallIndex raises the per-stream synthetic tool-call index floor

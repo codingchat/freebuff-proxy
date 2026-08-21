@@ -230,19 +230,21 @@ func (m *RunManager) ReleaseAbandoned(run *Run) {
 	// If it is still the current run, drop it from the active set so no
 	// new acquire reuses it, then FINISH it. Join the draining list BEFORE
 	// enqueueing (mirrors rotate): if the FINISH fails transiently,
-	// Maintain re-drains it â€” without draining membership the run would be
+	// Maintain re-drains it — without draining membership the run would be
 	// in no set and its cancelled FINISH would be lost forever, leaking
 	// the upstream agent run. A run that already rotated away is owned by
 	// the draining queue.
 	if current, ok := m.runs[run.AgentID]; ok && current == run {
 		delete(m.runs, run.AgentID)
-		run.drainedAt = time.Now()
-		m.draining = append(m.draining, run)
+		m.appendDrainingLocked(run)
 		m.mu.Unlock()
 		m.enqueueFinish(run)
 		return
 	}
 	m.mu.Unlock()
-	// Rotated already: leave the draining FINISH in charge (it will run
-	// once the inflight drain completes; nothing else is leasing it now).
+	// Rotated already (or drained by FinishAllRuns): re-queue the FINISH
+	// the draining queue skipped while inflight > 0 — Maintain is the only
+	// other re-enqueuer, and after a drain there may be no next tick (P1).
+	// enqueueFinish dedupes against a job already in the queue.
+	m.enqueueFinish(run)
 }

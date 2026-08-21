@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 )
 
 // discarding is a sink that accepts everything and keeps nothing.
@@ -217,6 +219,44 @@ func TestFormatAttrKinds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := formatAttr(tc.v); got != tc.want {
 				t.Errorf("formatAttr(%v) = %q, want %q", tc.v, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFormatAttrQuotesControlChars pins the log-injection guard: a string
+// value containing a control character (e.g. a %0A/%0D-decoded URL path)
+// must be strconv.Quote'd so the ring entry cannot forge additional log
+// lines in /admin/logs, and the rendered output must never contain a raw
+// control character. Plain strings — including multi-word ones like "30
+// minutes" — stay unquoted (the TestFormatAttrKinds "abc" case).
+func TestFormatAttrQuotesControlChars(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		wantQuot bool
+	}{
+		{"newline", "path\nforged", true},
+		{"carriage return", "path\rforged", true},
+		{"tab", "a\tb", true},
+		{"nul", "a\x00b", true},
+		{"space stays raw", "two words", false},
+		{"quote stays raw", `a"b`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatAttr(slog.StringValue(tc.in))
+			if tc.wantQuot {
+				if got != strconv.Quote(tc.in) {
+					t.Errorf("formatAttr(%q) = %q, want %q", tc.in, got, strconv.Quote(tc.in))
+				}
+				for _, r := range got {
+					if r == '\n' || r == '\r' || unicode.IsControl(r) {
+						t.Errorf("formatAttr(%q) = %q contains a raw control character", tc.in, got)
+					}
+				}
+			} else if got != tc.in {
+				t.Errorf("formatAttr(%q) = %q, want the raw string", tc.in, got)
 			}
 		})
 	}
