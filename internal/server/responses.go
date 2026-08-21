@@ -536,6 +536,7 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 						if tcs == nil {
 							tcs = make([]any, 0, len(calls))
 						}
+						bumpXMLCallIndex(tcs, &xmlCallIndex)
 						for _, call := range calls {
 							if call.Function.Name == "end_turn" {
 								continue // strip-parity: never relay the proxy-injected pseudo-tool

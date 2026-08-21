@@ -2532,6 +2532,87 @@ func TestXMLStreamExtractor(t *testing.T) {
 		}
 	})
 
+	t.Run("fenced opener split mid-delta does not panic", func(t *testing.T) {
+		// The '{' lands in the same fragment as the fence but AFTER
+		// non-fence prefix text; the old code stored a fragment-absolute
+		// fenceBrace and sliced buffered (relative) with it.
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("extractor panicked: %v", r)
+			}
+		}()
+		text, calls := feedAll(t,
+			"note: ```json\n{",
+			"\"name\": \"bash\", \"arguments\": {\"command\": \"ls -la\"}}\n```",
+			"\nDone.",
+		)
+		if text != "note: \nDone." {
+			t.Errorf("text = %q, want 'note: \\nDone.'", text)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("calls len = %d, want 1", len(calls))
+		}
+		if calls[0].Function.Name != "bash" {
+			t.Errorf("name = %q, want 'bash'", calls[0].Function.Name)
+		}
+	})
+
+	t.Run("fence and opener split across fragments", func(t *testing.T) {
+		// The fragment ends on "```json\n" with no '{' visible; the '{'
+		// arrives in the next fragment and must complete the opener.
+		text, calls := feedAll(t,
+			"Here:\n```json\n",
+			"{\"name\": \"bash\", \"arguments\": {\"command\": \"pwd\"}}\n```",
+		)
+		if text != "Here:\n" {
+			t.Errorf("text = %q, want 'Here:\\n'", text)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("calls len = %d, want 1", len(calls))
+		}
+		if calls[0].Function.Name != "bash" {
+			t.Errorf("name = %q, want 'bash'", calls[0].Function.Name)
+		}
+	})
+
+	t.Run("closer inside json string value does not close early", func(t *testing.T) {
+		// "```" inside a JSON string value must not close the block; the
+		// real closing fence after the JSON does.
+		text, calls := feedAll(t,
+			"```json\n{\"name\": \"bash\", \"arguments\": {\"command\": \"echo ``` hi\"}}\n```",
+			"\nnote",
+		)
+		if text != "\nnote" {
+			t.Errorf("text = %q, want '\\nnote'", text)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("calls len = %d, want 1", len(calls))
+		}
+		if calls[0].Function.Name != "bash" {
+			t.Errorf("name = %q, want 'bash'", calls[0].Function.Name)
+		}
+	})
+
+	t.Run("plain code fence split across fragments stays text", func(t *testing.T) {
+		text, calls := feedAll(t, "```go\n", "func main() {\n}\n```")
+		if text != "```go\nfunc main() {\n}\n```" {
+			t.Errorf("text = %q, want unchanged", text)
+		}
+		if len(calls) != 0 {
+			t.Errorf("calls = %d, want 0", len(calls))
+		}
+	})
+
+	t.Run("plain code fence then brace stays text", func(t *testing.T) {
+		text, calls := feedAll(t, "```go\n", "{\"name\": \"bash\", \"arguments\": {}}\n```")
+		if text != "```go\n{\"name\": \"bash\", \"arguments\": {}}\n```" {
+			t.Errorf("text = %q, want unchanged", text)
+		}
+		if len(calls) != 0 {
+			t.Errorf("calls = %d, want 0", len(calls))
+		}
+	})
+
 	t.Run("false positive block kept as text", func(t *testing.T) {
 		text, calls := feedAll(t, "The tag <function_call>not a tool call</function_call> is literal.")
 		if text != "The tag <function_call>not a tool call</function_call> is literal." {

@@ -56,6 +56,10 @@ func streamChatContentToToolCalls(clean []byte, xmlExtractor *convert.XMLToolCal
 			}
 			if len(calls) > 0 {
 				tcs, _ := delta["tool_calls"].([]any)
+				// Start synthetic indexes past any native tool-call index in
+				// this chunk so extracted fragments never collide with
+				// upstream indexes; the floor persists across chunks.
+				bumpXMLCallIndex(tcs, xmlCallIndex)
 				for _, tc := range calls {
 					if tc.Function.Name == "end_turn" {
 						continue // strip-parity: never relay the proxy-injected pseudo-tool
