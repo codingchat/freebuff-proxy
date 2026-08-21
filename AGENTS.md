@@ -128,6 +128,25 @@ gofmt -w cmd internal
 ./freebuff-proxy.exe -test-token
 ```
 
+## Lane Branches (frontend/backend separation)
+
+One repo, one integrated `main`. Three persistent worktrees — no forks:
+
+- `main` (D:/github_repo/freebuff-proxy) — **everything**: Go proxy + CLI flags + embedded dashboard. Integration point; releases build from here.
+- `cli` (D:/github_repo/freebuff-cli) — dashboard/`frontend/`/`logring`/`updatecheck`/admin-routes removed; CLI + proxy API only. Backend-focused work.
+- `dashboard` (D:/github_repo/freebuff-dashboard) — CLI operator flags (`-doctor`, `-setup`, `-service`, `-update`, `-refresh-token`) and `internal/egress` removed; dashboard + proxy API only. Frontend work.
+
+### The invariant that makes this safe
+
+- **Work in the lane, merge to `main`**: finish a change on `cli` or `dashboard`, then from the main tree `git merge cli` / `git merge dashboard`, verify, push `main`.
+- **Refresh a lane from main**: `cd <lane> && git merge main -X theirs` — `-X theirs` keeps the lane's removals (the lane's deletions win over main's dashboard/CLI-flag changes). Resolve any real (non-removal) conflicts manually.
+- **Never edit shared core files** (`internal/pool`, `internal/convert`, `internal/upstream`, wire paths) only on one lane for long — land them on `main` and refresh the other lane, or the removal sets stop being disjoint.
+- **Never `git push --force`** on `main`, `cli`, or `dashboard` (shared).
+
+### Why not one-shot branches
+
+The earlier `cli-only`/`dashboard-only` experiment merged back with hundreds of modify/delete conflicts because main had meanwhile rewritten the same files. Permanent lanes with disjoint removals + `-X theirs` refresh make every sync deterministic.
+
 ---
 
 ## Repository Policy
