@@ -135,32 +135,6 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 }
 
-// handleModelRetrieve answers GET /v1/models/{model} for clients querying a single model.
-func (s *Server) handleModelRetrieve(w http.ResponseWriter, r *http.Request) {
-	modelName := r.PathValue("model")
-	if modelName == "" {
-		s.writeJSONError(w, http.StatusBadRequest, "missing model name in path", "invalid_request_error", "model_not_found", 0)
-		return
-	}
-	model := s.reg.ResolveModel(modelName)
-	if !s.modelAllowed(model) {
-		s.writeJSONError(w, http.StatusNotFound, "The model '"+modelName+"' does not exist", "invalid_request_error", "model_not_found", 0)
-		return
-	}
-	created := s.started.Unix()
-	snaps := s.pool.Snapshot()
-	available, status := modelAvailability(model, snaps)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id":        modelName,
-		"object":    "model",
-		"created":   created,
-		"owned_by":  "freebuff",
-		"available": available,
-		"status":    status,
-	})
-}
-
 // modelAvailability derives the advisory per-model annotation from the pool
 // token snapshots. The snapshot does not carry the model of a live session,
 // so the signal set is: quotaByModel presence (the session admitted this

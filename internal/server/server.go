@@ -17,7 +17,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -270,17 +269,4 @@ func (s *Server) Handler() http.Handler {
 		}
 		s.logger.Info("access", attrs...)
 	})
-}
-
-// handleEmbeddings answers POST /v1/embeddings with a structured
-// unsupported-endpoint error: the proxy serves chat completions only, and
-// the error body points clients at /v1/chat/completions and the live model
-// list so a picker/fallback client can self-correct. 400 with the
-// documented "unsupported_endpoint" code (distinct from the mux's bare 404,
-// which gives an embeddings client no actionable signal).
-func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
-	s.logger.Warn("unsupported endpoint requested", "path", r.URL.Path, "remote", remoteHost(r), "status", http.StatusBadRequest)
-	s.writeJSONError(w, http.StatusBadRequest,
-		"this proxy serves chat completions only; embeddings are not supported. Use POST /v1/chat/completions with one of: "+strings.Join(s.servedModels(), ", "),
-		"unsupported_endpoint", "unsupported_endpoint", 0)
 }

@@ -1,26 +1,6 @@
 package server
 
-// --- Shared completion engine (protocol-neutral) ---
-//
-// The acquire→upstream→relay core every completion surface runs on:
-// chatCore (lease acquisition, bridge routing, phase timing, endpoint log
-// lines), chatAttempt (retry-once recovery with session invalidation and
-// token cooldowns), and the plain SSE plumbing every relay shares
-// (relayReadLoop, lineChunk, keepaliveInterval). Protocol policy does NOT
-// live here — each surface's handler, wire translation, stream relay and
-// error envelope live in its own file:
-//
-//	openai.go        /v1/chat/completions (relayStream/relayJSON)
-//	responses.go     /v1/responses (RelayResponsesStream/JSON)
-//	anthropic.go     /v1/messages (+ anthropic_errors.go, streamxml_anthropic.go)
-//	models.go        /v1/models catalog
-//
-// Kindly keep it that way: a protocol-specific branch added here is a
-// debugging regression — the entire point of the split is that an Anthropic
-// bug never requires reading OpenAI relay code and vice versa.
-
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -39,6 +19,30 @@ import (
 	"freebuff-proxy/internal/session"
 	"freebuff-proxy/internal/upstream"
 )
+
+// --- Shared completion engine (protocol-neutral) ---
+//
+// The acquire→upstream→relay core every completion surface runs on:
+// chatCore (lease acquisition, bridge routing, phase timing, endpoint log
+// lines), chatAttempt (retry-once recovery with session invalidation and
+// token cooldowns), and the plain SSE plumbing every relay shares
+// (relayReadLoop, lineChunk, keepaliveInterval). Protocol policy does NOT
+// live here — each surface's handler, wire translation, stream relay and
+// error envelope live in its own file:
+//
+//	openai.go            /v1/chat/completions handler (+ openai_stream.go relays)
+//	responses.go         /v1/responses handler (+ responses_stream.go relays)
+//	anthropic.go         /v1/messages handler (+ anthropic_stream.go,
+//	                     anthropic_json.go, anthropic_count.go, anthropic_errors.go,
+//	                     streamxml_anthropic.go)
+//	models.go            /v1/models catalog
+//
+// The relay plumbing shared by every surface lives in engine_sse.go
+// (relayReadLoop, lineChunk, keepaliveInterval, relayStats).
+//
+// Kindly keep it that way: a protocol-specific branch added here is a
+// debugging regression — the entire point of the split is that an Anthropic
+// bug never requires reading OpenAI relay code and vice versa.
 
 // relayFunc relays the upstream SSE reader to the client in the endpoint's
 // wire format (chat.completion chunks, Responses events, or Anthropic
@@ -785,82 +789,4 @@ func tokenLabel(lease *pool.Lease) string {
 		return "bridge"
 	}
 	return fmt.Sprintf("%d", lease.Token+1)
-}
-
-// relayStats accumulates per-response relay counters for logging.
-type relayStats struct {
-	chunks int
-	bytes  int
-	// usageTokens is the upstream usage total of the completed chat (the
-	// final usage block), fed to the pool spend ledger once per successful
-	// completion (#122). 0 when the stream carried no usage.
-	usageTokens int64
-	// servedModel is the model this lease's session/run is actually bound to
-	// (lease.Model, resolved fallbacks included). Set by chatCore before the
-	// relay runs so wire relays can stamp it onto the response body's model
-	// field and message_start events (issue #164). Empty when a relay is
-	// driven directly by a test with no lease.
-	servedModel string
-}
-
-// usageTotalTokens extracts the token total from a chat usage object
-// (total_tokens, falling back to prompt+completion). Returns 0 when absent.
-// Feeds the per-token spend ledger (#122).
-func usageTotalTokens(usage any) int64 {
-	u, ok := usage.(map[string]any)
-	if !ok || u == nil {
-		return 0
-	}
-	if total, ok := intOf(u["total_tokens"]); ok && total > 0 {
-		return total
-	}
-	prompt, _ := intOf(u["prompt_tokens"])
-	completion, _ := intOf(u["completion_tokens"])
-	return prompt + completion
-}
-
-// keepaliveInterval is how long the relay may go without writing a frame
-// to the client before it emits an SSE keepalive frame (comment on the
-// OpenAI-compatible wires, event: ping on the Anthropic wire) to hold the
-// connection open. Long upstream reasoning pauses produce no chunks, and
-// proxies/clients may treat silence as a dead connection. The timer keys
-// on client writes only: dropped upstream comment/junk lines never count
-// as liveness (#161). A var (not const) so tests can shrink it.
-var keepaliveInterval = 15 * time.Second
-
-// lineChunk is one upstream SSE line or the terminal send. done is set only
-// on the clean-EOF send (a real empty line also arrives as line==nil, so the
-// terminal state must be explicit, not inferred from a nil slice).
-type lineChunk struct {
-	line []byte
-	err  error
-	done bool
-}
-
-// relayReadLoop drains r line by line onto ch, stopping when the stream
-// ends or ctx is canceled. The final send carries done (clean EOF) or the
-// terminal read error; on cancellation the goroutine exits without sending
-// (the request context cancellation closes the upstream body read, so Scan
-// returns promptly).
-func relayReadLoop(ctx context.Context, r io.Reader, ch chan<- lineChunk) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
-	for scanner.Scan() {
-		line := append([]byte(nil), scanner.Bytes()...)
-		select {
-		case ch <- lineChunk{line: line}:
-		case <-ctx.Done():
-			return
-		}
-	}
-	var terminal lineChunk
-	if err := scanner.Err(); err != nil {
-		terminal = lineChunk{err: err}
-	} else {
-		terminal = lineChunk{done: true}
-	}
-	select {
-	case ch <- terminal:
-	case <-ctx.Done():
-	}
 }
