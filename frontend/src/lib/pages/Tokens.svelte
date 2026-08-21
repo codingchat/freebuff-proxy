@@ -490,6 +490,12 @@
                 <tr>
                   <td colspan="6" class="!p-0">
                     <div class="fp-inset m-2 rounded p-3">
+                      {#if token.session_remaining_seconds > 0 && token.session_model}
+                        <div class="mb-2 px-2 py-1 rounded bg-[var(--fp-accent)]/10 text-xs text-[var(--fp-accent)] flex items-center justify-between">
+                          <span>Active Session: <code class="fp-num">{token.session_model}</code></span>
+                          <span class="fp-num">{Math.floor(token.session_remaining_seconds / 60)}m {token.session_remaining_seconds % 60}s remaining</span>
+                        </div>
+                      {/if}
                       {#if token.has_quota && token.quota?.length > 0}
                         <div class="flex flex-col gap-2">
                           <p class="text-xs text-[var(--fp-muted)] uppercase tracking-wider font-semibold">Session quotas</p>

@@ -379,24 +379,27 @@ type tokensData struct {
 
 type tokenDetail struct {
 	tokenCard
-	SessionInstance string     `json:"session_instance"`
-	Quota           []quotaRow `json:"quota"`
-	HasQuota        bool       `json:"has_quota"`
+	SessionInstance         string     `json:"session_instance"`
+	SessionModel            string     `json:"session_model"`
+	SessionRemainingSeconds int64      `json:"session_remaining_seconds"`
+	Quota                   []quotaRow `json:"quota"`
+	HasQuota                bool       `json:"has_quota"`
 }
 
 type quotaRow struct {
-	Model          string `json:"model"`
-	Limit          string `json:"limit"`
-	Recent         string `json:"recent"`
-	Period         string `json:"period"`
-	ResetAt        string `json:"reset_at"`
-	ResetAtUTC     string `json:"reset_at_utc"`
-	ResetsIn       string `json:"resets_in"`
-	Entitled       string `json:"entitled"`
-	HasEntitlement bool   `json:"has_entitlement"`
-	UsagePct       int    `json:"usage_pct"`
-	NearLimit      bool   `json:"near_limit"`
-	HasBar         bool   `json:"has_bar"`
+	Model          string  `json:"model"`
+	Limit          string  `json:"limit"`
+	Recent         string  `json:"recent"`
+	Remaining      float64 `json:"remaining"`
+	Period         string  `json:"period"`
+	ResetAt        string  `json:"reset_at"`
+	ResetAtUTC     string  `json:"reset_at_utc"`
+	ResetsIn       string  `json:"resets_in"`
+	Entitled       string  `json:"entitled"`
+	HasEntitlement bool    `json:"has_entitlement"`
+	UsagePct       int     `json:"usage_pct"`
+	NearLimit      bool    `json:"near_limit"`
+	HasBar         bool    `json:"has_bar"`
 }
 
 func utcAttr(t time.Time) string {
@@ -412,14 +415,24 @@ func (d *Dashboard) tokensData() tokensData {
 	td.InBridge = td.Mode == "bridge"
 	for _, t := range d.pool.Snapshot() {
 		detail := tokenDetail{
-			tokenCard:       cardFromSnapshot(t),
-			SessionInstance: shortID(t.SessionInstanceID),
+			tokenCard:               cardFromSnapshot(t),
+			SessionInstance:         shortID(t.SessionInstanceID),
+			SessionModel:            t.SessionModel,
+			SessionRemainingSeconds: t.SessionRemainingSeconds,
 		}
 		for model, q := range t.QuotaByModel {
+			rem := float64(0)
+			if q.Limit > 0 {
+				rem = q.Limit - q.RecentCount
+				if rem < 0 {
+					rem = 0
+				}
+			}
 			row := quotaRow{
 				Model:      model,
 				Limit:      formatQuota(q.Limit),
 				Recent:     formatQuota(q.RecentCount),
+				Remaining:  rem,
 				Period:     q.Period,
 				ResetAt:    shortTime(q.ResetAt),
 				ResetAtUTC: utcAttr(q.ResetAt),

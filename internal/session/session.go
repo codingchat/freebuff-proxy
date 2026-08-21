@@ -133,6 +133,11 @@ type Manager struct {
 	// while the CLI process is alive.
 	adopt *CLIAdoption
 
+	// scarce tracks which models are scarce (issue #155): a scarce model
+	// session is kept on Shutdown instead of DELETEing upstream so the slot
+	// survives a restart via pollPersisted. Guarded by mu.
+	scarce map[string]bool
+
 	// now returns the current time; injectable in tests to drive the
 	// re-admit storm detector deterministically. Defaults to time.Now.
 	now func() time.Time
@@ -253,9 +258,37 @@ func (m *Manager) SetCLIAdoption(a CLIAdoption) {
 	m.mu.Unlock()
 }
 
+// SetScarceModels configures the scarce-model set (issue #155): models whose
+// active sessions are kept on Shutdown instead of being DELETE'd upstream.
+// Wired by the pool from SCARCE_SESSION_MODELS; safe to call at runtime.
+// A nil or empty slice clears the set.
+func (m *Manager) SetScarceModels(models []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(models) == 0 {
+		m.scarce = nil
+		return
+	}
+	m.scarce = make(map[string]bool, len(models))
+	for _, mod := range models {
+		if mod != "" {
+			m.scarce[mod] = true
+		}
+	}
+	if len(m.scarce) == 0 {
+		m.scarce = nil
+	}
+}
+
+// IsScarce reports whether model is in the scarce set (issue #155).
+func (m *Manager) IsScarce(model string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.scarce[model]
+}
+
 // adoptOwner re-reads the CLI owner file fresh (issue #97(c)): the CLI
-// rewrites freebuff-instance-owner.json when its session changes, so a
-// startup snapshot alone would go stale after a CLI restart.
+// rewrites freebuff-instance-owner.json when its session changes, so a startup snapshot alone would go stale after a CLI restart.
 func (m *Manager) adoptOwner() (CLIOwner, bool) {
 	m.mu.Lock()
 	adopt := m.adopt
@@ -711,6 +744,7 @@ func statusError(status string, st *upstream.SessionState) error {
 		}
 		return &upstream.RateLimitError{
 			Status:      status,
+			Model:       st.Model,
 			RetryAfter:  retryAfter,
 			ResetAt:     st.ResetAt,
 			Limit:       st.Limit,
@@ -1096,6 +1130,9 @@ func (m *Manager) EndSession(ctx context.Context) error {
 // lose the entry) and the entry survives the DELETE: a restart resumes via
 // pollPersisted, which re-adopts the slot when the DELETE did not take
 // effect upstream, or drops the dead entry and re-POSTs fresh when it did.
+// Issue #155: when persistence is enabled and the cached session is active
+// on a scarce model with remaining time >0, Shutdown SKIPS the upstream
+// DELETE and keeps the store entry for restart resume via pollPersisted.
 // Runs are FINISHed separately by the run manager.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	if m.store == nil {
@@ -1105,8 +1142,13 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	instanceID := ""
+	scarceKeep := false
 	if m.state != nil && m.state.instanceID != "" {
 		instanceID = m.state.instanceID
+		// Issue #155: keep scarce active sessions with remaining lifetime.
+		if m.state.status == "active" && m.scarce[m.state.model] && !m.state.expiresAt.IsZero() && time.Until(m.state.expiresAt) > 0 {
+			scarceKeep = true
+		}
 		m.store.Save(m.key, m.state)
 		// Surface a failed flush: without the persisted entry a restart
 		// cannot resume the slot, so a write/rename failure must not be
@@ -1119,6 +1161,10 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Unlock()
 
 	if instanceID == "" {
+		return nil
+	}
+	if scarceKeep {
+		slog.Debug("session kept on shutdown (scarce)", "instance_id", shortInstance(instanceID))
 		return nil
 	}
 	// Release the upstream slot directly (not EndSession): EndSession's CAS

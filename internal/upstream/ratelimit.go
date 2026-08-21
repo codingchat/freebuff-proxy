@@ -491,6 +491,9 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 		if cnt, ok := getNumber(target, "recentCount", "recent_count"); ok {
 			rle.RecentCount = cnt
 		}
+		if mod, ok := target["model"].(string); ok {
+			rle.Model = mod
+		}
 		if st, ok := target["status"].(string); ok {
 			rle.Status = st
 		}

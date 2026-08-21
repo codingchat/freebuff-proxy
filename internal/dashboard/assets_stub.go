@@ -23,6 +23,6 @@ func DistFS() fs.FS {
 func (d *Dashboard) ServeSPA(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "freebuff-proxy is running in CLI mode (compiled without -tags dashboard).\n"+
+	_, _ = fmt.Fprintf(w, "freebuff-proxy is running in CLI mode (compiled without -tags dashboard).\n"+
 		"All proxy endpoints (/v1/chat/completions, /v1/models, /healthz, /metrics, /admin/api/*) are active.\n")
 }

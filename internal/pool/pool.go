@@ -136,18 +136,20 @@ type bridgeEntry struct {
 
 // TokenSnapshot is one token's healthz view.
 type TokenSnapshot struct {
-	Token                int
-	CooldownUntil        time.Time
-	SessionStatus        string
-	SessionInstanceID    string
-	SessionQueuePosition int
-	SessionQueueDepth    int
-	ActiveRuns           int
-	Requests             int
-	Messages24h          int    // successful chats in the last 24h (MAX_MESSAGES_PER_DAY usage)
-	DailyLimit           int    // configured MAX_MESSAGES_PER_DAY (0 = unlimited)
-	UsagePct             int    // percentage of daily limit used (0 when unlimited)
-	RiskLevel            string // "low", "moderate", "high", "critical" account safety indicator (#6)
+	Token                   int
+	CooldownUntil           time.Time
+	SessionStatus           string
+	SessionInstanceID       string
+	SessionQueuePosition    int
+	SessionQueueDepth       int
+	SessionModel            string
+	SessionRemainingSeconds int64
+	ActiveRuns              int
+	Requests                int
+	Messages24h             int    // successful chats in the last 24h (MAX_MESSAGES_PER_DAY usage)
+	DailyLimit              int    // configured MAX_MESSAGES_PER_DAY (0 = unlimited)
+	UsagePct                int    // percentage of daily limit used (0 when unlimited)
+	RiskLevel               string // "low", "moderate", "high", "critical" account safety indicator (#6)
 	// Spend24h / SpendDay / SpendWeek / SpendMonth are the local per-token
 	// spend ledger (issue #87/#122): tokens spent in the rolling 24h window
 	// and the current Pacific day/week/month buckets (with rollover —
@@ -359,6 +361,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		sess := sessions[i]
 		sess.SetReAdmitLead(cfg.SessionReAdmitLead)
 		sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
+		sess.SetScarceModels(cfg.ScarceSessionModels)
 		toks = append(toks, &tokenEntry{
 			session: sess,
 			runs:    runs.NewRunManagerOpts(clients[i], sess, runOptions(cfg)),
@@ -396,11 +399,13 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 	for _, tok := range *toks {
 		tok.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 		tok.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
+		tok.session.SetScarceModels(cfg.ScarceSessionModels)
 	}
 	p.bridgeMu.Lock()
 	for _, entry := range p.bridge {
 		entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 		entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
+		entry.session.SetScarceModels(cfg.ScarceSessionModels)
 	}
 	p.bridgeMu.Unlock()
 
@@ -435,6 +440,7 @@ func (p *Pool) AddToken(token string) (int, error) {
 	cfg := p.cfg.Load()
 	sess.SetReAdmitLead(cfg.SessionReAdmitLead)
 	sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
+	sess.SetScarceModels(cfg.ScarceSessionModels)
 	entry := &tokenEntry{
 		session: sess,
 		runs:    runs.NewRunManagerOpts(client, sess, runOptions(cfg)),

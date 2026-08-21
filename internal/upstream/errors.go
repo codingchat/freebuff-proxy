@@ -176,6 +176,7 @@ func (e *UpstreamError) Error() string {
 // errors.Is(err, ErrRateLimited) work.
 type RateLimitError struct {
 	Status      string
+	Model       string
 	RetryAfter  time.Duration
 	Limit       float64
 	RecentCount float64

@@ -7,13 +7,6 @@ import (
 	"sync/atomic"
 )
 
-func stringValue(v any) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return ""
-}
-
 // ExtractReasoningEffort extracts the requested thinking/reasoning effort from
 // OpenAI reasoning_effort, Codex/Anthropic reasoning.effort, thinking flags,
 // or model name suffixes (e.g. "model(high)" or "model:max").

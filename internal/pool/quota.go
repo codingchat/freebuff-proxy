@@ -41,6 +41,7 @@ func quotaLimitError(tok *tokenEntry, model string) *upstream.RateLimitError {
 	}
 	return &upstream.RateLimitError{
 		Status:      "rate_limited",
+		Model:       model,
 		RetryAfter:  retryAfter,
 		Limit:       q.Limit,
 		RecentCount: q.RecentCount,
