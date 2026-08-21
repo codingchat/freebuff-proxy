@@ -136,16 +136,52 @@ One repo, one integrated `main`. Three persistent worktrees — no forks:
 - `cli` (D:/github_repo/freebuff-cli) — dashboard/`frontend/`/`logring`/`updatecheck`/admin-routes removed; CLI + proxy API only. Backend-focused work.
 - `dashboard` (D:/github_repo/freebuff-dashboard) — CLI operator flags (`-doctor`, `-setup`, `-service`, `-update`, `-refresh-token`) and `internal/egress` removed; dashboard + proxy API only. Frontend work.
 
-### The invariant that makes this safe
+### The rules that make this safe
 
-- **Work in the lane, merge to `main`**: finish a change on `cli` or `dashboard`, then from the main tree `git merge cli` / `git merge dashboard`, verify, push `main`.
-- **Refresh a lane from main**: `cd <lane> && git merge main -X theirs` — `-X theirs` keeps the lane's removals (the lane's deletions win over main's dashboard/CLI-flag changes). Resolve any real (non-removal) conflicts manually.
-- **Never edit shared core files** (`internal/pool`, `internal/convert`, `internal/upstream`, wire paths) only on one lane for long — land them on `main` and refresh the other lane, or the removal sets stop being disjoint.
-- **Never `git push --force`** on `main`, `cli`, or `dashboard` (shared).
+The removal sets are **disjoint**: `cli` deletes dashboard-side files, `dashboard` deletes CLI-flag files. Neither lane touches the other's removed paths, so merges only ever surface the lane's own removals. But merge direction semantics matter — the two rules below are verified, not guessed.
+
+**Rule 1 — Lane → main: never merge the lane wholesale. Cherry-pick real work.**
+
+`git merge cli` (or `dashboard`) from main applies the lane's removal commits as clean deletions — main's dashboard/CLI files sit unchanged at the merge base, so git deletes them silently. Verified: `git merge cli` deletes 133 dashboard files from main. Instead:
+
+```bash
+# from the main tree: bring only the lane's real work commits
+git cherry-pick <real-work-sha>      # shared/backend files; applies cleanly
+git push origin main
+```
+
+Only cherry-pick actual work commits, never the lane's removal commits. (The one legitimate wholesale merge is a *no-op merge* purely to record the lane's history in main: `git merge --no-commit --no-ff <lane> && git checkout HEAD -- . && git commit`. It contributes zero tree changes — not for carrying work.)
+
+**Rule 2 — Main → lane: `git merge main -X ours`, then purge the lane's removed paths.**
+
+In a merge from the lane, `ours` = lane, `theirs` = main. `-X ours` keeps the lane's content on real conflicts — but this git version does **not** auto-resolve modify/delete conflicts, and files main *adds* under the lane's removed prefixes arrive as clean additions with no conflict at all. So after merging, explicitly re-delete everything under the lane's removed paths:
+
+```bash
+# from the lane tree
+git merge main -X ours               # lane's content wins on real conflicts
+# purge: files main re-added under the lane's removed paths
+# cli lane:
+git rm -rf --ignore-unmatch frontend internal/dashboard internal/logring internal/updatecheck \
+  internal/server/admin.go internal/server/admin_auth.go internal/server/admin_env.go internal/server/admin_tokens.go \
+  internal/server/auth_internal_test.go internal/server/dashboard_edge_test.go internal/server/dashboard_test.go internal/server/server_wave6_test.go \
+  internal/stealth/risk.go internal/stealth/risk_test.go docs/SEPARATION_PLAN.md docs/dashboard.md
+# dashboard lane:
+git rm -f --ignore-unmatch cmd/freebuff-proxy/doctor.go cmd/freebuff-proxy/doctor_test.go \
+  cmd/freebuff-proxy/refresh_token.go cmd/freebuff-proxy/refresh_token_test.go \
+  cmd/freebuff-proxy/service.go cmd/freebuff-proxy/service_test.go \
+  cmd/freebuff-proxy/setup.go cmd/freebuff-proxy/setup_test.go \
+  cmd/freebuff-proxy/update.go cmd/freebuff-proxy/update_swap.go cmd/freebuff-proxy/update_test.go \
+  internal/dashboard/assets_stub.go internal/egress/probe.go internal/egress/probe_test.go
+git commit
+```
+
+**Shared-core rule**: never hold divergent edits on shared core files (`internal/pool`, `internal/convert`, `internal/upstream`, wire paths) on one lane for long — land them on `main` via cherry-pick, then refresh the other lane, or the removal sets stop being disjoint.
+
+**Never `git push --force`** on `main`, `cli`, or `dashboard` (shared).
 
 ### Why not one-shot branches
 
-The earlier `cli-only`/`dashboard-only` experiment merged back with hundreds of modify/delete conflicts because main had meanwhile rewritten the same files. Permanent lanes with disjoint removals + `-X theirs` refresh make every sync deterministic.
+The earlier `cli-only`/`dashboard-only` experiment merged back with hundreds of modify/delete conflicts because main had meanwhile rewritten the same files. Permanent lanes + cherry-pick for real work + `-X ours` + purge for refresh make every sync deterministic.
 
 ---
 
