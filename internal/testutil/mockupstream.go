@@ -192,23 +192,26 @@ func SSEEvent(data string) string { return "data: " + data + "\n\n" }
 func (m *MockUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	m.Requests++
+	authReject := m.AuthReject
+	rateLimit := m.RateLimit
+	ban := m.Ban
+	retryAfterMsOverride := m.RateLimitRetryAfterMs
 	m.mu.Unlock()
-	if m.AuthReject {
+	if authReject {
 		writeJSON(w, 401, `{"error":{"message":"unauthorized","type":"authentication_error"}}`)
 		return
 	}
-	if m.RateLimit {
+	if rateLimit {
 		// writeRaw (not writeJSON): the body must reach the client verbatim
 		// so parseRateLimit can unmarshal the quota fields — writeJSON would
-		// re-encode it as a quoted JSON string.
 		retryAfterMs := 48549499
-		if m.RateLimitRetryAfterMs > 0 {
-			retryAfterMs = m.RateLimitRetryAfterMs
+		if retryAfterMsOverride > 0 {
+			retryAfterMs = retryAfterMsOverride
 		}
 		writeRaw(w, 429, fmt.Sprintf(`{"model":"deepseek/deepseek-v4-flash","entitlementBreakdown":{"base":6,"referral":0,"streak":0},"limit":6,"period":"pacific_day","resetTimeZone":"America/Los_Angeles","resetAt":"2026-08-12T07:00:00.000Z","windowHours":24,"recentCount":6.6,"status":"rate_limited","accessTier":"limited","retryAfterMs":%d}`, retryAfterMs))
 		return
 	}
-	if m.Ban {
+	if ban {
 		resumesAt := time.Now().Add(time.Hour).UTC().Format(rfc3339Millis)
 		writeRaw(w, 403, `{"status":"banned","resumes_at":"`+resumesAt+`"}`)
 		return
