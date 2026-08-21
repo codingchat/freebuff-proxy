@@ -1040,6 +1040,73 @@ func TestModelLockedReleasesOldSlot(t *testing.T) {
 	if snap := mgr.Snapshot(); snap.InstanceID != "inst-B" {
 		t.Errorf("final instance = %q, want inst-B", snap.InstanceID)
 	}
+	// Issue #160: the release is metered. One model_locked admission for
+	// (model/A → model/B) must land exactly one counter event.
+	if got := mgr.ModelLocked()["model/A"]["model/B"]; got != 1 {
+		t.Errorf("ModelLocked[model/A][model/B] = %d, want 1 (all: %v)", got, mgr.ModelLocked())
+	}
+}
+
+// TestModelLockedCounter pins the issue #160 counter's accumulation
+// semantics: every model_locked admission releases the old slot and
+// re-admits with the desired model, and the from → to pair counts each
+// release — two switches A→B (each locked once upstream) must read 2, not
+// a set/overwrite.
+func TestModelLockedCounter(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mgr := newTestManager(t, mock)
+
+	var mu sync.Mutex
+	bAttempts := 0
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			model := r.Header.Get("x-freebuff-model")
+			w.Header().Set("Content-Type", "application/json")
+			if model == "model/A" {
+				_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-A","model":"model/A","expiresAt":"2030-01-01T00:00:00Z"}`)
+				return
+			}
+			// model/B: alternate locked → active so each A→B switch
+			// hits exactly one model_locked admission (the retry in the
+			// same refresh loop succeeds on the next iteration).
+			mu.Lock()
+			bAttempts++
+			attempt := bAttempts
+			mu.Unlock()
+			if attempt%2 == 1 {
+				_, _ = io.WriteString(w, `{"status":"model_locked","currentModel":"model/A","requestedModel":"model/B"}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-B","model":"model/B","expiresAt":"2030-01-01T00:00:00Z"}`)
+		case http.MethodDelete:
+			w.WriteHeader(200)
+			_, _ = io.WriteString(w, `{"status":"ended"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}
+
+	// Switch A→B (locked), back to A (no lock), then A→B again (locked).
+	for _, model := range []string{"model/A", "model/B", "model/A", "model/B"} {
+		if _, err := mgr.EnsureSessionForModel(context.Background(), model); err != nil {
+			t.Fatalf("EnsureSessionForModel(%s): %v", model, err)
+		}
+	}
+
+	locked := mgr.ModelLocked()
+	if got := locked["model/A"]["model/B"]; got != 2 {
+		t.Errorf("ModelLocked[model/A][model/B] = %d, want 2 (two locked switches; all: %v)", got, locked)
+	}
+	if len(locked) != 1 {
+		t.Errorf("ModelLocked = %v, want exactly one from→to pair", locked)
+	}
+	// Sanity: the upstream really saw the four model/B creates and two
+	// releases (locked + retry per switch).
+	if bAttempts != 4 {
+		t.Errorf("model/B creates = %d, want 4 (2 locked + 2 retries)", bAttempts)
+	}
 }
 
 // TestRefreshBudgetExhaustedAlwaysNone verifies the create/poll loop is
