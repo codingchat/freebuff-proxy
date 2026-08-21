@@ -769,11 +769,13 @@ func usageTotalTokens(usage any) int64 {
 	return prompt + completion
 }
 
-// keepaliveInterval is how long the relay may sit without relaying a data
-// chunk before it emits an SSE comment frame to hold the connection open.
-// Long upstream reasoning pauses produce no chunks, and proxies/clients may
-// treat silence as a dead connection. A var (not const) so tests can shrink
-// it.
+// keepaliveInterval is how long the relay may go without writing a frame
+// to the client before it emits an SSE keepalive frame (comment on the
+// OpenAI-compatible wires, event: ping on the Anthropic wire) to hold the
+// connection open. Long upstream reasoning pauses produce no chunks, and
+// proxies/clients may treat silence as a dead connection. The timer keys
+// on client writes only: dropped upstream comment/junk lines never count
+// as liveness (#161). A var (not const) so tests can shrink it.
 var keepaliveInterval = 15 * time.Second
 
 // lineChunk is one upstream SSE line or the terminal send. done is set only

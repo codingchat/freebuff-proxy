@@ -423,7 +423,11 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 	defer keepalive.Stop()
 	lines := make(chan lineChunk)
 	go relayReadLoop(ctx, r, lines)
-	relayed := time.Now()
+	// lastWrite tracks the last frame actually written to the CLIENT; the
+	// keepalive condition keys on it so a liveness signal is emitted after
+	// any client-write silence, regardless of upstream comment/junk dribble
+	// (those are dropped and never relayed — #161).
+	lastWrite := time.Now()
 	first := true
 	endTurnCallIndexes := make(map[int]bool)
 	// XML tool-call extractor: models such as MiMo/Hermes/Qwen emit tool
@@ -484,9 +488,9 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 		case <-ctx.Done():
 			return
 		case <-keepalive.C:
-			if time.Since(relayed) >= keepaliveInterval {
+			if time.Since(lastWrite) >= keepaliveInterval {
 				_, _ = io.WriteString(w, ": keepalive\n\n")
-				relayed = time.Now()
+				lastWrite = time.Now()
 				flusher.Flush()
 			}
 		case lc := <-lines:
@@ -505,7 +509,9 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 			}
 			clean, drop := convert.SanitizeChunk(lc.line)
 			if drop {
-				relayed = time.Now()
+				// Dropped upstream lines are never relayed and must not
+				// advance the keepalive timer (client sees only real
+				// frames — #161).
 				continue
 			}
 			var chunk map[string]any
@@ -652,7 +658,8 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 				}
 			}
 			if drop {
-				relayed = time.Now()
+				// Chunk emptied by end_turn stripping: nothing was written
+				// to the client, so the keepalive timer must not advance.
 				continue
 			}
 			if first {
@@ -678,7 +685,7 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 				s.endResponsesStream(w, send, st, model, respID, createdAt, true, map[string]any{"message": msg, "type": typ})
 				return
 			}
-			relayed = time.Now()
+			lastWrite = time.Now()
 			stats.chunks++
 			stats.bytes += len(clean)
 			if m, _ := chunk["model"].(string); m != "" {

@@ -118,7 +118,12 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 	lines := make(chan lineChunk)
 	go relayReadLoop(ctx, r, lines)
 
-	relayed := time.Now()
+	// lastWrite is when the relay last wrote a frame to the CLIENT. The
+	// keepalive condition keys on it so a liveness signal is emitted after
+	// any client-write silence, even when upstream comment/junk lines keep
+	// arriving (they are dropped, never relayed, and must not count as
+	// liveness — #161).
+	lastWrite := time.Now()
 	first := true
 	var reasoningParts []string
 	var contentParts []string
@@ -185,7 +190,7 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 			}
 			stats.chunks++
 			stats.bytes += len(frame)
-			relayed = time.Now()
+			lastWrite = time.Now()
 			flusher.Flush()
 		}
 	}
@@ -195,9 +200,9 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 		case <-ctx.Done():
 			return
 		case <-keepalive.C:
-			if time.Since(relayed) >= keepaliveInterval {
+			if time.Since(lastWrite) >= keepaliveInterval {
 				_, _ = io.WriteString(w, ": keepalive\n\n")
-				relayed = time.Now()
+				lastWrite = time.Now()
 				flusher.Flush()
 			}
 		case lc := <-lines:
@@ -222,8 +227,11 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 			}
 			clean, drop := convert.SanitizeChunk(lc.line)
 			if drop {
-				// Non-chunk lines (upstream comments) still prove liveness.
-				relayed = time.Now()
+				// Non-chunk lines (upstream comments, junk frames) are never
+				// relayed and must NOT advance the keepalive timer: the
+				// client sees only real frames, so a steady dribble of
+				// upstream comments would starve it of liveness signals
+				// indefinitely (#161).
 				continue
 			}
 			// Track tool-call indexes BEFORE any strip: StripEndTurnToolCalls
@@ -414,7 +422,7 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 			}
 			stats.chunks++
 			stats.bytes += len(frame)
-			relayed = time.Now()
+			lastWrite = time.Now()
 			flusher.Flush()
 		}
 	}
