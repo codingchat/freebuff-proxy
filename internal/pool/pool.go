@@ -97,6 +97,10 @@ type bridgeEntry struct {
 	// (gap #2), touched only by the maintain goroutine (bridgeSessionPollTick).
 	nextPollAt   time.Time
 	pollFailures int
+	// locked is an administrative lock that prevents AcquireBridge from
+	// leasing runs to this entry (#187). Set/cleared by LockBridgeEntry/
+	// UnlockBridgeEntry; in-flight leases are unaffected.
+	locked atomic.Bool
 }
 
 // TokenSnapshot is one token's healthz view.

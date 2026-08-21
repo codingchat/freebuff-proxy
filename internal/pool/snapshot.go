@@ -3,7 +3,24 @@ package pool
 
 import (
 	"time"
+
+	"freebuff-proxy/internal/session"
 )
+
+// BridgeTokenSnapshot is a dashboard-ready view of one bridge entry (#187).
+type BridgeTokenSnapshot struct {
+	Key           string                           `json:"key"` // raw client token (hashed for display)
+	LastUsed      time.Time                        `json:"last_used"`
+	ActiveRuns    int                              `json:"active_runs"`
+	Requests      int                              `json:"requests"`
+	Locked        bool                             `json:"locked"`
+	CooldownUntil time.Time                        `json:"cooldown_until"`
+	SessionActive bool                             `json:"session_active"`
+	Model         string                           `json:"model"`
+	QuotaByModel  map[string]session.QuotaSnapshot `json:"quota_by_model,omitempty"`
+	SpendDay      float64                          `json:"spend_day"`
+	SpendPct      int                              `json:"spend_pct"`
+}
 
 // Snapshot returns the per-token healthz view.
 func (p *Pool) Snapshot() []TokenSnapshot {
