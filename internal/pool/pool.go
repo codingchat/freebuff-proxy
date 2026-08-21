@@ -201,6 +201,11 @@ type TokenSnapshot struct {
 	// spend_limited, insufficient_quota, limit_burst_rate,
 	// free_mode_rate_limited, ...). Surfaced per-token in /metrics.
 	RateLimitEvents map[string]int64
+	// ModelLocked tallies model-lock session releases keyed by from → to
+	// model pair (issue #160): each model_locked admission releases the
+	// old slot and re-admits with the requested model. Surfaced per-token
+	// in /metrics as freebuff_proxy_model_locked_total.
+	ModelLocked map[string]map[string]int64
 }
 
 // Pool balances requests across the configured tokens.

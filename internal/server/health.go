@@ -233,6 +233,20 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	sb.WriteString("\n")
 
+	sb.WriteString("# HELP freebuff_proxy_model_locked_total Session releases on model lock, by model switch (from to)\n")
+	sb.WriteString("# TYPE freebuff_proxy_model_locked_total counter\n")
+	for _, snap := range snaps {
+		for from, tos := range snap.ModelLocked {
+			for to, n := range tos {
+				if n > 0 {
+					fmt.Fprintf(&sb, "freebuff_proxy_model_locked_total{token=\"%d\",from=\"%s\",to=\"%s\"} %d\n",
+						snap.Token+1, escapeLabelValue(from), escapeLabelValue(to), n)
+				}
+			}
+		}
+	}
+	sb.WriteString("\n")
+
 	if s.logs != nil {
 		// T20: handled-record counters from the dashboard log ring. The key
 		// is logring's "level|msg" (level lowercased). msg is a free-form

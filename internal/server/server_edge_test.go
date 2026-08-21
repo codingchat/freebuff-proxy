@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -659,4 +660,63 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return fmt.Sprintf("%s…(%d bytes)", s[:n], len(s))
+}
+
+// TestMetricsModelLockedTotal pins issue #160's metrics surface: a chat
+// that forces a model_locked admission (old slot released, desired model
+// re-admitted) renders freebuff_proxy_model_locked_total with the from→to
+// model pair, per token.
+func TestMetricsModelLockedTotal(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	const lockModel = "deepseek/deepseek-v4-flash"
+	var mu sync.Mutex
+	bAttempts := 0
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			model := r.Header.Get("x-freebuff-model")
+			w.Header().Set("Content-Type", "application/json")
+			if model == modelA {
+				_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-A","model":"`+modelA+`","expiresAt":"2030-01-01T00:00:00Z"}`)
+				return
+			}
+			// The locked model: the first admission is locked to modelA,
+			// the in-loop retry (same refresh) succeeds.
+			mu.Lock()
+			bAttempts++
+			attempt := bAttempts
+			mu.Unlock()
+			if attempt == 1 {
+				_, _ = io.WriteString(w, `{"status":"model_locked","currentModel":"`+modelA+`","requestedModel":"`+lockModel+`"}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-B","model":"`+lockModel+`","expiresAt":"2030-01-01T00:00:00Z"}`)
+		case http.MethodDelete:
+			w.WriteHeader(200)
+			_, _ = io.WriteString(w, `{"status":"ended"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}
+	ts, _ := newTestServer(t, nil, mock)
+
+	// First chat binds the session to modelA; the second switches to
+	// lockModel and trips one model_locked release.
+	for _, model := range []string{modelA, lockModel} {
+		resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(model), nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("chat %s status = %d, want 200: %s", model, resp.StatusCode, truncate(string(data), 200))
+		}
+	}
+
+	resp, data := doJSON(t, http.MethodGet, ts.URL+"/metrics", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics status = %d, want 200: %s", resp.StatusCode, truncate(string(data), 200))
+	}
+	body := string(data)
+	want := `freebuff_proxy_model_locked_total{token="1",from="z-ai/glm-5.2",to="deepseek/deepseek-v4-flash"} 1`
+	if !strings.Contains(body, want) {
+		t.Errorf("metrics missing %s in:\n%s", want, body)
+	}
 }

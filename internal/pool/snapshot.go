@@ -103,6 +103,7 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			TransientRetries:        tok.client.TransientRetries(),
 			FingerprintRotations:    tok.client.FingerprintRotations(),
 			RateLimitEvents:         tok.client.RateLimitEvents(),
+			ModelLocked:             tok.session.ModelLocked(),
 			Spend24h:                spend.Rolling24h,
 			SpendDay:                spend.Day,
 			SpendWeek:               spend.Week,

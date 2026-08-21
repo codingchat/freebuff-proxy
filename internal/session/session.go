@@ -155,6 +155,14 @@ type Manager struct {
 	invalidationEvents []invalidationEvent
 	reAdmitTriggers    []time.Time
 	lastStormAt        time.Time
+
+	// modelLocked tallies model-lock release events keyed by from → to
+	// model pair (issue #160): every model_locked admission releases the
+	// old slot and re-admits with the requested model, so the pair counts
+	// the model-switch cost. Guarded by modelLockedMu (refresh holds no
+	// other lock while recording).
+	modelLockedMu sync.Mutex
+	modelLocked   map[string]map[string]int64
 }
 
 // invalidationEvent is one terminal session event in the re-admit storm
@@ -946,6 +954,7 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 			m.commit(nil)
 			m.mu.Unlock()
 			m.recordInvalidation(reasonModelLock)
+			m.recordModelLock(st.CurrentModel, targetModel)
 			_ = m.client.EndSession(ctx)
 			slog.Debug("session released on model lock, retrying", "reason", reasonModelLock, "current", st.CurrentModel, "target", targetModel)
 		case "model_unavailable":
