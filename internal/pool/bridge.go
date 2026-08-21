@@ -104,6 +104,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	}
 
 	// Issue #155: quota-exhaustion fallback in bridge mode.
+	fellBack := false
 	if bridgeQuotaCapped(entry, model) {
 		if fb := cfg.QuotaFallbackModels[model]; fb != "" && fb != model {
 			p.logger.Info("pool: bridge token quota exhausted, falling back", "token", bridgeTokenLabel(entry), "requested", model, "fallback", fb)
@@ -113,6 +114,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 			}
 			model = fb
 			agentID = fbAgent
+			fellBack = true // issue #164: report the switch to the client
 		} else {
 			return nil, bridgeQuotaLimitError(entry, model)
 		}
@@ -147,7 +149,13 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 			if isQuotaExhaustedError(rle) {
 				if fb := cfg.QuotaFallbackModels[model]; fb != "" && fb != model {
 					p.logger.Info("pool: bridge token quota exhausted on admission, falling back", "token", bridgeTokenLabel(entry), "requested", model, "fallback", fb)
-					return p.AcquireBridge(ctx, clientToken, fb)
+					// Issue #164: report the switch (X-FreeBuff-Fallback:
+					// quota_exhausted) on the fallback lease.
+					fbLease, fbErr := p.AcquireBridge(ctx, clientToken, fb)
+					if fbLease != nil {
+						fbLease.FallbackReason = "quota_exhausted"
+					}
+					return fbLease, fbErr
 				}
 			}
 		}
@@ -219,8 +227,12 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	p.lastActive = time.Now()
 	p.idleFinished = false
 	p.lastActiveMu.Unlock()
+	fallbackReason := ""
+	if fellBack {
+		fallbackReason = "quota_exhausted"
+	}
 	return &Lease{Token: -1, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: instanceID,
-		Bridge: entry, AcquiredAt: time.Now()}, nil
+		Bridge: entry, FallbackReason: fallbackReason, AcquiredAt: time.Now()}, nil
 }
 
 // ProbeNewToken validates a NOT-yet-added token against upstream with a

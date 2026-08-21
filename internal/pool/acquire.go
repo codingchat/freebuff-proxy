@@ -440,7 +440,18 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		if allQuotaCapped {
 			if fb := cfg.QuotaFallbackModels[model]; fb != "" && fb != model {
 				p.logger.Info("pool: quota exhausted, falling back to unlimited model", "requested", model, "fallback", fb)
-				return p.Acquire(ctx, fb)
+				// Issue #164: the fallback lease reports why it serves a
+				// different model so the server surfaces the switch to the
+				// client (X-FreeBuff-Fallback: quota_exhausted). By the time
+				// this branch is reached every token with positive quota for
+				// `model` has already been tried and failed (see acquireOrder:
+				// quota-capped tokens are excluded from the order, all others
+				// are visited by the failover loop before the fallback fires).
+				fbLease, fbErr := p.Acquire(ctx, fb)
+				if fbLease != nil {
+					fbLease.FallbackReason = "quota_exhausted"
+				}
+				return fbLease, fbErr
 			}
 		}
 
@@ -496,6 +507,18 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 // whose quota is exhausted for the model (RecentCount >= Limit with a future
 // ResetAt) are excluded from this pass entirely; their rate-limit reasons
 // are returned so the caller surfaces a real 429 when every token is capped.
+//
+// Issue #164 (fallback ordering): the order returned here exhausts EVERY
+// token with positive quota for the requested model before the caller's
+// QUOTA_FALLBACK_MODELS fallback can fire. Non-capped tokens (matching hot,
+// cold, mismatched hot) are all in the order and the failover loop in
+// Acquire visits each of them in turn — a token only fails the pass with a
+// quota-exhausted error after it was actually attempted. Quota-capped
+// tokens are excluded (they have nothing left to serve), and when every
+// token is capped or cooling down the order degrades to full round-robin so
+// the loop still records every reason. The fallback branch in Acquire only
+// runs after that loop completed without a lease and every rate-limited
+// error it recorded is a quota exhaustion.
 func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int, []*upstream.RateLimitError) {
 	// eligible mirrors the per-token checks the failover loop applies:
 	// not cooling down, under the daily message cap, and not quota-capped
