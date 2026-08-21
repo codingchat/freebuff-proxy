@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -160,7 +161,8 @@ func classifyError(status int, body string, hdr http.Header) error {
 		// nextDelayMs returns null).
 		return &SessionSupersededError{Status: status, Body: truncate(body, 200)}
 	case containsAny(lower, "freebuff_update_required",
-		"session_expired", "session_model_mismatch", "model_locked"):
+		"session_expired", "session_model_mismatch", "model_locked",
+		"free_mode_legacy_luna_agent", "free_mode_legacy_luna"):
 		return fmt.Errorf("%w: %s%s", ErrSessionInvalid, truncate(body, 200), retryDetail(retryAfter))
 	case status == http.StatusBadRequest && containsAny(lower, "runid not found", "runid not running"):
 		return fmt.Errorf("%w: %s", ErrRunInvalid, truncate(body, 200))
@@ -524,6 +526,60 @@ func untilResetAt(t, now time.Time) time.Duration {
 	return clampCooldown(time.Duration(secs) * time.Second)
 }
 
+// reRetryAfterNs matches "retry after Ns" or "retry after N s" (N = digits).
+var reRetryAfterNs = regexp.MustCompile(`retry\s+after\s+(\d+)\s*s`)
+
+// reMinutesLimit matches "N minutes limit" (the free_mode_rate_limited body
+// for 30-minute windows).
+var reMinutesLimit = regexp.MustCompile(`(\d+)\s+minutes?\s+limit`)
+
+// reHours matches "N hours" for a broader duration fallback.
+var reHours = regexp.MustCompile(`(\d+)\s+hours?`)
+
+// reResetAt matches "reset(s) at <ISO-8601>" in the body text.
+// Lowercase [tT]/[zZ] because the body is lowercased before matching.
+var reResetAt = regexp.MustCompile(`resets?\s+at\s+(\d{4}-\d{2}-\d{2}[tT][\d:.]+[zZ]?)`)
+
+// parseRetryAfterFromText extracts a retry-after duration from plain-text
+// body content. Three patterns are tried in order:
+//  1. "retry after Ns" — explicit delay from the upstream message.
+//  2. "N minutes limit" — the free_mode_rate_limited 30-minute window.
+//  3. "N hours" — broader duration fallback.
+//
+// Returns 0 when none match so callers' <= 0 fallback logic is unaffected.
+func parseRetryAfterFromText(text string) time.Duration {
+	if m := reRetryAfterNs.FindStringSubmatch(text); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+			return clampCooldown(time.Duration(n) * time.Second)
+		}
+	}
+	if m := reMinutesLimit.FindStringSubmatch(text); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+			return clampCooldown(time.Duration(n) * time.Minute)
+		}
+	}
+	if m := reHours.FindStringSubmatch(text); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+			return clampCooldown(time.Duration(n) * time.Hour)
+		}
+	}
+	return 0
+}
+
+// parseResetAtFromText extracts a reset timestamp from plain-text body
+// content matching "reset(s) at <ISO-8601>". Returns the zero time when no
+// match is found so callers' IsZero() checks are unaffected.
+func parseResetAtFromText(text string) time.Time {
+	if m := reResetAt.FindStringSubmatch(text); m != nil {
+		// The body is already lowercased; RFC3339 requires uppercase T/Z.
+		iso := strings.ToUpper(m[1])
+		if t, err := time.Parse(time.RFC3339, iso); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
 // parseRateLimit builds a RateLimitError from a 429 body, extracting
 // retryAfterMs/resetAt/limit/recentCount/period best-effort across multiple
 // JSON schemas. Falls back to the Retry-After header; a body with no
@@ -532,6 +588,7 @@ func untilResetAt(t, now time.Time) time.Duration {
 // which locks until the upcoming Pacific midnight (07:00 UTC).
 func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 	rle := &RateLimitError{Body: truncate(body, 200), RetryAfter: headerRetryAfter}
+	lower := strings.ToLower(body)
 
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(body), &raw); err == nil {
@@ -565,6 +622,19 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 		if period, ok := target["period"].(string); ok {
 			rle.Period = period
 		}
+	}
+
+	// Text-based fallback: extract retry-after duration from the body
+	// text when JSON fields didn't provide one (e.g. "30 minutes limit"
+	// in free_mode_rate_limited bodies).
+	if rle.RetryAfter <= 0 {
+		rle.RetryAfter = parseRetryAfterFromText(lower)
+	}
+
+	// Text-based fallback: extract reset timestamp from the body text
+	// when JSON fields didn't provide one (e.g. "reset at 2026-08-22T07:00:00Z").
+	if rle.ResetAt.IsZero() {
+		rle.ResetAt = parseResetAtFromText(lower)
 	}
 
 	if !rle.ResetAt.IsZero() && rle.ResetAt.After(time.Now()) {

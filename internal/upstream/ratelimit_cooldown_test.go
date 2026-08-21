@@ -113,3 +113,57 @@ func TestParseRetryAfterClampsCooldown(t *testing.T) {
 		}
 	})
 }
+
+// TestClassifyLegacyLunaAgent verifies that a 502 body containing
+// free_mode_legacy_luna_agent or free_mode_legacy_luna is classified as
+// ErrSessionInvalid (session needs refresh).
+func TestClassifyLegacyLunaAgent(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"legacy_luna_agent", `{"error":"free_mode_legacy_luna_agent","message":"session stale"}`},
+		{"legacy_luna", `{"error":"free_mode_legacy_luna","message":"upgrade required"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := classifyError(502, tc.body, http.Header{})
+			if !errors.Is(err, ErrSessionInvalid) {
+				t.Errorf("classifyError(502, %s) = %v, want ErrSessionInvalid", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestParseRateLimit30MinutesText verifies that a body containing
+// "30 minutes limit" (without JSON retryAfterMs) yields RetryAfter ≈ 30m.
+func TestParseRateLimit30MinutesText(t *testing.T) {
+	body := `{"error":"free_mode_rate_limited","message":"You've hit the 30 minutes limit."}`
+	err := parseRateLimit(body, 0)
+	var rle *RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("err = %v, want RateLimitError", err)
+	}
+	if rle.RetryAfter != 30*time.Minute {
+		t.Errorf("RetryAfter = %v, want 30m", rle.RetryAfter)
+	}
+}
+
+// TestParseRateLimitResetAtText verifies that a body containing
+// "reset at <ISO>" (without JSON resetAt field) yields the parsed ResetAt.
+func TestParseRateLimitResetAtText(t *testing.T) {
+	body := `{"error":"session_quota_exhausted","message":"Daily quota exceeded. Resets at 2026-08-22T07:00:00Z."}`
+	err := parseRateLimit(body, 0)
+	var rle *RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("err = %v, want RateLimitError", err)
+	}
+	want, _ := time.Parse(time.RFC3339, "2026-08-22T07:00:00Z")
+	if !rle.ResetAt.Equal(want) {
+		t.Errorf("ResetAt = %v, want %v", rle.ResetAt, want)
+	}
+	// When the reset time is in the future, RetryAfter should be derived from it.
+	if rle.RetryAfter <= 0 {
+		t.Errorf("RetryAfter = %v, want positive (derived from ResetAt)", rle.RetryAfter)
+	}
+}

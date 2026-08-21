@@ -187,8 +187,8 @@ func TestChatSessionInvalidBoundedRetry(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502: %s", resp.StatusCode, data)
 	}
-	if !strings.Contains(string(data), "upstream_unavailable") {
-		t.Errorf("body missing upstream_unavailable: %s", data)
+	if !strings.Contains(string(data), "session_invalid") {
+		t.Errorf("body missing session_invalid: %s", data)
 	}
 	if got := len(mock.RecordedChatHeaders); got != 2 {
 		t.Errorf("upstream chat attempts = %d, want exactly 2 (bounded retry)", got)

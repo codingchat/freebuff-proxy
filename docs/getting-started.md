@@ -173,6 +173,7 @@ Run `./freebuff-proxy -doctor` to diagnose problems automatically.
 | `502` + `upstream_auth_rejected` | Token in `.env` is expired or invalid. Catch it before the first chat: `./freebuff-proxy -test-token` (or `-doctor`) probes the token with a zero-cost GET request and fails with a clear message. Then re-run `freebuff` to log in and update `AUTH_TOKENS`, or swap the token live on the dashboard Tokens page (no restart). |
 | Connection refused | Proxy is not running, or in Docker without `LISTEN_ADDR=:3457`. |
 | `403 account_banned` | Account suspended upstream. Token is dead; use a new established account. |
+| `502` + `free_mode_legacy_luna_agent` | The conversation uses a retired Luna agent. Start a new conversation. The proxy automatically retries with a fresh session. |
 
 ---
 

@@ -89,6 +89,12 @@ func defaultHintForCode(code, message string) string {
 	switch {
 	case code == "free_mode_cli_required" || strings.Contains(lowerMsg, "free_mode_cli_required"):
 		return "Upstream free tier gate requires official CLI traffic envelope. See FAQ: https://github.com/trefeon/freebuff-proxy#faq"
+	case code == "free_mode_legacy_luna_agent" || strings.Contains(lowerMsg, "free_mode_legacy_luna_agent"):
+		return "Retired Luna agent — new session required, retry immediately."
+	case code == "free_mode_rate_limited" || strings.Contains(lowerMsg, "free_mode_rate_limited"):
+		return "Free-tier sliding window rate limit (30m). Wait for Retry-After or retry with backoff."
+	case code == "free_mode_capacity_deferred" || strings.Contains(lowerMsg, "free_mode_capacity_deferred"):
+		return "Free tier at capacity — request deferred. Honor Retry-After (approx 2s for 30m window, 10s default) before retrying."
 	case code == "account_banned" || strings.Contains(lowerMsg, "banned"):
 		return "Account suspended upstream. Token is dead; create a fresh account with an established GitHub login."
 	case code == "country_blocked" || strings.Contains(lowerMsg, "country blocked") || strings.Contains(lowerMsg, "country_blocked"):
@@ -100,7 +106,13 @@ func defaultHintForCode(code, message string) string {
 	case code == "upstream_auth_rejected" || code == "invalid_api_key" || strings.Contains(lowerMsg, "invalid api key"):
 		return "Token invalid or expired. Get a fresh token by running scripts/gen-token.cmd (Windows) or scripts/gen-token.sh (Linux/macOS)"
 	case code == "rate_limited":
-		return "Daily message cap or rate limit reached. Wait for quota reset or add another token."
+		return "Daily session quota exhausted. Resets at 07:00 UTC (Pacific midnight). Wait for reset or add another token."
+	case code == "ip_capped":
+		return "Too many distinct users on this egress IP (admission-only). Retry after Retry-After or use a different egress."
+	case code == "load_shedding":
+		return "Upstream load shedding — transient minutes-scale saturation. Retry after ~90s."
+	case code == "peak_hours":
+		return "Premium peak-hours window — transient. Retry after ~30m."
 	case code == "missing_bearer_token":
 		return "Bridge mode active: pass your FreeBuff token in Authorization: Bearer <token>"
 	case code == "model_not_found":
@@ -294,6 +306,22 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 		if retryAfter <= 0 {
 			retryAfter = 10 * time.Second
 		}
+	case errors.Is(err, upstream.ErrSessionInvalid):
+		// Session invalid (stale/expired/retired agent): surface 502 with
+		// a distinct code so callers can distinguish and hint the user to
+		// start a new conversation. MUST precede the generic
+		// errors.As(err, &ue) branch because ErrSessionInvalid wraps a
+		// plain fmt.Errorf, not a concrete type.
+		status = http.StatusBadGateway
+		msg := err.Error()
+		if strings.Contains(msg, "free_mode_legacy_luna_agent") {
+			code = "free_mode_legacy_luna_agent"
+			message = "Retired Luna agent — start a new conversation."
+		} else {
+			code = "session_invalid"
+			message = "Session expired or model changed — retry immediately."
+		}
+		retryAfter = 1 * time.Second
 	case errors.As(err, &ue):
 		if ue.Retryable {
 			// deployment_outside_hours etc.: temporarily unavailable, worth

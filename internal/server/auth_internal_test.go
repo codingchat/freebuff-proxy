@@ -663,3 +663,36 @@ func TestAdminReloadAdminSensitiveGate(t *testing.T) {
 		}
 	})
 }
+
+// TestWriteErrorLegacyLunaAgent verifies that free_mode_legacy_luna_agent
+// surfaces as 502 with the dedicated code (not generic session_invalid).
+func TestWriteErrorLegacyLunaAgent(t *testing.T) {
+	body := `{"error":"free_mode_legacy_luna_agent","message":"This conversation uses a retired Luna agent."}`
+	err := fmt.Errorf("%w: %s", upstream.ErrSessionInvalid, body)
+	status, _, writeBody := errorResponse(t, err)
+	if status != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", status)
+	}
+	if writeBody.Error.Code != "free_mode_legacy_luna_agent" {
+		t.Errorf("code = %q, want free_mode_legacy_luna_agent", writeBody.Error.Code)
+	}
+	if !strings.Contains(string(writeBody.Error.Message), "Retired Luna agent") {
+		t.Errorf("message = %q, want Retired Luna agent hint", writeBody.Error.Message)
+	}
+}
+
+// TestWriteErrorSessionInvalid verifies that generic session-invalid errors
+// surface as 502 with code "session_invalid".
+func TestWriteErrorSessionInvalid(t *testing.T) {
+	err := fmt.Errorf("%w: session expired", upstream.ErrSessionInvalid)
+	status, _, writeBody := errorResponse(t, err)
+	if status != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", status)
+	}
+	if writeBody.Error.Code != "session_invalid" {
+		t.Errorf("code = %q, want session_invalid", writeBody.Error.Code)
+	}
+	if !strings.Contains(writeBody.Error.Message, "retry immediately") {
+		t.Errorf("message = %q, want retry-immediately hint", writeBody.Error.Message)
+	}
+}
