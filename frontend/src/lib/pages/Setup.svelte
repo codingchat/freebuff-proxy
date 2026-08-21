@@ -1,427 +1,231 @@
 <script>
   import { onMount } from 'svelte';
-  import { Copy, Check, Terminal, Play, Activity, Zap, RotateCcw } from '@lucide/svelte';
+  import { Check, Zap } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
+  import Card from '../components/Card.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import Alert from '../components/Alert.svelte';
-  import { fetchAPI, postAPI } from '../utils/api.js';
-  import { copyToClipboard } from '../utils/clipboard.js';
+  import EmptyState from '../components/EmptyState.svelte';
+  import Button from '../components/Button.svelte';
+  import Field from '../components/Field.svelte';
+  import { fetchAPI } from '../api/client.js';
   import { generateRandomApiKey } from '../utils/format.js';
+  import { copyToClipboard } from '../utils/clipboard.js';
 
   let data = $state(null);
   let loading = $state(true);
   let error = $state('');
-  let copiedIdx = $state(null);
+  let apiKey = $state('not-needed');
   let copiedModel = $state('');
 
-  let customApiKey = $state('not-needed');
-  // Diagnostic state
-  let diagRunning = $state(false);
-  let diagChecks = $state(null);
-
-  // Step indicator: 0=loading, 1=configure, 2=validate, 3=done
-  let setupStep = $derived.by(() => {
-    if (loading) return 0;
-    if (error) return 0;
-    if (diagChecks && diagChecks.length > 0 && diagChecks.some(c => c.ok)) return 3;
-    if (data && data.models && data.models.length > 0) return 2;
-    if (data) return 1;
-    return 0;
-  });
-
   async function fetchData() {
+    loading = true;
+    error = '';
     try {
       data = await fetchAPI('/admin/api/setup');
-      error = '';
     } catch (e) {
-      error = e.message || 'Failed to fetch setup data';
+      error = e.message || 'Failed to load setup data';
     } finally {
       loading = false;
-    }
-  }
-
-  function copySnippet(text, idx) {
-    copyToClipboard(text.trim());
-    copiedIdx = idx;
-    setTimeout(() => {
-      if (copiedIdx === idx) copiedIdx = null;
-    }, 1800);
-  }
-
-  async function runDiag() {
-    if (diagRunning) return;
-    diagRunning = true;
-    diagChecks = null;
-    try {
-      const result = await postAPI('/admin/diag', {});
-      diagChecks = result.checks || [];
-    } catch {
-      diagChecks = [{ name: 'Diagnostics', ok: false, warn: false, message: 'Failed to run diagnostics endpoint' }];
-    } finally {
-      diagRunning = false;
     }
   }
 
   onMount(() => {
     fetchData();
   });
+
+  function copyModel(m) {
+    copyToClipboard(m).then((ok) => {
+      if (!ok) return;
+      copiedModel = m;
+      setTimeout(() => {
+        if (copiedModel === m) copiedModel = '';
+      }, 1800);
+    });
+  }
+
+  function generateKey() {
+    apiKey = generateRandomApiKey();
+  }
+
+  function resetKey() {
+    apiKey = 'not-needed';
+  }
+
+  // Mode facts straight from the /admin/api/setup payload.
+  const isBridge = $derived(data?.bridge ?? false);
+  const modeTone = $derived(isBridge ? 'info' : 'good');
+  const modeBlurb = $derived(
+    isBridge
+      ? 'Bridge mode — no token pool. Each client sends its own FreeBuff token; the proxy relays the Authorization header straight upstream.'
+      : 'Pooled mode — the proxy holds the upstream AUTH_TOKENS and selects one per request; clients authenticate with any key.'
+  );
+
+  // Snippet templates are the real strings from the previous Setup page,
+  // interpolated with the live payload and the chosen client key.
+  const baseURL = $derived(data?.base_url ?? '');
+  const model = $derived(data?.model ?? '');
+  const snippets = $derived([
+    {
+      name: 'OpenCode',
+      text: `"freebuff": {"type": "openai", "options": {"baseURL": "${baseURL}", "apiKey": "${apiKey}"}}`,
+    },
+    {
+      name: 'Claude Code (env)',
+      text: `export ANTHROPIC_BASE_URL="${baseURL}"\nexport ANTHROPIC_API_KEY="${apiKey}"`,
+    },
+    {
+      name: 'omp',
+      text: `"freebuff": {"baseUrl": "${baseURL}", "api": "openai-completions", "apiKey": "${apiKey}"}`,
+    },
+    {
+      name: 'Continue / Cline',
+      text: `models:\n  - title: "FreeBuff"\n    provider: "openai"\n    model: "${model}"\n    apiBase: "${baseURL}"\n    apiKey: "${apiKey}"`,
+    },
+    {
+      name: 'aider',
+      text: `openai-api-base: ${baseURL}\nopenai-api-key: ${apiKey}\nmodel: ${model}`,
+    },
+    {
+      name: '9router',
+      text: `Name: freebuff\nPrefix: freebuff\nAPI type: Chat Completions\nBase URL: ${baseURL}\nAPI Key: ${apiKey}\nModel ID: ${model}`,
+    },
+    {
+      name: 'cURL',
+      wide: true,
+      text: `curl -N ${baseURL}/chat/completions -H "Authorization: Bearer ${apiKey}" -H "Content-Type: application/json" -d '{"model":"${model}","messages":[{"role":"user","content":"hi"}],"stream":true}'`,
+    },
+  ]);
 </script>
 
 <div class="space-y-6 page-enter">
-  <!-- Step Indicator -->
-  <div class="fp-card p-4">
-    <div class="flex items-center justify-center gap-0">
-      <!-- Step 1: Configure -->
-      <div class="flex items-center gap-2">
-        <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all
-          {setupStep === 0 ? 'bg-[var(--fp-input-bg)] text-[var(--fp-dim)] border border-[var(--fp-border)] animate-pulse' :
-           setupStep >= 1 ? 'bg-[var(--fp-teal)] text-white' :
-           'bg-[var(--fp-input-bg)] text-[var(--fp-dim)] border border-[var(--fp-border)]'}">
-          {setupStep > 1 ? '✓' : '1'}
-        </div>
-        <span class="text-xs font-medium {setupStep >= 1 ? 'text-[var(--fp-teal)]' : 'text-[var(--fp-dim)]'} hidden sm:inline">Configure</span>
-      </div>
-      <!-- Connector -->
-      <div class="w-10 sm:w-16 h-0.5 mx-2 transition-colors {setupStep >= 2 ? 'bg-[var(--fp-teal)]' : 'bg-[var(--fp-border)]'}"></div>
-      <!-- Step 2: Validate -->
-      <div class="flex items-center gap-2">
-        <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all
-          {setupStep >= 2 ? 'bg-[var(--fp-teal)] text-white' :
-           'bg-[var(--fp-input-bg)] text-[var(--fp-dim)] border border-[var(--fp-border)]'}">
-          {setupStep > 2 ? '✓' : '2'}
-        </div>
-        <span class="text-xs font-medium {setupStep >= 2 ? 'text-[var(--fp-teal)]' : 'text-[var(--fp-dim)]'} hidden sm:inline">Validate</span>
-      </div>
-      <!-- Connector -->
-      <div class="w-10 sm:w-16 h-0.5 mx-2 transition-colors {setupStep >= 3 ? 'bg-[var(--fp-teal)]' : 'bg-[var(--fp-border)]'}"></div>
-      <!-- Step 3: Done -->
-      <div class="flex items-center gap-2">
-        <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all
-          {setupStep >= 3 ? 'bg-[var(--fp-teal)] text-white' :
-           'bg-[var(--fp-input-bg)] text-[var(--fp-dim)] border border-[var(--fp-border)]'}">
-          3
-        </div>
-        <span class="text-xs font-medium {setupStep >= 3 ? 'text-[var(--fp-teal)]' : 'text-[var(--fp-dim)]'} hidden sm:inline">Done</span>
-      </div>
-    </div>
-    <p class="text-center text-xs text-[var(--fp-dim)] mt-2.5">
-      {#if setupStep === 0}
-        {loading ? 'Loading setup data...' : 'Follow the steps to set up your FreeBuff proxy'}
-      {:else if setupStep === 1}
-        Follow the steps to set up your FreeBuff proxy
-      {:else if setupStep === 2}
-        Run diagnostics to validate your configuration
-      {:else}
-        Setup complete — your proxy is ready
+  <PageHeader title="Setup" description="Client configuration for AI coding tools — copy a block into your tool's config.">
+    <svelte:fragment slot="actions">
+      {#if data}
+        <StatusBadge status={data.mode} tone={modeTone} />
+      {:else if loading}
+        <span class="skeleton skeleton-text w-20"></span>
       {/if}
-    </p>
-  </div>
-
-  <!-- Page Header -->
-  <PageHeader title="Client Setup & Tool Integration" subtitle="Copy a config block for your AI coding tool.">
-    {#if data}
-      <StatusBadge variant="muted" mono>{data.base_url}</StatusBadge>
-      <StatusBadge variant={data.bridge ? 'blue' : 'amber'}>
-        {data.mode} mode
-      </StatusBadge>
-    {/if}
+    </svelte:fragment>
   </PageHeader>
 
-  <!-- Fetch Error -->
+  <!-- Loading -->
+  {#if loading}
+    <div aria-busy="true">
+      <Card class="space-y-3">
+        <div class="flex items-center gap-2">
+          <div class="skeleton skeleton-text w-24"></div>
+          <div class="skeleton skeleton-text w-16"></div>
+        </div>
+        <div class="skeleton skeleton-line w-3/4"></div>
+        <div class="skeleton skeleton-line w-1/2"></div>
+        <div class="skeleton skeleton-line w-full"></div>
+      </Card>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+        {#each Array(4) as _}
+          <div class="skeleton skeleton-card"></div>
+        {/each}
+      </div>
+      <span class="sr-only">Loading setup data</span>
+    </div>
+  {/if}
+
+  <!-- Error -->
   {#if error}
     <div class="space-y-3">
-      <Alert variant="error" message={error} dismissable={false} />
-      <button type="button" onclick={fetchData} class="fp-btn-secondary text-xs py-1.5 px-3">
-        Retry loading setup data
-      </button>
+      <Alert tone="error" title="Failed to load setup data">{error}</Alert>
+      <Button variant="secondary" size="sm" onclick={fetchData}>Retry</Button>
     </div>
   {/if}
 
-  <!-- Universal Config (Top-Level Reference) -->
   {#if data}
-    <div class="fp-card p-5 space-y-4">
-      <div>
-        <h2 class="text-base font-semibold text-white">Universal Configuration</h2>
-        <p class="text-xs text-[var(--fp-muted)] mt-0.5">These values work with any OpenAI-compatible client or extension</p>
-        <p class="text-[10px] text-[var(--fp-dim)] mt-1 flex items-center gap-1">
-          <span class="inline-block w-1 h-1 rounded-full bg-[var(--fp-teal)]"></span>
-          Copy any value by clicking on it — paste into your tool's config
-        </p>
-      </div>
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <!-- Base URL -->
-        <button
-          type="button"
-          onclick={() => copySnippet(data.base_url, 'url')}
-          class="flex flex-col items-start gap-1 p-3.5 rounded-lg fp-inset hover:border-[var(--fp-amber)]/40 transition-all text-left group"
-        >
-          <span class="text-[10px] uppercase font-semibold text-[var(--fp-dim)] tracking-wider">Base URL</span>
-          <span class="font-mono text-sm text-[var(--fp-amber)] group-hover:text-[var(--fp-amber-hover)] transition-colors truncate w-full">{data.base_url}</span>
-          <span class="text-[10px] text-[var(--fp-dim)] flex items-center gap-1 mt-1">
-            {#if copiedIdx === 'url'}
-              <Check size={10} class="text-[var(--fp-teal)]" /> <span class="text-[var(--fp-teal)]">Copied</span>
-            {:else}
-              <Copy size={10} /> Click to copy
-            {/if}
-          </span>
-        </button>
-        <!-- API Key -->
-        <button
-          type="button"
-          onclick={() => copySnippet(customApiKey, 'apikey')}
-          class="flex flex-col items-start gap-1 p-3.5 rounded-lg fp-inset hover:border-[var(--fp-amber)]/40 transition-all text-left group"
-        >
-          <span class="text-[10px] uppercase font-semibold text-[var(--fp-dim)] tracking-wider">API Key</span>
-          <span class="font-mono text-sm text-[var(--fp-amber)] group-hover:text-[var(--fp-amber-hover)] transition-colors truncate w-full">{customApiKey}</span>
-          {#if customApiKey === 'not-needed'}
-            <span class="text-[10px] text-[var(--fp-dim)]">Bridge mode: no key needed</span>
-          {/if}
-          <span class="text-[10px] text-[var(--fp-dim)] flex items-center gap-1 mt-1">
-            {#if copiedIdx === 'apikey'}
-              <Check size={10} class="text-[var(--fp-teal)]" /> <span class="text-[var(--fp-teal)]">Copied</span>
-            {:else}
-              <Copy size={10} /> Click to copy
-            {/if}
-          </span>
-        </button>
-        <!-- Default Model -->
-        <button
-          type="button"
-          onclick={() => copySnippet(data.model, 'model')}
-          class="flex flex-col items-start gap-1 p-3.5 rounded-lg fp-inset hover:border-[var(--fp-amber)]/40 transition-all text-left group"
-        >
-          <span class="text-[10px] uppercase font-semibold text-[var(--fp-dim)] tracking-wider">Default Model</span>
-          <span class="font-mono text-sm text-[var(--fp-amber)] group-hover:text-[var(--fp-amber-hover)] transition-colors truncate w-full">{data.model}</span>
-          <span class="text-[10px] text-[var(--fp-dim)] flex items-center gap-1 mt-1">
-            {#if copiedIdx === 'model'}
-              <Check size={10} class="text-[var(--fp-teal)]" /> <span class="text-[var(--fp-teal)]">Copied</span>
-            {:else}
-              <Copy size={10} /> Click to copy
-            {/if}
-          </span>
-        </button>
-      </div>
-    </div>
-  {/if}
-
-  <!-- API Key Customizer Bar -->
-  <div class="fp-card p-5 space-y-3">
-    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-      <div>
-        <h2 class="text-base font-semibold text-white">API Key Customizer</h2>
-        <p class="text-xs text-[var(--fp-muted)] mt-0.5">Customize or generate client API keys to automatically update all integration snippets below</p>
-      </div>
-      <div class="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onclick={() => {
-            const key = generateRandomApiKey();
-            customApiKey = key;
-            copyToClipboard(key);
-          }}
-          class="fp-btn-primary text-xs py-1.5 px-3 flex items-center gap-1.5"
-        >
-          <Zap size={13} />
-          <span>⚡ Generate Key</span>
-        </button>
-        <button
-          type="button"
-          onclick={() => customApiKey = 'not-needed'}
-          disabled={customApiKey === 'not-needed'}
-          class="fp-btn-secondary text-xs py-1.5 px-3"
-        >
-          Reset to "not-needed"
-        </button>
-      </div>
-    </div>
-    <div class="relative">
-      <input
-        type="text"
-        bind:value={customApiKey}
-        placeholder="Enter client API key or leave as not-needed..."
-        spellcheck="false"
-        class="fp-input fp-input-mono text-xs py-2 px-3 focus-visible:ring-2 focus-visible:ring-[var(--fp-amber)]"
-      />
-    </div>
-  </div>
-
-  <!-- Tool-Specific Snippets -->
-  {#if data}
-    <div class="fp-card p-5 space-y-4">
-      <div class="flex items-center justify-between">
-        <div>
-          <h2 class="text-base font-semibold text-white">Tool-Specific Snippets</h2>
-          <p class="text-xs text-[var(--fp-muted)] mt-0.5">Copy the config block for your AI coding extension</p>
-          <p class="text-[10px] text-[var(--fp-dim)] mt-1 flex items-center gap-1">
-            <span class="inline-block w-1 h-1 rounded-full bg-[var(--fp-amber)]"></span>
-            Each snippet includes your custom API key — regenerate to refresh all
-          </p>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <!-- OpenCode -->
-        <div class="fp-inset p-4 flex flex-col justify-between">
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-bold text-white">OpenCode</h3>
-            <CopyButton text={`"freebuff": {"type": "openai", "options": {"baseURL": "${data.base_url}", "apiKey": "${customApiKey}"}}`} variant="labeled" />
-          </div>
-          <pre class="bg-[var(--fp-bg)] p-2.5 rounded-lg text-xs font-mono text-[var(--fp-muted)] overflow-x-auto whitespace-pre-wrap border border-[var(--fp-border)]">"freebuff": &#123;"type": "openai", "options": &#123;"baseURL": "{data.base_url}", "apiKey": "{customApiKey}"&#125;&#125;</pre>
-        </div>
-
-        <!-- Claude Code / Anthropic -->
-        <div class="fp-inset p-4 flex flex-col justify-between">
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-bold text-white">Claude Code / Anthropic</h3>
-            <CopyButton text={`export ANTHROPIC_BASE_URL="${data.base_url}"\nexport ANTHROPIC_API_KEY="${customApiKey}"`} variant="labeled" />
-          </div>
-          <pre class="bg-[var(--fp-bg)] p-2.5 rounded-lg text-xs font-mono text-[var(--fp-muted)] overflow-x-auto whitespace-pre-wrap border border-[var(--fp-border)]">export ANTHROPIC_BASE_URL="{data.base_url}"
-export ANTHROPIC_API_KEY="{customApiKey}"</pre>
-        </div>
-
-        <!-- omp -->
-        <div class="fp-inset p-4 flex flex-col justify-between">
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-bold text-white">omp</h3>
-            <CopyButton text={`"freebuff": {"baseUrl": "${data.base_url}", "api": "openai-completions", "apiKey": "${customApiKey}"}`} variant="labeled" />
-          </div>
-          <pre class="bg-[var(--fp-bg)] p-2.5 rounded-lg text-xs font-mono text-[var(--fp-muted)] overflow-x-auto whitespace-pre-wrap border border-[var(--fp-border)]">"freebuff": &#123;"baseUrl": "{data.base_url}", "api": "openai-completions", "apiKey": "{customApiKey}"&#125;</pre>
-        </div>
-
-        <!-- Continue / Cline -->
-        <div class="fp-inset p-4 flex flex-col justify-between">
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-bold text-white">Continue / Cline</h3>
-            <CopyButton text={`models:\n  - title: "FreeBuff"\n    provider: "openai"\n    model: "${data.model}"\n    apiBase: "${data.base_url}"\n    apiKey: "${customApiKey}"`} variant="labeled" />
-          </div>
-          <pre class="bg-[var(--fp-bg)] p-2.5 rounded-lg text-xs font-mono text-[var(--fp-muted)] overflow-x-auto whitespace-pre-wrap border border-[var(--fp-border)]">models:
-  - title: "FreeBuff"
-    provider: "openai"
-    model: "{data.model}"
-    apiBase: "{data.base_url}"
-    apiKey: "{customApiKey}"</pre>
-        </div>
-
-        <!-- aider -->
-        <div class="fp-inset p-4 flex flex-col justify-between">
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-bold text-white">aider</h3>
-            <CopyButton text={`openai-api-base: ${data.base_url}\nopenai-api-key: ${customApiKey}\nmodel: ${data.model}`} variant="labeled" />
-          </div>
-          <pre class="bg-[var(--fp-bg)] p-2.5 rounded-lg text-xs font-mono text-[var(--fp-muted)] overflow-x-auto whitespace-pre-wrap border border-[var(--fp-border)]">openai-api-base: {data.base_url}
-openai-api-key: {customApiKey}
-model: {data.model}</pre>
-        </div>
-
-        <!-- 9router -->
-        <div class="fp-inset p-4 flex flex-col justify-between">
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-bold text-white">9router</h3>
-            <CopyButton text={`Name: freebuff\nPrefix: freebuff\nAPI type: Chat Completions\nBase URL: ${data.base_url}\nAPI Key: ${customApiKey}\nModel ID: ${data.model}`} variant="labeled" />
-          </div>
-          <pre class="bg-[var(--fp-bg)] p-2.5 rounded-lg text-xs font-mono text-[var(--fp-muted)] overflow-x-auto whitespace-pre-wrap border border-[var(--fp-border)]">Name: freebuff
-Prefix: freebuff
-API type: Chat Completions
-Base URL: {data.base_url}
-API Key: {customApiKey}
-Model ID: {data.model}</pre>
-        </div>
-
-        <!-- cURL -->
-        <div class="fp-inset p-4 flex flex-col justify-between md:col-span-2 lg:col-span-3">
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-bold text-white">cURL Command</h3>
-            <CopyButton text={`curl -N ${data.base_url}/chat/completions -H "Authorization: Bearer ${customApiKey}" -H "Content-Type: application/json" -d '{"model":"${data.model}","messages":[{"role":"user","content":"hi"}],"stream":true}'`} variant="labeled" />
-          </div>
-          <pre class="bg-[var(--fp-bg)] p-2.5 rounded-lg text-xs font-mono text-[var(--fp-muted)] overflow-x-auto whitespace-pre-wrap border border-[var(--fp-border)]">curl -N {data.base_url}/chat/completions \
-  -H "Authorization: Bearer {customApiKey}" \
-  -H "Content-Type: application/json" \
-  -d '&#123;"model":"{data.model}","messages":[&#123;"role":"user","content":"hi"&#125;],"stream":true&#125;'</pre>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  <!-- Diagnostics Suite -->
-  <div class="fp-card p-5 space-y-3">
-    <div class="flex items-center justify-between">
-      <div class="flex items-center gap-2">
-        <Activity size={18} class="text-[var(--fp-teal)]" />
-        <div>
-          <h2 class="text-base font-semibold text-white">Full Proxy Diagnostics</h2>
-          <p class="text-[10px] text-[var(--fp-dim)] mt-0.5">Validate connectivity, model availability, and proxy health</p>
-        </div>
-      </div>
-      <button
-        onclick={runDiag}
-        disabled={diagRunning}
-        class="fp-btn-secondary"
-      >
-        {#if diagRunning}
-          <Activity size={14} class="animate-spin" />
-          <span>Running...</span>
-        {:else if diagChecks}
-          <RotateCcw size={14} />
-          <span>Re-run Diagnostics</span>
+    <!-- Mode -->
+    <Card title="Mode" description="How clients authenticate to this gateway">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <StatusBadge status={data.mode} tone={modeTone} />
+        {#if isBridge}
+          <span class="text-xs text-[var(--fp-dim)]">bridge tokens <span class="fp-num">{data.bridge_tokens}</span></span>
         {:else}
-          <Activity size={14} />
-          <span>Run Diagnostics</span>
+          <span class="text-xs text-[var(--fp-dim)]">pool size <span class="fp-num">{data.token_count}</span></span>
         {/if}
-      </button>
-    </div>
-
-    {#if diagChecks}
-      <div class="space-y-2 pt-2">
-        {#each diagChecks as c}
-          <div class="p-3 rounded-lg border text-xs font-mono flex items-center gap-2
-            {c.warn ? 'bg-[var(--fp-amber)]/10 border-[var(--fp-amber)]/30 text-[var(--fp-amber)]' : c.ok ? 'bg-[var(--fp-teal)]/10 border-[var(--fp-teal)]/30 text-[var(--fp-teal)]' : 'bg-[var(--fp-red)]/10 border-[var(--fp-red)]/30 text-[var(--fp-red)]'}">
-            <span>{c.ok && !c.warn ? '✓' : c.warn ? '△' : '✗'}</span>
-            <span>{c.message}</span>
-          </div>
-        {/each}
       </div>
-    {/if}
-  </div>
+      <p class="text-sm text-[var(--fp-muted)] mt-3">{modeBlurb}</p>
+      <p class="fp-inset mt-3 px-3 py-2 text-xs font-mono text-[var(--fp-muted)]">Key: {data.key_hint}</p>
+    </Card>
 
-  <!-- Model Catalog Chips -->
-  {#if data?.models && data.models.length > 0}
-    <div class="fp-card p-5 space-y-3">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <Zap size={18} class="text-[var(--fp-amber)]" />
-          <div>
-            <h2 class="text-base font-semibold text-white">Active Model Catalog ({data.models.length} Models)</h2>
-            <p class="text-[10px] text-[var(--fp-dim)] mt-0.5">Click any model chip to copy its ID for use in your config</p>
-          </div>
+    <!-- Client API key -->
+    <Card title="Client API Key" description="The key embedded in every snippet below.">
+      <Field label="Client API key" id="setup-api-key" hint={data.key_hint}>
+        <div class="flex flex-col sm:flex-row gap-2">
+          <input
+            id="setup-api-key"
+            type="text"
+            spellcheck="false"
+            bind:value={apiKey}
+            placeholder="not-needed"
+            class="fp-input fp-mono flex-1"
+          />
+          <Button variant="secondary" size="sm" onclick={generateKey}>
+            <Zap size={16} />Generate
+          </Button>
+          <Button variant="ghost" size="sm" disabled={apiKey === 'not-needed'} onclick={resetKey}>Reset</Button>
         </div>
-        <span class="text-xs text-[var(--fp-dim)]">Click to copy</span>
-      </div>
-      <div class="flex flex-wrap gap-2 pt-1">
-        {#each data.models as m}
-          <button
-            type="button"
-            onclick={() => {
-              copyToClipboard(m);
-              copiedModel = m;
-              setTimeout(() => { if (copiedModel === m) copiedModel = ''; }, 1800);
-            }}
-            class="px-2.5 py-1 rounded-lg text-xs font-mono transition-all flex items-center gap-1.5 {copiedModel === m ? 'bg-[var(--fp-teal)]/20 text-[var(--fp-teal)] border border-[var(--fp-teal)]/50 shadow-sm' : m.includes('deepseek-v4-flash') ? 'bg-[var(--fp-amber)]/10 hover:bg-[var(--fp-amber)]/20 text-[var(--fp-amber)] border border-[var(--fp-amber)]/30' : 'bg-[var(--fp-input-bg)] hover:bg-[var(--fp-surface-3)] text-[var(--fp-muted)] hover:text-white border border-[var(--fp-border)]'}"
-            title="Click to copy model ID"
-          >
-            {#if copiedModel === m}
-              <Check size={12} class="text-[var(--fp-teal)]" />
-              <span>Copied!</span>
-            {:else}
-              <Copy size={12} class="opacity-60" />
-              <span>{m}</span>
-              {#if m.includes('deepseek-v4-flash')}
-                <span class="text-[9px] uppercase px-1 py-0.5 rounded bg-[var(--fp-amber)]/20 text-[var(--fp-amber)] font-sans font-bold">default</span>
-              {/if}
-            {/if}
-          </button>
-        {/each}
-      </div>
+      </Field>
+    </Card>
+
+    <!-- Quick start -->
+    <h2 class="text-[11px] font-mono uppercase tracking-[0.25em] text-[var(--fp-dim)]">Quick Start</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <Card title="Base URL" description="OpenAI-compatible endpoint — same for every tool.">
+        <div class="flex items-center gap-2">
+          <div class="fp-inset flex-1 px-3 py-2 overflow-x-auto">
+            <code class="text-xs">{data.base_url}</code>
+          </div>
+          <CopyButton text={data.base_url} label="Copy URL" />
+        </div>
+      </Card>
+
+      <Card title="Models" description="Model IDs available to clients">
+        {#if data.models.length > 0}
+          <p class="text-xs text-[var(--fp-dim)] mb-3">
+            <span class="fp-num">{data.models.length}</span> served
+          </p>
+          <div class="flex flex-wrap gap-2">
+            {#each data.models as m}
+              <button
+                type="button"
+                onclick={() => copyModel(m)}
+                title="Copy model ID"
+                class="min-h-6 px-2.5 py-1 rounded-[var(--fp-radius-sm)] text-xs font-mono transition-colors border
+                  {copiedModel === m
+                    ? 'border-[var(--fp-success)]/50 bg-[var(--fp-success)]/15 text-[var(--fp-success)]'
+                    : 'border-[var(--fp-border)] bg-[var(--fp-input-bg)] text-[var(--fp-muted)] hover:border-[var(--fp-border-bright)] hover:text-[var(--fp-text)]'}"
+              >
+                {#if copiedModel === m}
+                  <Check size={12} class="inline mr-1" />Copied
+                {:else}
+                  <span class="fp-num">{m}</span>
+                  {#if m === model}
+                    <span class="ml-1.5 text-[9px] uppercase tracking-wider text-[var(--fp-accent)]">default</span>
+                  {/if}
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <EmptyState title="No models served" description="No model IDs are currently served by this gateway." />
+        {/if}
+      </Card>
+
+      {#each snippets as s (s.name)}
+        <Card title={s.name} class={s.wide ? 'md:col-span-2' : ''}>
+          <svelte:fragment slot="actions">
+            <CopyButton text={s.text} />
+          </svelte:fragment>
+          <pre class="fp-inset p-3 text-xs font-mono text-[var(--fp-muted)] overflow-x-auto whitespace-pre-wrap break-words">{s.text}</pre>
+        </Card>
+      {/each}
     </div>
   {/if}
 </div>

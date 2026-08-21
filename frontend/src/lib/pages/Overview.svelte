@@ -1,102 +1,65 @@
 <script>
-  import { Shield, AlertTriangle, Play, RefreshCw, CheckCircle2, XCircle, Settings, Activity, FileText, Terminal, BarChart3, Clock } from '@lucide/svelte';
+  /**
+   * Overview — live proxy status, KPI row, and at-risk token cards.
+   * Data: GET /admin/api/overview (pooled snapshot + token cards), polled every 15s.
+   * All KPIs/cards map to real response fields only.
+   */
+  import { RefreshCw } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
+  import Stat from '../components/Stat.svelte';
+  import Card from '../components/Card.svelte';
   import Alert from '../components/Alert.svelte';
   import EmptyState from '../components/EmptyState.svelte';
-  import CopyButton from '../components/CopyButton.svelte';
-  import ThresholdBar from '../components/ThresholdBar.svelte';
-  import PhaseTimeline from '../components/PhaseTimeline.svelte';
-  import StatCard from '../components/StatCard.svelte';
-  import { fetchAPI, postAPI } from '../utils/api.js';
+  import Button from '../components/Button.svelte';
+  import { fetchAPI } from '../api/client.js';
   import { usePolling } from '../utils/polling.js';
 
   let data = $state(null);
   let loading = $state(true);
   let error = $state('');
 
-  // Smoke test state
-  let smokeModel = $state('');
-  let smokePrompt = $state('ping');
-  let smokeRunning = $state(false);
-  let smokeResult = $state(null);
-  let smokeError = $state('');
-
   async function fetchData() {
     try {
       data = await fetchAPI('/admin/api/overview');
-      if (!smokeModel && data?.models?.length > 0) {
-        const preferred = data.models.find(m => m === 'deepseek/deepseek-v4-flash') ||
-                          data.models.find(m => m.includes('deepseek-v4-flash')) ||
-                          data.models[0];
-        smokeModel = preferred;
-      }
+      error = '';
     } catch (e) {
-      error = e.message || 'Could not reach the proxy API. Check that the server is running; retrying automatically.';
+      error = e.message || 'Could not reach the proxy API. Check that the server is running.';
     } finally {
       loading = false;
     }
   }
 
-  async function runSmokeTest(e) {
-    e?.preventDefault();
-    if (!smokeModel || smokeRunning) return;
-    smokeRunning = true;
-    smokeResult = null;
-    smokeError = '';
-    try {
-      const result = await postAPI('/admin/smoke', { model: smokeModel, prompt: smokePrompt });
-      if (result.ok) {
-        smokeResult = result;
-      } else {
-        smokeError = result.message || 'Smoke test failed';
-      }
-    } catch (e) {
-      smokeError = e.message || 'Network error running smoke test';
-    } finally {
-      smokeRunning = false;
-    }
+  function retry() {
+    error = '';
+    loading = true;
+    fetchData();
   }
 
-  usePolling(fetchData, 5000);
+  usePolling(fetchData, 15000);
 
-  function riskVariant(risk) {
+  // --- KPIs, derived from real overview fields (no invented fields) ---
+  let poolTotal = $derived(data?.tokens?.length ?? 0);
+  let busyTokens = $derived(data?.tokens?.filter((t) => t.active_runs > 0).length ?? 0);
+  let cooldownTokens = $derived(data?.tokens?.filter((t) => t.cooldown_active).length ?? 0);
+  let bannedTokens = $derived(data?.tokens?.filter((t) => t.risk_level === 'critical').length ?? 0);
+  let requestsToday = $derived(data?.tokens?.reduce((s, t) => s + (t.requests || 0), 0) ?? 0);
+
+  let atRiskTokens = $derived((data?.tokens ?? []).filter((t) => t.risk_level && t.risk_level !== 'low'));
+
+  function riskTone(risk) {
     switch (risk) {
-      case 'low': return 'teal';
-      case 'moderate': return 'amber';
-      case 'high': case 'critical': return 'red';
-      default: return 'muted';
+      case 'low':
+        return 'good';
+      case 'moderate':
+        return 'warn';
+      case 'high':
+      case 'critical':
+        return 'bad';
+      default:
+        return 'idle';
     }
   }
-
-  function riskDot(risk) {
-    switch (risk) {
-      case 'low': return 'bg-[var(--fp-teal)]';
-      case 'moderate': return 'bg-[var(--fp-amber)]';
-      case 'high': return 'bg-[#F97316]';
-      case 'critical': return 'bg-[var(--fp-red)]';
-      default: return 'bg-[var(--fp-dim)]';
-    }
-  }
-
-  function modeVariant(data) {
-    if (data?.in_bridge) return 'blue';
-    return 'amber';
-  }
-
-  // --- Derived health stats ---
-  let totalRequests = $derived(data?.tokens?.reduce((s, t) => s + (t.requests || 0), 0) ?? 0);
-  let activeTokens = $derived(data?.tokens?.filter(t => t.active_runs > 0).length ?? 0);
-  let modelCount = $derived(data?.model_count ?? 0);
-
-  function overallHealth(tokens) {
-    if (!tokens || tokens.length === 0) return { badge: 'muted', label: 'no tokens' };
-    if (tokens.some(t => t.risk_level === 'critical' || t.risk_level === 'high')) return { badge: 'red', label: 'critical' };
-    if (tokens.some(t => t.risk_level === 'moderate')) return { badge: 'amber', label: 'moderate' };
-    return { badge: 'teal', label: 'all clear' };
-  }
-
-  let health = $derived(overallHealth(data?.tokens));
 
   function formatCooldown(until) {
     if (!until) return '';
@@ -109,241 +72,128 @@
 </script>
 
 <div class="space-y-6 page-enter">
-  <PageHeader title="Overview" subtitle="Live proxy status & real-time token pool telemetry">
-    {#if data}
-      <StatusBadge variant={modeVariant(data)}>{data.mode} mode</StatusBadge>
-      <StatusBadge variant="muted" mono>{data.model_count} models</StatusBadge>
-      <StatusBadge variant="muted" mono>up {data.uptime}</StatusBadge>
-      {#if data.safe_mode}
-        <StatusBadge variant="teal">
-          <Shield size={12} />
-          safe mode
-        </StatusBadge>
+  <PageHeader title="Overview" description="Live proxy status and token pool telemetry">
+    {#snippet actions()}
+      {#if data}
+        <StatusBadge
+          status={data.mode}
+          tone={data.in_bridge ? 'good' : 'info'}
+        />
+        <span class="fp-num text-xs text-[var(--fp-dim)]">up {data.uptime}</span>
       {/if}
-    {/if}
+    {/snippet}
   </PageHeader>
 
-  <!-- Loading Skeleton -->
+  <!-- Loading skeleton -->
   {#if loading}
-    <div class="space-y-4">
-      <div class="skeleton skeleton-card"></div>
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {#each [1,2,3,4] as _}
-          <div class="skeleton skeleton-card"></div>
-        {/each}
-      </div>
-    </div>
-  {/if}
-
-  <!-- Health Summary Row -->
-  {#if data && !loading}
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-      <StatCard
-        label="Health"
-        value={health.label}
-        description="Live proxy status"
-      />
-      <StatCard
-        label="Total Requests"
-        value={totalRequests.toLocaleString()}
-        description="All pooled token requests"
-      />
-      <StatCard
-        label="Active Tokens"
-        value={`${activeTokens} / ${data.tokens?.length ?? 0}`}
-        description="Tokens with running requests"
-      />
-      <StatCard
-        label="Uptime"
-        value={data.uptime}
-        description={`${modelCount} model${modelCount === 1 ? '' : 's'} registered`}
-      />
-    </div>
-  {/if}
-
-  <!-- Smoke Test Card -->
-  <div class="fp-card p-5">
-    <div class="flex items-center justify-between gap-2 mb-3">
-      <div class="flex items-center gap-2">
-        <Play size={18} class="text-[var(--fp-amber)]" />
-        <h2 class="text-base font-semibold text-white">End-to-End Smoke Test</h2>
-      </div>
-      <span class="text-xs text-[var(--fp-dim)]">Zero-token pipeline verification</span>
-    </div>
-    <form onsubmit={runSmokeTest} class="grid grid-cols-1 sm:grid-cols-12 gap-3">
-      <div class="sm:col-span-4 flex items-center gap-1.5">
-        <label for="smoke-model" class="sr-only">Model</label>
-        <select
-          id="smoke-model"
-          bind:value={smokeModel}
-          class="fp-input fp-input-mono text-sm flex-1"
-        >
-          {#each data?.models || [] as model}
-            <option value={model}>{model}</option>
-          {/each}
-        </select>
-        <CopyButton text={smokeModel} variant="icon" />
-      </div>
-      <div class="sm:col-span-6">
-        <label for="smoke-prompt" class="sr-only">Prompt</label>
-        <input
-          id="smoke-prompt"
-          type="text"
-          bind:value={smokePrompt}
-          maxlength="200"
-          placeholder="Test prompt..."
-          class="fp-input text-sm"
-        />
-      </div>
-      <div class="sm:col-span-2">
-        <button
-          type="submit"
-          disabled={smokeRunning || !smokeModel}
-          class="w-full h-full min-h-11 fp-btn-primary"
-        >
-          {#if smokeRunning}
-            <RefreshCw size={14} class="animate-spin" />
-            <span>Testing...</span>
-          {:else}
-            <span>Run Test</span>
-          {/if}
-        </button>
-      </div>
-    </form>
-
-    {#if smokeResult}
-      <div class="mt-4 p-4 rounded-lg bg-[var(--fp-teal)]/10 border border-[var(--fp-teal)]/30 text-sm">
-        <div class="flex items-center gap-2 text-[var(--fp-teal)] font-medium mb-2">
-          <CheckCircle2 size={16} />
-          <span>Smoke test passed in {smokeResult.ms}ms via {smokeResult.token} ({smokeResult.model})</span>
-        </div>
-        {#if smokeResult.phases?.length > 0}
-          <div class="mt-3">
-            <PhaseTimeline phases={smokeResult.phases.map(p => ({ ...p, color: p.color || undefined }))} totalMs={smokeResult.ms} />
-          </div>
-        {/if}
-        {#if smokeResult.preview}
-          <pre class="mt-3 p-2 rounded bg-[var(--fp-bg)] border border-[var(--fp-border)] text-xs font-mono text-[var(--fp-text)] overflow-x-auto whitespace-pre-wrap">{smokeResult.preview}</pre>
-        {/if}
-      </div>
-    {/if}
-
-    {#if smokeError}
-      <div class="mt-4 p-3 rounded-lg bg-[var(--fp-red)]/10 border border-[var(--fp-red)]/30 text-sm text-[var(--fp-red)] flex items-center gap-2" role="alert">
-        <XCircle size={16} />
-        <span>{smokeError}</span>
-      </div>
-    {/if}
-
-    {#if !smokeResult && !smokeRunning && !smokeError}
-      <p class="text-xs text-[var(--fp-dim)] mt-3">Measures acquire → session → upstream → total latency</p>
-    {/if}
-  </div>
-
-  <!-- Fetch error banner -->
-  {#if error}
-    <Alert variant="error" message={error} dismissable={false} />
-  {/if}
-
-  <!-- Bridge / Empty / Token Cards -->
-  {#if data?.in_bridge}
-    <div class="fp-card p-5 border-[var(--fp-blue)]/30">
-      <h3 class="text-base font-semibold text-white mb-1">Bridge Mode Active</h3>
-      <p class="text-sm text-[var(--fp-muted)]">
-        Upstream tokens are relayed directly per client request ({data.bridge_tokens || 0} active bridge client{data.bridge_tokens === 1 ? '' : 's'}). Session pools and quota tracking are client-scoped.
-      </p>
-    </div>
-  {:else if data && !data.has_tokens}
-    <EmptyState
-      icon={AlertTriangle}
-      title="No Upstream Tokens Configured"
-      description="Add tokens to AUTH_TOKENS in Config or Setup to start the pooled relay."
-    >
-      <a href="#config" class="fp-btn-secondary min-h-11">
-        <Settings size={14} />
-        <span>Go to Config</span>
-      </a>
-    </EmptyState>
-  {:else if data}
-    <!-- Token Cards Grid -->
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-      {#each data?.tokens || [] as token}
-        <div class="fp-card fp-card-interactive p-4 flex flex-col justify-between">
-          <div>
-            <div class="flex items-center justify-between mb-3">
-              <div class="flex items-center gap-2">
-                <span class="w-2.5 h-2.5 rounded-full {riskDot(token.risk_level)}"></span>
-                <span class="font-bold text-white text-base">Token #{token.index}</span>
-              </div>
-              <StatusBadge variant={riskVariant(token.risk_level)}>{token.risk_level}</StatusBadge>
-            </div>
-
-            {#if token.has_standing}
-              <div class="mb-3 px-2.5 py-1 rounded bg-[var(--fp-blue)]/10 border border-[var(--fp-blue)]/20 text-xs text-[var(--fp-blue)] flex items-center justify-between">
-                <span>Trust standing: <strong>{token.standing_label}</strong></span>
-                <span class="tabular-nums">{Math.round(token.standing_score)}/100</span>
-              </div>
-            {/if}
-
-            <div class="grid grid-cols-2 gap-2 text-xs font-mono mb-4">
-              <div class="p-2 rounded fp-inset">
-                <span class="text-[var(--fp-dim)] block text-[10px] uppercase">Session</span>
-                <span class="text-white font-semibold">{token.session_status}</span>
-              </div>
-              <div class="p-2 rounded fp-inset">
-                <span class="text-[var(--fp-dim)] block text-[10px] uppercase">Active Runs</span>
-                <span class="text-white font-semibold tabular-nums">{token.active_runs}</span>
-              </div>
-              <div class="p-2 rounded fp-inset">
-                <span class="text-[var(--fp-dim)] block text-[10px] uppercase">Requests</span>
-                <span class="text-white font-semibold tabular-nums">{token.requests}</span>
-              </div>
-              <div class="p-2 rounded fp-inset">
-                <span class="text-[var(--fp-dim)] block text-[10px] uppercase">24h Messages</span>
-                <span class="text-white font-semibold tabular-nums">{token.messages_24h}{token.daily_limit > 0 ? ` / ${token.daily_limit}` : ''}</span>
-              </div>
-            </div>
-
-            {#if token.cooldown_active}
-              <div class="mb-3 px-2.5 py-1 rounded bg-[var(--fp-amber)]/10 border border-[var(--fp-amber)]/20 text-xs text-[var(--fp-amber)] flex items-center gap-1.5">
-                <Clock size={12} />
-                <span>Cooldown: {formatCooldown(token.cooldown_until)} remaining</span>
-              </div>
-            {/if}
-          </div>
-
-          {#if token.daily_limit > 0}
-            <div class="mb-3">
-              <ThresholdBar value={token.usage_pct} label="Usage" />
-            </div>
-          {/if}
-
-          <a href="#tokens" class="text-xs text-[var(--fp-amber)] hover:text-white transition-colors font-medium">
-            View Details →
-          </a>
-        </div>
+    <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4" aria-hidden="true">
+      {#each [1, 2, 3, 4, 5, 6] as _}
+        <div class="skeleton skeleton-card"></div>
       {/each}
     </div>
-
-    <!-- Quick Actions -->
-    <div class="flex flex-wrap items-center gap-3 text-xs">
-      <span class="text-[var(--fp-dim)] uppercase tracking-wider font-semibold">Quick navigation</span>
-      <a href="#config" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--fp-surface)] border border-[var(--fp-border)] text-[var(--fp-muted)] hover:text-white hover:border-[var(--fp-amber)]/40 transition-all">
-        <Settings size={13} />
-        Config
-      </a>
-      <a href="#logs" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--fp-surface)] border border-[var(--fp-border)] text-[var(--fp-muted)] hover:text-white hover:border-[var(--fp-amber)]/40 transition-all">
-        <FileText size={13} />
-        Logs
-      </a>
-      <a href="#traces" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--fp-surface)] border border-[var(--fp-border)] text-[var(--fp-muted)] hover:text-white hover:border-[var(--fp-amber)]/40 transition-all">
-        <Terminal size={13} />
-        Traces
-      </a>
-      <a href="#playground" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--fp-surface)] border border-[var(--fp-border)] text-[var(--fp-muted)] hover:text-white hover:border-[var(--fp-amber)]/40 transition-all">
-        <BarChart3 size={13} />
-        Playground
-      </a>
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4" aria-hidden="true">
+      {#each [1, 2, 3] as _}
+        <div class="skeleton skeleton-card"></div>
+      {/each}
     </div>
+  {/if}
+
+  <!-- Fetch error with retry -->
+  {#if error}
+    <Alert tone="error" title="Overview unavailable">
+      <p>{error}</p>
+      <div class="mt-3">
+        <Button variant="secondary" size="sm" onclick={retry}>
+          <RefreshCw size={16} />
+          Retry
+        </Button>
+      </div>
+    </Alert>
+  {/if}
+
+  {#if data && !loading}
+    {#if data.in_bridge}
+      <!-- Bridge mode: no pool snapshot to summarize -->
+      <Card>
+        <p class="text-sm text-[var(--fp-muted)]">
+          Bridge mode relays upstream tokens per client request
+          (<span class="fp-num">{data.bridge_tokens}</span> active bridge client{data.bridge_tokens === 1 ? '' : 's'}).
+          Session pools and quota tracking are client-scoped.
+        </p>
+      </Card>
+    {:else if !data.has_tokens}
+      <EmptyState
+        title="No upstream tokens configured"
+        description="Add tokens to AUTH_TOKENS in Config to start the pooled relay."
+      >
+        {#snippet action()}
+          <a href="#config" class="fp-btn fp-btn-secondary">Go to Config</a>
+        {/snippet}
+      </EmptyState>
+    {:else}
+      <!-- KPI row -->
+      <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+        <Stat label="Pool total" value={poolTotal} big />
+        <Stat label="Busy" value={busyTokens} hint="tokens with active runs" big />
+        <Stat label="Cooldown" value={cooldownTokens} tone={cooldownTokens > 0 ? 'warn' : 'default'} big />
+        <Stat label="Banned" value={bannedTokens} hint="critical risk" tone={bannedTokens > 0 ? 'bad' : 'default'} big />
+        <Stat label="Requests today" value={requestsToday} big />
+        <Stat label="Models" value={data.model_count ?? 0} big />
+      </div>
+
+      <!-- Token risk cards -->
+      <section aria-label="At-risk tokens">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-semibold text-[var(--fp-text)]">Token risk</h2>
+          <span class="fp-num text-xs text-[var(--fp-dim)]">{atRiskTokens.length}/{poolTotal}</span>
+        </div>
+
+        {#if atRiskTokens.length > 0}
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            {#each atRiskTokens as t (t.index)}
+              <Card>
+                <div class="space-y-3">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="fp-num text-sm font-semibold text-[var(--fp-text)]">Token #{t.index}</span>
+                    <StatusBadge
+                      status={t.risk_level}
+                      tone={riskTone(t.risk_level)}
+                      pulse={t.risk_level === 'critical'}
+                    />
+                  </div>
+
+                  {#if t.cooldown_active}
+                    <div class="fp-inset px-2.5 py-2 text-xs text-[var(--fp-warning)]">
+                      Cooldown — <span class="fp-num">{formatCooldown(t.cooldown_until)}</span> remaining
+                    </div>
+                  {/if}
+
+                  <div class="fp-inset px-2.5 py-2 text-xs text-[var(--fp-muted)]">
+                    {#if t.daily_limit > 0}
+                      <span class="fp-num text-[var(--fp-text)]">{t.messages_24h}/{t.daily_limit}</span> msgs today
+                      (<span class="fp-num">{t.usage_pct}%</span>)
+                    {:else}
+                      <span class="fp-num text-[var(--fp-text)]">{t.messages_24h}</span> msgs 24h
+                    {/if}
+                  </div>
+
+                  <div class="flex justify-between text-xs text-[var(--fp-dim)]">
+                    <span>runs <span class="fp-num text-[var(--fp-text)]">{t.active_runs}</span></span>
+                    <span>reqs <span class="fp-num text-[var(--fp-text)]">{t.requests}</span></span>
+                  </div>
+                </div>
+              </Card>
+            {/each}
+          </div>
+        {:else}
+          <Card>
+            <div class="flex items-center gap-2 text-sm text-[var(--fp-muted)]">
+              <span class="led led-good" aria-hidden="true"></span>
+              All tokens healthy — no risk flags.
+            </div>
+          </Card>
+        {/if}
+      </section>
+    {/if}
   {/if}
 </div>

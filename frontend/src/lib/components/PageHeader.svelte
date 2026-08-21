@@ -1,23 +1,24 @@
 <script>
   /**
-   * PageHeader — consistent page title + subtitle + optional right-side badges.
+   * PageHeader — page title + description + optional right-side actions.
    *
    * @prop {string} title
-   * @prop {string} [subtitle]
+   * @prop {string} [description]
+   * @slot actions
    */
-  let { title, subtitle, children } = $props();
+  let { title, description, actions } = $props();
 </script>
 
-<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+<header class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
   <div>
-    <h1 class="text-2xl font-bold text-white tracking-tight">{title}</h1>
-    {#if subtitle}
-      <p class="text-sm text-[var(--fp-muted)] mt-1">{subtitle}</p>
+    <h1 class="text-[20px] font-semibold text-[var(--fp-text)]">{title}</h1>
+    {#if description}
+      <p class="mt-1 text-sm text-[var(--fp-muted)]">{description}</p>
     {/if}
   </div>
-  {#if children}
+  {#if actions}
     <div class="flex flex-wrap items-center gap-2">
-      {@render children()}
+      {@render actions()}
     </div>
   {/if}
-</div>
+</header>
