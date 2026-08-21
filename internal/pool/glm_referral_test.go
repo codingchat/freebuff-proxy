@@ -30,10 +30,10 @@ func TestUnentitledPoolTokenGlmQuotaFallback(t *testing.T) {
 	var glmCreates atomic.Int32
 	var flashCreates atomic.Int32
 	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
-		model := r.Header.Get("x-freebuff-model")
-		if model == "z-ai/glm-5.2" {
+		switch r.Header.Get("x-freebuff-model") {
+		case "z-ai/glm-5.2":
 			glmCreates.Add(1)
-		} else if model == "deepseek/deepseek-v4-flash" {
+		case "deepseek/deepseek-v4-flash":
 			flashCreates.Add(1)
 		}
 		expiresAt := time.Now().Add(30 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z07:00")
@@ -158,10 +158,10 @@ func TestBridgeUnentitledGlmFallback(t *testing.T) {
 	var glmCreates atomic.Int32
 	var flashCreates atomic.Int32
 	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
-		model := r.Header.Get("x-freebuff-model")
-		if model == "z-ai/glm-5.2" {
+		switch r.Header.Get("x-freebuff-model") {
+		case "z-ai/glm-5.2":
 			glmCreates.Add(1)
-		} else if model == "deepseek/deepseek-v4-flash" {
+		case "deepseek/deepseek-v4-flash":
 			flashCreates.Add(1)
 		}
 		expiresAt := time.Now().Add(30 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z07:00")
