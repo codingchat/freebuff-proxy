@@ -77,20 +77,18 @@ The proxy listens on port `3457`. The Base URL in 9router depends on where 9rout
 
 ## 🤖 Recommended Models to Add
 
-> Full per-model translation reference (wire ids, effort ladders, agent roots,
-> capacity gates, and known gaps): see [Getting Started — Access Tiers](getting-started.md#access-tiers--workarounds).
+> **📢 Freebuff Team Notice**: *"V4 Pro and GPT-5.6 Luna are 1 session a day, V4 Pro pauses at peak times, and MiniMax M3 is unavailable. MiMo 2.5 stays unlimited."*
 
 In the 9router provider node, you can add any of these models from the proxy catalog:
 
-| Model ID in 9router | Description | Access Tier |
+| Model ID in 9router | Description & Tags | Upstream Quota & Tier |
 | :--- | :--- | :--- |
-| `deepseek/deepseek-v4-flash` | High speed general coding model | **Full tier only** (limited tier restricted 2026-08-18) |
-| `deepseek/deepseek-v4-pro` | Deep reasoning coding model | Full tier |
-| `mimo/mimo-v2.5` | Fast lightweight coding model | **All tiers** (sole limited-tier model; all limited-tier requests coerced here server-side) |
-| `openai/gpt-5.6-luna` | Deep reasoning + multimodal | Full tier |
-| `minimax/minimax-m3` | High context window | Full tier |
-| `z-ai/glm-5.2` | Advanced agentic model | Referral-gated, uncapped since 2026-07-30 — +1 GLM session/day per qualified referral (≤100) plus streak bonuses (cap 4); sessions are exactly 1 wall-clock hour each |
-
+| `deepseek/deepseek-v4-flash` | **DeepSeek V4 Flash 07/31 (Recommended)**<br>Smart & Fast · Reasoning: `high` · NEW | **Full Tier** (5 sessions/day pool) |
+| `mimo/mimo-v2.5` | **MiMo 2.5**<br>Balanced · Images | **All Tiers — UNLIMITED** (default for limited tier) |
+| `openai/gpt-5.6-luna` | **GPT-5.6 Luna**<br>Strong all-around · Reasoning: `high` · Images | Full Tier (**Capped at 1 session/day**) |
+| `deepseek/deepseek-v4-pro` | **DeepSeek V4 Pro**<br>Deep reasoning · Reasoning: `high` | Full Tier (**Capped at 1 session/day; pauses at peak times**) |
+| `z-ai/glm-5.2` | **GLM 5.2**<br>Top open-source agentic model | **Referral-gated** (+1 session per referral) |
+| `minimax/minimax-m3` | **MiniMax M3** | ⚠️ **Temporarily Unavailable upstream** |
 Clients calling 9router address these models as `freebuff/<model-id>`, for example:
 ```json
 {
